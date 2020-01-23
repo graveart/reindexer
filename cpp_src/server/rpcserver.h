@@ -39,8 +39,9 @@ public:
 	void Stop() { listener_->Stop(); }
 
 	Error Ping(cproto::Context &ctx);
-	Error Login(cproto::Context &ctx, p_string login, p_string password, p_string db);
-	Error OpenDatabase(cproto::Context &ctx, p_string db);
+	Error Login(cproto::Context &ctx, p_string login, p_string password, p_string db, cproto::optional<bool> createDBIfMissing,
+				cproto::optional<bool> checkClusterID, cproto::optional<int> expectedClusterID);
+	Error OpenDatabase(cproto::Context &ctx, p_string db, cproto::optional<bool> createDBIfMissing);
 	Error CloseDatabase(cproto::Context &ctx);
 	Error DropDatabase(cproto::Context &ctx);
 
@@ -91,6 +92,7 @@ public:
 
 protected:
 	Error sendResults(cproto::Context &ctx, QueryResults &qr, int reqId, const ResultFetchOpts &opts);
+	Error processTxItem(DataFormat format, string_view itemData, Item &item, ItemModifyMode mode, int stateToken) const noexcept;
 
 	Error fetchResults(cproto::Context &ctx, int reqId, const ResultFetchOpts &opts);
 	void freeQueryResults(cproto::Context &ctx, int id);

@@ -21,7 +21,7 @@ bool Query::operator==(const Query &obj) const {
 	if (start != obj.start) return false;
 	if (count != obj.count) return false;
 	if (debugLevel != obj.debugLevel) return false;
-	if (forcedSortOrder != obj.forcedSortOrder) return false;
+	if (forcedSortOrder_ != obj.forcedSortOrder_) return false;
 
 	if (selectFilter_ != obj.selectFilter_) return false;
 	if (selectFunctions_ != obj.selectFunctions_) return false;
@@ -116,14 +116,14 @@ void Query::deserialize(Serializer &ser, bool &hasJoinConditions) {
 				break;
 			case QuerySortIndex: {
 				SortingEntry sortingEntry;
-				sortingEntry.column = string(ser.GetVString());
+				sortingEntry.expression = string(ser.GetVString());
 				sortingEntry.desc = bool(ser.GetVarUint());
-				if (sortingEntry.column.length()) {
+				if (sortingEntry.expression.length()) {
 					sortingEntries_.push_back(std::move(sortingEntry));
 				}
 				int cnt = ser.GetVarUint();
-				forcedSortOrder.reserve(cnt);
-				while (cnt--) forcedSortOrder.push_back(ser.GetVariant().EnsureHold());
+				forcedSortOrder_.reserve(cnt);
+				while (cnt--) forcedSortOrder_.push_back(ser.GetVariant().EnsureHold());
 				break;
 			}
 			case QueryJoinOn:
@@ -201,7 +201,7 @@ void Query::Serialize(WrSerializer &ser, uint8_t mode) const {
 		}
 		for (const auto &se : agg.sortingEntries_) {
 			ser.PutVarUint(QueryAggregationSort);
-			ser.PutVString(se.column);
+			ser.PutVString(se.expression);
 			ser.PutVarUint(se.desc);
 		}
 		if (agg.limit_ != UINT_MAX) {
@@ -216,11 +216,11 @@ void Query::Serialize(WrSerializer &ser, uint8_t mode) const {
 
 	for (const SortingEntry &sortginEntry : sortingEntries_) {
 		ser.PutVarUint(QuerySortIndex);
-		ser.PutVString(sortginEntry.column);
+		ser.PutVString(sortginEntry.expression);
 		ser.PutVarUint(sortginEntry.desc);
-		int cnt = forcedSortOrder.size();
+		int cnt = forcedSortOrder_.size();
 		ser.PutVarUint(cnt);
-		for (auto &kv : forcedSortOrder) ser.PutVariant(kv);
+		for (auto &kv : forcedSortOrder_) ser.PutVariant(kv);
 	}
 
 	if (mode & WithJoinEntries) {

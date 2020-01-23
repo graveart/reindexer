@@ -4,6 +4,7 @@
 #include "core/type_consts.h"
 #include "estl/h_vector.h"
 #include "tools/errors.h"
+
 namespace reindexer {
 
 class WrSerializer;
@@ -23,7 +24,7 @@ public:
 	explicit Variant(int64_t v) : type_(KeyValueInt64), value_int64(v) {}
 	explicit Variant(double v) : type_(KeyValueDouble), value_double(v) {}
 	explicit Variant(const char *v);
-	explicit Variant(const p_string &v, bool enableHold = true);
+	explicit Variant(p_string v, bool enableHold = true);
 	explicit Variant(const string &v);
 	explicit Variant(const key_string &v);
 	explicit Variant(const PayloadValue &v);
@@ -63,28 +64,10 @@ public:
 		return *this;
 	}
 
-	inline static void assertKeyType(KeyValueType got, KeyValueType exp) {
-		(void)got, (void)exp;
-		assertf(exp == got, "Expected value '%s', but got '%s'", TypeName(exp), TypeName(got));
-	}
-
-	explicit operator int() const {
-		assertKeyType(type_, KeyValueInt);
-		return value_int;
-	}
-	explicit operator bool() const {
-		assertKeyType(type_, KeyValueBool);
-		return value_bool;
-	}
-
-	explicit operator int64_t() const {
-		assertKeyType(type_, KeyValueInt64);
-		return value_int64;
-	}
-	explicit operator double() const {
-		assertKeyType(type_, KeyValueDouble);
-		return value_double;
-	}
+	explicit operator int() const;
+	explicit operator bool() const;
+	explicit operator int64_t() const;
+	explicit operator double() const;
 
 	explicit operator p_string() const;
 	explicit operator string_view() const;
@@ -142,7 +125,7 @@ protected:
 		// key_string h_value_string;
 	};
 	int relaxCompareWithString(string_view) const;
-};  // namespace reindexer
+};	// namespace reindexer
 
 class VariantArray : public h_vector<Variant, 2> {
 public:

@@ -76,7 +76,6 @@ int HTTPServer::GetSQLSuggest(http::Context &ctx) {
 	if (pos < 0) {
 		return jsonStatus(ctx, http::HttpStatus(http::StatusBadRequest, "`pos` parameter should be >= 0"));
 	}
-	if (pos > 0) --pos;  // JS style pos starts from 1
 	int line = stoi(lineParam);
 	if (line < 0) {
 		return jsonStatus(ctx, http::HttpStatus(http::StatusBadRequest, "`line` parameter should be >= 0"));
@@ -969,7 +968,7 @@ int HTTPServer::queryResults(http::Context &ctx, reindexer::QueryResults &res, b
 	}
 
 	if (withColumns) {
-		reindexer::TableCalculator<reindexer::QueryResults> tableCalculator(res, stoi(width));
+		reindexer::TableCalculator<reindexer::QueryResults> tableCalculator(res, stoi(width), limit);
 		auto &header = tableCalculator.GetHeader();
 		auto &columnsSettings = tableCalculator.GetColumnsSettings();
 		auto array = builder.Array("columns");
@@ -1074,7 +1073,8 @@ int HTTPServer::CheckAuth(http::Context &ctx) {
 		return -1;
 	}
 
-	char *credBuf = reinterpret_cast<char *>(alloca(authHeader.length()));
+	h_vector<char, 128> credVec(authHeader.length());
+	char *credBuf = &credVec.front();
 	Base64decode(credBuf, authHeader.data() + 6);
 	char *password = strchr(credBuf, ':');
 	if (password != nullptr) *password++ = 0;
@@ -1087,9 +1087,9 @@ int HTTPServer::CheckAuth(http::Context &ctx) {
 		return -1;
 	}
 
-	auto clientData = std::make_shared<HTTPClientData>();
-	ctx.clientData = clientData;
+	std::unique_ptr<HTTPClientData> clientData(new HTTPClientData);
 	clientData->auth = auth;
+	ctx.clientData = std::move(clientData);
 	return 0;
 }
 

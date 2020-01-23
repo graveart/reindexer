@@ -5,6 +5,7 @@
 #include <sstream>
 #include "core/cjson/jsonbuilder.h"
 #include "core/dbconfig.h"
+#include "core/queryresults/joinresults.h"
 #include "gason/gason.h"
 #include "reindexer_api.h"
 #include "tools/fsops.h"
@@ -160,7 +161,7 @@ protected:
 			std::cout << "ROW: " << item.GetJSON() << std::endl;
 
 			int idx = 1;
-			auto itemIt = rowIt.GetJoinedItemsIterator();
+			auto itemIt = reindexer::joins::ItemIterator::FromQRIterator(rowIt);
 			for (auto joinedFieldIt = itemIt.begin(); joinedFieldIt != itemIt.end(); ++joinedFieldIt) {
 				std::cout << "JOINED: " << idx << std::endl;
 				for (int i = 0; i < joinedFieldIt.ItemsCount(); ++i) {
@@ -182,7 +183,7 @@ protected:
 			QueryResultRow& resultRow = testRes[bookId];
 
 			FillQueryResultFromItem(item, resultRow);
-			auto itemIt = rowIt.GetJoinedItemsIterator();
+			auto itemIt = reindexer::joins::ItemIterator::FromQRIterator(rowIt);
 			auto joinedFieldIt = itemIt.begin();
 			QueryResults jres = joinedFieldIt.ToQueryResults();
 			jres.addNSContext(qr.getPayloadType(1), qr.getTagsMatcher(1), qr.getFieldsFilter(1));
@@ -253,61 +254,90 @@ protected:
 		ASSERT_TRUE(err.ok()) << err.what();
 	}
 
+	void TurnOnJoinCache(const string& nsName) {
+		reindexer::WrSerializer ser;
+		reindexer::JsonBuilder jb(ser);
+
+		jb.Put("type", "namespaces");
+		auto nsArray = jb.Array("namespaces");
+		auto ns = nsArray.Object();
+		ns.Put("namespace", nsName.c_str());
+		ns.Put("log_level", "none");
+		ns.Put("lazyload", false);
+		ns.Put("unload_idle_threshold", 0);
+		ns.Put("join_cache_mode", "on");
+		ns.Put("start_copy_politics_count", 10000);
+		ns.Put("merge_limit_count", 20000);
+		ns.End();
+		nsArray.End();
+		jb.End();
+
+		auto item = rt.NewItem(config_namespace);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		auto err = item.FromJSON(ser.Slice());
+		ASSERT_TRUE(err.ok()) << err.what();
+
+		rt.Upsert(config_namespace, item);
+		err = rt.Commit(config_namespace);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+
 	void CheckJoinsInComplexWhereCondition(const QueryResults& qr) {
 		for (auto it : qr) {
 			Item item = it.GetItem();
+
 			Variant priceFieldValue = item[price];
-			bool pagesConditionResult = false;
+			const bool priceConditionResult = ((static_cast<int>(priceFieldValue) >= 9540) && (static_cast<int>(priceFieldValue) <= 9550));
+
 			bool joinsBracketConditionsResult = false;
-			bool joinsNoBracketConditionsResult = false;
-			bool priceConditionResult = ((static_cast<int>(priceFieldValue) >= 9540) && (static_cast<int>(priceFieldValue) <= 9550));
-			if (!priceConditionResult) {
-				if ((static_cast<int>(priceFieldValue) >= 1000) && (static_cast<int>(priceFieldValue) <= 2000)) {
-					bool result = false;
-					auto jitemIt = it.GetJoinedItemsIterator();
-					auto authorNsFieldIt = jitemIt.at(0);
-					Variant authorIdFieldValue = item[authorid_fk];
+			if ((static_cast<int>(priceFieldValue) >= 1000) && (static_cast<int>(priceFieldValue) <= 2000)) {
+				auto jitemIt = reindexer::joins::ItemIterator::FromQRIterator(it);
+				auto authorNsFieldIt = jitemIt.at(0);
+				auto genreNsFieldIt = jitemIt.at(1);
+				if (authorNsFieldIt != jitemIt.end() && genreNsFieldIt != jitemIt.end() &&
+					(authorNsFieldIt.ItemsCount() > 0 || genreNsFieldIt.ItemsCount() > 0)) {
 					if (authorNsFieldIt.ItemsCount() > 0) {
+						Variant authorIdFieldValue = item[authorid_fk];
 						EXPECT_TRUE((static_cast<int>(authorIdFieldValue) >= 10) && (static_cast<int>(authorIdFieldValue) <= 25));
+						for (int i = 0; i < authorNsFieldIt.ItemsCount(); ++i) {
+							reindexer::ItemImpl itemimpl = authorNsFieldIt.GetItem(i, qr.getPayloadType(1), qr.getTagsMatcher(1));
+							Variant authorIdFkFieldValue = itemimpl.GetField(qr.getPayloadType(1).FieldByName(authorid));
+							EXPECT_TRUE(authorIdFieldValue == authorIdFkFieldValue);
+						}
 					}
-					for (int i = 0; i < authorNsFieldIt.ItemsCount(); ++i) {
-						reindexer::ItemImpl itemimpl = authorNsFieldIt.GetItem(i, qr.getPayloadType(1), qr.getTagsMatcher(1));
-						Variant authorIdFkFieldValue = itemimpl.GetField(qr.getPayloadType(1).FieldByName(authorid));
-						result = (authorIdFieldValue == authorIdFkFieldValue);
-					}
-					auto genreNsFieldIt = jitemIt.at(1);
-					Variant genreIdFieldValue = item[genreId_fk];
 					if (genreNsFieldIt.ItemsCount() > 0) {
+						Variant genreIdFieldValue = item[genreId_fk];
 						EXPECT_TRUE(static_cast<int>(genreIdFieldValue) != 1);
+						for (int i = 0; i < genreNsFieldIt.ItemsCount(); ++i) {
+							reindexer::ItemImpl itemimpl = genreNsFieldIt.GetItem(i, qr.getPayloadType(2), qr.getTagsMatcher(2));
+							Variant genreIdFkFieldValue = itemimpl.GetField(qr.getPayloadType(2).FieldByName(genreid));
+							EXPECT_TRUE(genreIdFieldValue == genreIdFkFieldValue);
+						}
 					}
-					for (int i = 0; i < genreNsFieldIt.ItemsCount(); ++i) {
-						reindexer::ItemImpl itemimpl = genreNsFieldIt.GetItem(i, qr.getPayloadType(2), qr.getTagsMatcher(2));
-						Variant genreIdFkFieldValue = itemimpl.GetField(qr.getPayloadType(2).FieldByName(genreid));
-						result = (genreIdFieldValue == genreIdFkFieldValue);
-					}
-					EXPECT_TRUE(result);
-					joinsBracketConditionsResult |= result;
-					EXPECT_TRUE(joinsBracketConditionsResult);
+					joinsBracketConditionsResult = true;
 				}
 			}
-			if (!priceConditionResult && !joinsBracketConditionsResult) {
-				Variant pagesFieldValue = item[pages];
-				pagesConditionResult = (static_cast<int>(pagesFieldValue) == 0);
-			}
-			if (!pagesConditionResult && !joinsBracketConditionsResult && !priceConditionResult) {
-				auto jitemIt = it.GetJoinedItemsIterator();
-				auto authorNsFieldIt = jitemIt.at(2);
+
+			Variant pagesFieldValue = item[pages];
+			const bool pagesConditionResult = (static_cast<int>(pagesFieldValue) == 0);
+
+			bool joinsNoBracketConditionsResult = false;
+			auto jitemIt = reindexer::joins::ItemIterator::FromQRIterator(it);
+			auto authorNsFieldIt = jitemIt.at(2);
+			if ((authorNsFieldIt != jitemIt.end() ||
+				 ((authorNsFieldIt = jitemIt.at(0)) != jitemIt.end() && jitemIt.at(1) == jitemIt.end())) &&
+				authorNsFieldIt.ItemsCount() > 0) {
 				Variant authorIdFieldValue = item[authorid_fk];
-				if (authorNsFieldIt.ItemsCount() > 0) {
-					EXPECT_TRUE((static_cast<int>(authorIdFieldValue) >= 300) && (static_cast<int>(authorIdFieldValue) <= 400));
-				}
+				EXPECT_TRUE((static_cast<int>(authorIdFieldValue) >= 300) && (static_cast<int>(authorIdFieldValue) <= 400));
 				for (int i = 0; i < authorNsFieldIt.ItemsCount(); ++i) {
 					reindexer::ItemImpl itemimpl = authorNsFieldIt.GetItem(i, qr.getPayloadType(3), qr.getTagsMatcher(3));
 					Variant authorIdFkFieldValue = itemimpl.GetField(qr.getPayloadType(3).FieldByName(authorid));
 					EXPECT_TRUE(authorIdFieldValue == authorIdFkFieldValue);
-					joinsNoBracketConditionsResult = true;
 				}
+				joinsNoBracketConditionsResult = true;
 			}
+
 			EXPECT_TRUE(pagesConditionResult || joinsBracketConditionsResult || priceConditionResult || joinsNoBracketConditionsResult);
 		}
 	}

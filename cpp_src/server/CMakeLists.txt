@@ -7,6 +7,7 @@ project(reindexer_server_library)
 set (SWAGGER_VERSION "2.x")
 set (FACE_BRANCH "master")
 set(TARGET reindexer_server_library)
+list(INSERT DYNAMIC_REINDEXER_LIBS 0 reindexer_server_library)
 set(SERVER_LIB_DIR ${PROJECT_BINARY_DIR} PARENT_SCOPE)
 
 file(WRITE ${PROJECT_BINARY_DIR}/swagger_replace.cmake
@@ -89,6 +90,13 @@ if (LINK_RESOURCES)
 
 	add_definitions(-DLINK_RESOURCES)
 	list(APPEND REINDEXER_LIBRARIES resources)
+	list(INSERT DYNAMIC_REINDEXER_LIBS 1 resources)
+	install(TARGETS resources
+		COMPONENT dev
+		RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+		LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+		ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+	)
 endif()
 
 file(GLOB_RECURSE SRCS *.h *.cc)
@@ -104,6 +112,8 @@ endif()
 add_custom_target(face COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_BINARY_DIR}/make_face.cmake")
 add_custom_target(swagger COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_BINARY_DIR}/make_swagger.cmake")
 
+list(APPEND DYNAMIC_REINDEXER_LIBS m)
+
 if (NOT WIN32)
     install(FILES 
     "${PROJECT_SOURCE_DIR}/server.h"
@@ -112,10 +122,35 @@ if (NOT WIN32)
     "${PROJECT_SOURCE_DIR}/cbinding/server_c.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/reindexer/server/cbinding COMPONENT dev)
 
+    set (VERSION ${REINDEXER_VERSION})
+    set (prefix ${CMAKE_INSTALL_PREFIX})
+    set (exec_prefix ${CMAKE_INSTALL_FULL_BINDIR})
+    set (libdir ${CMAKE_INSTALL_FULL_LIBDIR})
+    set (includedir ${CMAKE_INSTALL_FULL_INCLUDEDIR}/reindexer)
+    set (libs "")
+    foreach(lib ${DYNAMIC_REINDEXER_LIBS})
+        list(APPEND libs "-l${lib} ")
+    endforeach(lib)
+    string(REPLACE ";" "" libs "${libs}")
+
+    configure_file (
+      "${PROJECT_SOURCE_DIR}/libreindexer_server.pc.in"
+      "${PROJECT_BINARY_DIR}/pkgconfig/libreindexer_server.pc"
+      @ONLY
+    )
+
+    unset (VERSION)
+    unset (prefix)
+    unset (exec_prefix)
+    unset (libdir)
+    unset (includedir)
+    unset (libs)
+
     install(TARGETS ${TARGET}
         COMPONENT dev
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     )
+    install(DIRECTORY ${PROJECT_BINARY_DIR}/pkgconfig DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT dev)
 endif ()

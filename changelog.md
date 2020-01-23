@@ -1,3 +1,73 @@
+# Version 2.4.5 (30.12.2019)
+
+## Core
+- [fix] Fix: forced replication can lead to infinite loop
+- [fea] Add .pkg file and autotest in -dev package
+- [fix] Replication of meta in forcedSync
+
+## go connector
+- [fea] Canceling of connecting to server if the deadline is expired
+
+## Reindexer tool
+- [fix] Fix of incorrect paging when output to file or stdout redirection
+- [fix] Fix of suggest of '\<key word>'
+
+# Version 2.4.4 (17.12.2019)
+
+## Core
+- [fix] Do not lock preResult values if from cache fixed potential assert on queries with join with used join cache
+- [fix] Fix assert in sort by composite indexes
+- [fea] Add composite values parsing for SQL select
+- [fix] Make circular accumulator for stddev performance statistic
+- [fix] Fix unhandled exception while caclulating perf stat
+
+## go connector
+- [fix] RawBuffer leak due to unclosed iterators in transactions
+
+# Version 2.4.3 (06.12.2019)
+
+## Core
+- [fea] Add '\' as a special escaping symbol to FtDSL
+- [fix] Merge-join queries fixes and optimizations
+- [fix] Fix hit_count_to_cache overflow for idset cache
+
+## Reindexer server
+- [fea] Add master's config check on slave connect
+- [fea] Disable automatic database creation on RPC-connect
+- [fix] Add force-resync after online replication errors
+- [fix] Fix lsn overflow after convertion to int
+
+## go connector
+- [fea] Add replication status to memstats
+
+# Version 2.4.2 (21.11.2019)
+
+## Core
+- [fix] Joins optimizations
+
+## go connector
+- [fix] cjson lock + deep copy performance fixes
+
+# Version 2.4.1 (15.11.2019)
+
+## Core
+- [fea] Sort by expressions
+- [fea] Optimized lock time for joins with small preresult set
+- [fea] Added more info about replication state to #memstat namespace
+- [fix] LSN on row-based query replication (possible assert on server startup)
+- [fix] Replication clusterID for namespaces without storage
+- [fix] PK precepts replication
+
+## Reindexer server
+- [fix] Query results row calculation for http queries with limit
+
+## Reindexer tool
+- [fea] Table pagination
+- [fea] Queries cancellation
+
+## go connector
+- [fix] Tags race on concurrent transactions
+
 # Version 2.3.4 (29.10.2019)
 
 ## go connector
@@ -205,7 +275,7 @@
 
 ## Core
 
-- [fea] Bracets in DSL & SQL queries    
+- [fea] Bracets in DSL & SQL queries
 - [fix] Crash on LRUCache fast invalidation
 - [fix] Relaxed JSON validation. Symbols with codes < 0x20 now are valid
 - [fix] '\0' symbol in JSON will not broke parser
@@ -363,7 +433,7 @@
 ## Core
 
 - [fea] Incremental fulltext search index rebuild 
-- [fea] Async C++ RPC client  
+- [fea] Async C++ RPC client
 - [fix] Fixed incorrect behaviour with non indexed field conditions
 - [fix] Extra non indexed fields tests added
 - [fix] Json parser memleak fixed

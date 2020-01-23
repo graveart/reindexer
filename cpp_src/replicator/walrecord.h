@@ -20,7 +20,8 @@ enum WALRecType {
 	WalPutMeta,
 	WalUpdateQuery,
 	WalNamespaceAdd,
-	WalNamespaceDrop
+	WalNamespaceDrop,
+	WalTransaction
 };
 
 class WrSerializer;
@@ -29,12 +30,11 @@ class JsonBuilder;
 struct WALRecord {
 	explicit WALRecord(span<uint8_t>);
 	explicit WALRecord(string_view sv);
-	explicit WALRecord(WALRecType _type = WalEmpty, IdType _id = 0) : type(_type), id(_id){};
+	explicit WALRecord(WALRecType _type = WalEmpty, IdType _id = 0) : type(_type), id(_id) {}
 	explicit WALRecord(WALRecType _type, string_view _data) : type(_type), data(_data) {}
-	explicit WALRecord(WALRecType _type, string_view key, string_view value) : type(_type) { putMeta = {key, value}; }
-	explicit WALRecord(WALRecType _type, string_view cjson, int tmVersion, int modifyMode) : type(_type) {
-		itemModify = {cjson, tmVersion, modifyMode};
-	}
+	explicit WALRecord(WALRecType _type, string_view key, string_view value) : type(_type), putMeta{key, value} {}
+	explicit WALRecord(WALRecType _type, string_view cjson, int tmVersion, int modifyMode)
+		: type(_type), itemModify{cjson, tmVersion, modifyMode} {}
 	WrSerializer &Dump(WrSerializer &ser, std::function<std::string(string_view)> cjsonViewer) const;
 	void GetJSON(JsonBuilder &jb, std::function<string(string_view)> cjsonViewer) const;
 	WALRecType type;

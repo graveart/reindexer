@@ -20,7 +20,7 @@ Variant::Variant(const string &v) : type_(KeyValueString), hold_(true) { new (ca
 
 Variant::Variant(const key_string &v) : type_(KeyValueString), hold_(true) { new (cast<void>()) key_string(v); }
 Variant::Variant(const char *v) : Variant(p_string(v)) {}
-Variant::Variant(const p_string &v, bool enableHold) : type_(KeyValueString) {
+Variant::Variant(p_string v, bool enableHold) : type_(KeyValueString) {
 	if (v.type() == p_string::tagKeyString && enableHold) {
 		hold_ = true;
 		new (cast<void>()) key_string(v.getKeyString());
@@ -38,6 +38,31 @@ Variant::Variant(const VariantArray &values) {
 	new (cast<void>()) key_string(make_key_string(ser.Slice()));
 	type_ = KeyValueTuple;
 	hold_ = true;
+}
+
+inline static void assertKeyType(KeyValueType got, KeyValueType exp) {
+	(void)got, (void)exp;
+	assertf(exp == got, "Expected value '%s', but got '%s'", Variant::TypeName(exp), Variant::TypeName(got));
+}
+
+Variant::operator int() const {
+	assertKeyType(type_, KeyValueInt);
+	return value_int;
+}
+
+Variant::operator bool() const {
+	assertKeyType(type_, KeyValueBool);
+	return value_bool;
+}
+
+Variant::operator int64_t() const {
+	assertKeyType(type_, KeyValueInt64);
+	return value_int64;
+}
+
+Variant::operator double() const {
+	assertKeyType(type_, KeyValueDouble);
+	return value_double;
 }
 
 void Variant::free() {

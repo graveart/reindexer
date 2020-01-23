@@ -1,6 +1,7 @@
 
 #include "walrecord.h"
 #include "core/cjson/baseencoder.h"
+#include "core/transactionimpl.h"
 #include "tools/serializer.h"
 
 namespace reindexer {
@@ -17,6 +18,7 @@ void PackedWALRecord::Pack(const WALRecord &rec) {
 		case WalIndexDrop:
 		case WalIndexUpdate:
 		case WalReplState:
+		case WalTransaction:
 			ser.PutVString(rec.data);
 			break;
 		case WalPutMeta:
@@ -29,6 +31,7 @@ void PackedWALRecord::Pack(const WALRecord &rec) {
 			ser.PutVarUint(rec.itemModify.tmVersion);
 			break;
 		case WalEmpty:
+			return;
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
 			break;
@@ -55,6 +58,7 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 		case WalIndexDrop:
 		case WalIndexUpdate:
 		case WalReplState:
+		case WalTransaction:
 			data = ser.GetVString();
 			break;
 		case WalPutMeta:
@@ -100,8 +104,10 @@ string_view wrecType2Str(WALRecType t) {
 			return "WalNamespaceDrop"_sv;
 		case WalItemModify:
 			return "WalItemMofify"_sv;
+		case WalTransaction:
+			return "WalTransaction"_sv;
 		default:
-			return "<Unknown"_sv;
+			return "<Unknown>"_sv;
 	}
 }
 
@@ -124,6 +130,12 @@ WrSerializer &WALRecord::Dump(WrSerializer &ser, std::function<string(string_vie
 			return ser << ' ' << putMeta.key << "=" << putMeta.value;
 		case WalItemModify:
 			return ser << (itemModify.modifyMode == ModeDelete ? " Delete " : " Update ") << cjsonViewer(itemModify.itemCJson);
+		case WalTransaction: {
+			JsonBuilder jb{ser};
+			auto txJsonBuilder = jb.Object("transaction");
+			TransactionImpl::ConvertCJSONtoJSON(data, txJsonBuilder, cjsonViewer);
+			return ser;
+		}
 		default:
 			fprintf(stderr, "Unexpected WAL rec type %d\n", int(type));
 			std::abort();
@@ -156,11 +168,16 @@ void WALRecord::GetJSON(JsonBuilder &jb, std::function<string(string_view)> cjso
 		case WalPutMeta:
 			jb.Put("key", putMeta.key);
 			jb.Put("value", putMeta.value);
-			break;
+			return;
 		case WalItemModify:
 			jb.Put("mode", itemModify.modifyMode);
 			jb.Raw("item", cjsonViewer(itemModify.itemCJson));
 			return;
+		case WalTransaction: {
+			auto txJsonBuilder = jb.Object("transaction");
+			TransactionImpl::ConvertCJSONtoJSON(data, txJsonBuilder, cjsonViewer);
+			return;
+		}
 		default:
 			fprintf(stderr, "Unexpected WAL rec type %d\n", int(type));
 			std::abort();

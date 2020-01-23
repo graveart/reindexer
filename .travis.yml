@@ -20,6 +20,7 @@ git:
   async: true
   fail_fast: true
   os: linux
+  dist: bionic
   env:
     - WITH_DOXYGEN=0 # set to 1 when doxy doc deploy is ready
     - CMAKE_OPTS="-DCMAKE_BUILD_TYPE=Release -DENABLE_LIBUNWIND=Off"
@@ -39,7 +40,7 @@ git:
   script:
     - cd ${BUILD_DIR} && cmake ${CMAKE_OPTS} ${TRAVIS_BUILD_DIR} && make -j4
     - ctest --verbose
-    - cd ${TRAVIS_BUILD_DIR} && go test ./test -bench . -cpu 1 -benchmem -benchtime 100ms && go test ./test  -run=TestRaceConditions -race
+    - cd ${TRAVIS_BUILD_DIR} && go test -tags local_rx_build -mod=readonly ./test -bench . -cpu 1 -benchmem -benchtime 100ms && cat go.mod && cat go.sum && go test -tags local_rx_build -mod=readonly ./test  -run=TestRaceConditions -race
   after_script:
     - find . -name CMakeFiles | xargs -n1 rm -rf
 
@@ -51,7 +52,7 @@ git:
   script:
     - cd ${BUILD_DIR} && cmake ${CMAKE_OPTS} ${TRAVIS_BUILD_DIR} && make -j4
     - ctest --verbose
-    - cd ${TRAVIS_BUILD_DIR} && CGO_LDFLAGS=-fsanitize=address go test ./test  -bench . -cpu 1 -benchmem -benchtime 100ms -seedcount 50000
+    - cd ${TRAVIS_BUILD_DIR} && CGO_LDFLAGS=-fsanitize=address go test -tags local_rx_build -mod=readonly ./test  -bench . -cpu 1 -benchmem -benchtime 100ms -seedcount 50000 -timeout 12m
 
 .stage_build_linux_tsan_template: &stage_build_linux_tsan_template
   <<: *stage_build_linux_template
@@ -70,10 +71,12 @@ git:
 
 .stage_build_osx_template: &stage_build_osx_template
   <<: *stage_build_linux_template
+  env:
+    - CMAKE_OPTS="-DCMAKE_BUILD_TYPE=Release -DENABLE_LIBUNWIND=Off -DWITH_PYTHON=Off"
   os: osx
   osx_image: xcode9.3
   install:
-    - brew update > /dev/null && brew install gperftools leveldb snappy flex && brew upgrade python
+    - brew update > /dev/null && brew install gperftools leveldb snappy flex
     - sudo sysctl -w kern.maxfiles=20480 && sudo sysctl -w kern.maxfilesperproc=20480 && sudo launchctl limit maxfiles 20480
     - ulimit -S -n 20480 && ulimit -n
 

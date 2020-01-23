@@ -13,6 +13,7 @@
 #include <iostream>
 #include "core/cjson/jsonbuilder.h"
 #include "core/queryresults/tableviewbuilder.h"
+#include "tableviewscroller.h"
 #include "tools/fsops.h"
 #include "tools/jsontools.h"
 #include "tools/stringstools.h"
@@ -121,7 +122,13 @@ Error CommandsProcessor<DBInterface>::commandSelect(const string& command) {
 			if (outputType == kOutputModeTable) {
 				auto isCanceled = [this]() -> bool { return cancelCtx_.IsCancelled(); };
 				reindexer::TableViewBuilder<typename DBInterface::QueryResultsT> tableResultsBuilder(results);
-				tableResultsBuilder.Build(output_(), isCanceled);
+				if (outFileName_.empty() && !reindexer::isStdoutRedirected()) {
+					TableViewScroller<typename DBInterface::QueryResultsT> resultsScroller(results, tableResultsBuilder,
+																						   reindexer::getTerminalSize().height - 1);
+					resultsScroller.Scroll(output_, isCanceled);
+				} else {
+					tableResultsBuilder.Build(output_(), isCanceled);
+				}
 			} else {
 				output_() << "[" << std::endl;
 				err = queryResultsToJson(output_(), results, isWALQuery);
@@ -549,12 +556,16 @@ Error CommandsProcessor<DBInterface>::queryResultsToJson(ostream& o, const typen
 	if (cancelCtx_.IsCancelled()) return errOK;
 	WrSerializer ser;
 	size_t i = 0;
+	bool scrollable = outFileName_.empty() && !reindexer::isStdoutRedirected();
+	reindexer::TerminalSize terminalSize;
+	if (scrollable) {
+		terminalSize = reindexer::getTerminalSize();
+		scrollable = (int(r.Count()) > terminalSize.height);
+	}
 	bool prettyPrint = variables_[kVariableOutput] == kOutputModePretty;
 	for (auto it : r) {
 		if (cancelCtx_.IsCancelled()) break;
-
 		if (isWALQuery) ser << '#' << it.GetLSN() << ' ';
-
 		if (it.IsRaw()) {
 			reindexer::WALRecord rec(it.GetRaw());
 			rec.Dump(ser, [this, &r](string_view cjson) {
@@ -575,12 +586,17 @@ Error CommandsProcessor<DBInterface>::queryResultsToJson(ostream& o, const typen
 		}
 		if ((++i != r.Count()) && !isWALQuery) ser << ',';
 		ser << '\n';
-		if (ser.Len() > 0x100000 || prettyPrint) {
+		if ((ser.Len() > 0x100000) || prettyPrint || scrollable) {
+			if (scrollable && (i % (terminalSize.height - 1) == 0)) {
+				WaitEnterToContinue(o, terminalSize.width, [this]() -> bool { return cancelCtx_.IsCancelled(); });
+			}
 			o << ser.Slice();
 			ser.Reset();
 		}
 	}
-	o << ser.Slice();
+	if (!cancelCtx_.IsCancelled()) {
+		o << ser.Slice();
+	}
 	return errOK;
 }
 
@@ -659,7 +675,7 @@ void CommandsProcessor<DBInterface>::addCommandsSuggestions(std::string const& c
 		for (const commandDefinition& cmdDef : cmds_) {
 			if (token.empty() || reindexer::isBlank(token) ||
 				((token.length() < cmdDef.command.length()) && reindexer::checkIfStartsWith(token, cmdDef.command))) {
-				suggestions.emplace_back(cmdDef.command);
+				suggestions.emplace_back(cmdDef.command[0] == '\\' ? cmdDef.command.substr(1) : cmdDef.command);
 			}
 		}
 	}
@@ -670,7 +686,7 @@ template <typename T>
 void CommandsProcessor<DBInterface>::setCompletionCallback(T& rx, void (T::*set_completion_callback)(new_v_callback_t const&)) {
 	(rx.*set_completion_callback)([this](std::string const& input, int) -> replxx::Replxx::completions_t {
 		std::vector<string> completions;
-		db_.GetSqlSuggestions(input, input.empty() ? 0 : input.length() - 1, completions);
+		if (!input.empty() && input[0] != '\\') db_.GetSqlSuggestions(input, input.length() - 1, completions);
 		if (completions.empty()) {
 			addCommandsSuggestions(input, completions);
 		}
@@ -686,7 +702,7 @@ void CommandsProcessor<DBInterface>::setCompletionCallback(T& rx, void (T::*set_
 	(rx.*set_completion_callback)(
 		[this](std::string const& input, int, void*) -> replxx::Replxx::completions_t {
 			std::vector<string> completions;
-			db_.GetSqlSuggestions(input, input.empty() ? 0 : input.length() - 1, completions);
+			if (!input.empty() && input[0] != '\\') db_.GetSqlSuggestions(input, input.length() - 1, completions);
 			if (completions.empty()) {
 				addCommandsSuggestions(input, completions);
 			}
@@ -750,9 +766,9 @@ bool CommandsProcessor<DBInterface>::Interactive() {
 template <typename DBInterface>
 bool CommandsProcessor<DBInterface>::FromFile() {
 	bool wasError = false;
-	std::ifstream infile(fileName_);
+	std::ifstream infile(inFileName_);
 	if (!infile) {
-		std::cerr << "ERROR: Can't open " << fileName_ << std::endl;
+		std::cerr << "ERROR: Can't open " << inFileName_ << std::endl;
 		return false;
 	}
 
@@ -783,7 +799,7 @@ bool CommandsProcessor<DBInterface>::Run() {
 		}
 		return true;
 	}
-	if (!fileName_.empty()) {
+	if (!inFileName_.empty()) {
 		return FromFile();
 	} else {
 		return Interactive();
@@ -810,36 +826,6 @@ Error CommandsProcessor<reindexer::Reindexer>::stop() {
 	return Error();
 }
 
-template <typename DBInterface>
-Error CommandsProcessor<DBInterface>::commandProcessDatabases(const string& command) {
-	LineParser parser(command);
-	parser.NextToken();
-	string_view subCommand = parser.NextToken();
-	if (subCommand == "list") {
-		if (uri_.scheme() == "cproto") {
-			vector<string> dbList;
-			Error err = getAvailableDatabases(dbList);
-			if (!err.ok()) return err;
-			for (const string& dbName : dbList) std::cout << dbName << std::endl;
-		} else {
-			std::cout << uri_.path() << std::endl;
-		}
-		return Error();
-	} else if (subCommand == "use") {
-		if (uri_.scheme() == "cproto") {
-			string currentDsn = getCurrentDsn() + std::string(parser.NextToken());
-			Error err = stop();
-			if (!err.ok()) return err;
-			err = db_.Connect(currentDsn);
-			if (err.ok()) std::cout << "Succesfully connected to " << currentDsn << std::endl;
-			return err;
-		} else {
-			return Error(errLogic, "Switching between databases is only possible with 'cproto' connection");
-		}
-	}
-	return Error(errNotValid, "Invalid command");
-}
-
 template <>
 Error CommandsProcessor<reindexer::client::Reindexer>::getAvailableDatabases(vector<string>& dbList) {
 	return db_.EnumDatabases(dbList);
@@ -848,6 +834,55 @@ Error CommandsProcessor<reindexer::client::Reindexer>::getAvailableDatabases(vec
 template <>
 Error CommandsProcessor<reindexer::Reindexer>::getAvailableDatabases(vector<string>&) {
 	return Error();
+}
+
+template <>
+Error CommandsProcessor<reindexer::client::Reindexer>::commandProcessDatabases(const string& command) {
+	LineParser parser(command);
+	parser.NextToken();
+	string_view subCommand = parser.NextToken();
+	assert(uri_.scheme() == "cproto");
+	if (subCommand == "list") {
+		vector<string> dbList;
+		Error err = getAvailableDatabases(dbList);
+		if (!err.ok()) return err;
+		for (const string& dbName : dbList) std::cout << dbName << std::endl;
+		return Error();
+	} else if (subCommand == "use") {
+		string currentDsn = getCurrentDsn() + std::string(parser.NextToken());
+		Error err = stop();
+		if (!err.ok()) return err;
+		err = db_.Connect(currentDsn);
+		if (err.ok()) err = db_.Status();
+		if (err.ok()) std::cout << "Succesfully connected to " << currentDsn << std::endl;
+		return err;
+	} else if (subCommand == "create") {
+		auto dbName = parser.NextToken();
+		string currentDsn = getCurrentDsn() + std::string(dbName);
+		Error err = stop();
+		if (!err.ok()) return err;
+		std::cout << "Creating database '" << dbName << "'" << std::endl;
+		err = db_.Connect(currentDsn, reindexer::client::ConnectOpts().CreateDBIfMissing());
+		if (!err.ok()) {
+			std::cout << "Error on database '" << dbName << "' creation" << std::endl;
+			return err;
+		}
+		std::vector<std::string> dbNames;
+		err = db_.EnumDatabases(dbNames);
+		if (std::find(dbNames.begin(), dbNames.end(), std::string(dbName)) != dbNames.end()) {
+			std::cout << "Succesfully created database '" << dbName << "'" << std::endl;
+		} else {
+			std::cout << "Error on database '" << dbName << "' creation" << std::endl;
+		}
+		return err;
+	}
+	return Error(errNotValid, "Invalid command");
+}
+
+template <>
+Error CommandsProcessor<reindexer::Reindexer>::commandProcessDatabases(const string& command) {
+	(void)command;
+	return Error(errNotValid, "Database processing commands are not supported in builtin mode");
 }
 
 template class CommandsProcessor<reindexer::client::Reindexer>;

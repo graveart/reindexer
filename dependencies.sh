@@ -32,11 +32,11 @@ error_msg() {
 
 # declare dependencies arrays for systems
 osx_deps="gperftools leveldb snappy cmake git"
-centos8_debs="gcc-c++ make findutils curl tar unzip rpm-build rpmdevtools git"
-centos7_debs="gcc-c++ make snappy-devel gperftools-devel findutils curl tar unzip rpm-build rpmdevtools git"
-centos6_debs="centos-release-scl devtoolset-7-gcc devtoolset-7-gcc-c++ make snappy-devel gperftools-devel findutils curl tar unzip rpm-build git"
+centos8_debs="gcc-c++ make snappy-devel leveldb-devel findutils curl tar unzip rpm-build rpmdevtools git"
+centos7_debs="gcc-c++ make snappy-devel leveldb-devel gperftools-devel findutils curl tar unzip rpm-build rpmdevtools git"
+centos6_debs="centos-release-scl devtoolset-7-gcc devtoolset-7-gcc-c++ make snappy-devel leveldb-devel gperftools-devel findutils curl tar unzip rpm-build git"
 debian_debs="build-essential g++ libgoogle-perftools-dev libsnappy-dev libleveldb-dev make curl unzip git"
-alpine_apks="g++ snappy-dev libexecinfo-dev make curl cmake unzip git"
+alpine_apks="g++ snappy-dev leveldb-devel libexecinfo-dev make curl cmake unzip git"
 
 cmake_installed () {
     info_msg "Check for installed cmake ..... "

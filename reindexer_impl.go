@@ -87,8 +87,8 @@ func newReindexImpl(dsn string, options ...interface{}) *reindexerImpl {
 }
 
 // getStatus will return current db status
-func (db *reindexerImpl) getStatus() bindings.Status {
-	status := db.binding.Status()
+func (db *reindexerImpl) getStatus(ctx context.Context) bindings.Status {
+	status := db.binding.Status(ctx)
 	status.Err = db.status
 	return status
 }
@@ -184,7 +184,8 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 	haveDeepCopy := false
 
 	if !opts.disableObjCache {
-		copier, haveDeepCopy := reflect.New(t).Interface().(DeepCopy)
+		var copier DeepCopy
+		copier, haveDeepCopy = reflect.New(t).Interface().(DeepCopy)
 		if haveDeepCopy {
 			cpy := copier.DeepCopy()
 			cpyType := reflect.TypeOf(reflect.Indirect(reflect.ValueOf(cpy)).Interface())
