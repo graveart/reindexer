@@ -1,6 +1,6 @@
 module github.com/restream/reindexer
 
-go 1.13
+go 1.11
 
 require (
 	github.com/onsi/ginkgo v1.11.0
