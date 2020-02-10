@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/cjson"
 )
 
 const (
@@ -34,11 +34,11 @@ type NetCProto struct {
 	serverStartTime  int64
 	retryAttempts    bindings.OptionRetryAttempts
 	timeouts         bindings.OptionTimeouts
+	connectOpts      bindings.OptionConnect
 	termCh           chan struct{}
 }
 
 func (binding *NetCProto) Init(u *url.URL, options ...interface{}) (err error) {
-
 	connPoolSize := defConnPoolSize
 
 	for _, option := range options {
@@ -49,6 +49,8 @@ func (binding *NetCProto) Init(u *url.URL, options ...interface{}) (err error) {
 			binding.retryAttempts = v
 		case bindings.OptionTimeouts:
 			binding.timeouts = v
+		case bindings.OptionConnect:
+			binding.connectOpts = v
 		default:
 			fmt.Printf("Unknown cproto option: %v\n", option)
 		}
@@ -72,7 +74,7 @@ func (binding *NetCProto) Init(u *url.URL, options ...interface{}) (err error) {
 	for i := 0; i < connPoolSize; i++ {
 		go func(binding *NetCProto, wg *sync.WaitGroup) {
 			defer wg.Done()
-			conn, _ := newConnection(binding)
+			conn, _ := newConnection(context.TODO(), binding)
 			binding.pool <- conn
 		}(binding, &wg)
 	}
@@ -269,6 +271,10 @@ func (binding *NetCProto) TruncateNamespace(ctx context.Context, namespace strin
 	return binding.rpcCallNoResults(ctx, opWr, cmdTruncateNamespace, namespace)
 }
 
+func (binding *NetCProto) RenameNamespace(ctx context.Context, srcNamespace string, dstNamespace string) error {
+	return binding.rpcCallNoResults(ctx, opWr, cmdRenameNamespace, srcNamespace, dstNamespace)
+}
+
 func (binding *NetCProto) AddIndex(ctx context.Context, namespace string, indexDef bindings.IndexDef) error {
 	bIndexDef, err := json.Marshal(indexDef)
 	if err != nil {
@@ -392,10 +398,10 @@ func (binding *NetCProto) EnableStorage(ctx context.Context, path string) error 
 	return nil
 }
 
-func (binding *NetCProto) Status() bindings.Status {
+func (binding *NetCProto) Status(ctx context.Context) bindings.Status {
 	var totalQueueSize, totalQueueUsage, connUsage int
 	for i := 0; i < cap(binding.pool); i++ {
-		conn, _ := binding.getConn()
+		conn, _ := binding.getConn(ctx)
 		totalQueueSize += cap(conn.seqs)
 		queueUsage := cap(conn.seqs) - len(conn.seqs)
 		totalQueueUsage += queueUsage
@@ -425,12 +431,16 @@ func (binding *NetCProto) Finalize() error {
 	return nil
 }
 
-func (binding *NetCProto) getConn() (conn *connection, err error) {
-	conn = <-binding.pool
-	if conn.hasError() {
-		conn, err = newConnection(binding)
+func (binding *NetCProto) getConn(ctx context.Context) (conn *connection, err error) {
+	select {
+	case conn = <-binding.pool:
+		if conn.hasError() {
+			conn, err = newConnection(ctx, binding)
+		}
+		binding.pool <- conn
+	case <-ctx.Done():
+		err = ctx.Err()
 	}
-	binding.pool <- conn
 	return
 }
 
@@ -444,14 +454,19 @@ func (binding *NetCProto) rpcCall(ctx context.Context, op int, cmd int, args ...
 	}
 	for i := 0; i < attempts; i++ {
 		var conn *connection
-		if conn, err = binding.getConn(); err == nil {
+		if conn, err = binding.getConn(ctx); err == nil {
 			if buf, err = conn.rpcCall(ctx, cmd, uint32(binding.timeouts.RequestTimeout/time.Second), args...); err == nil {
 				return
 			}
 		}
 		switch err.(type) {
 		case net.Error, *net.OpError:
-			time.Sleep(time.Second * time.Duration(i))
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			case <-time.After(time.Second * time.Duration(i)):
+			}
 		default:
 			return
 		}
@@ -479,7 +494,7 @@ func (binding *NetCProto) pinger() {
 		if ticksCount == pingerTimeoutSec {
 			ticksCount = 0
 			for i := 0; i < cap(binding.pool); i++ {
-				conn, _ := binding.getConn()
+				conn, _ := binding.getConn(context.TODO())
 				if !conn.hasError() && conn.lastReadTime().Add(timeout).Before(now) {
 					buf, _ := conn.rpcCall(context.TODO(), cmdPing, uint32(binding.timeouts.RequestTimeout*time.Second))
 					buf.Free()

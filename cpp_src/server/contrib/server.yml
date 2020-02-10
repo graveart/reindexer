@@ -5,7 +5,7 @@ info:
     Reindexer's goal is to provide fast search with complex queries.
     The Reindexer is compact and fast. It has not heavy dependencies. Complete reindexer docker image with all libraries and web interface size is just 15MB.
     Reindexer is fast.
-  version: "2.3.4"
+  version: "2.5.5"
   title: "Reindexer REST API"
   license:
     name: "Apache 2.0"
@@ -253,6 +253,42 @@ paths:
           description: "Invalid arguments supplied"
           schema:
             $ref: "#/definitions/StatusResponse"
+
+  /db/{database}/namespaces/{name}/rename/{newname}:
+    get:
+      tags:
+      - "namespaces"
+      summary: "Rename namespace"
+      description: |
+        This operation will rename namespace.
+      operationId: "renameNamespace"
+      parameters:
+      - name: "database"
+        in: "path"
+        type: "string"
+        description: "Database name"
+        required: true
+      - name: "name"
+        in: "path"
+        type: "string"
+        description: "Namespace name"
+        required: true
+      - name: "newname"
+        in: "path"
+        type: "string"
+        description: "Namespace new name"
+        required: true
+
+      responses:
+        200:
+          description: "successful operation"
+          schema:
+            $ref: "#/definitions/StatusResponse"
+        400:
+          description: "Invalid arguments supplied"
+          schema:
+            $ref: "#/definitions/StatusResponse"
+
 
   /db/{database}/namespaces/{name}/metalist:
     get:
@@ -1249,7 +1285,9 @@ definitions:
         type: "integer"
       distinct:
         description: "Distinct field/index name. Results will contain's document with distinct field value"
-        type: "string"
+        type: "array"
+        items:
+          type: "string"
       req_total:
         description: "Ask query to calculate total documents, match condition"
         type: "string"
@@ -1289,6 +1327,11 @@ definitions:
         type: "array"
         items:
           $ref: "#/definitions/AggregationsDef"
+      equal_positions:
+        type: "array"
+        description: "Array fields to be searched with equal array indexes"
+        items:
+          type: "string"
       explain:
         description: "Add query execution explain information"
         type: "boolean"
@@ -1671,6 +1714,11 @@ definitions:
         description: "Aggregation functions results"
         items:
           $ref: "#/definitions/AggregationResDef"
+      equal_position:
+        type: "array"
+        description: "Array fields to be searched with equal array indexes"
+        items:
+          type: "string"
       columns:
         type: "array"
         description: "Columns for table output"
@@ -1986,6 +2034,31 @@ definitions:
       error_message:
         type: "string"
         description: "Error message of last replication"
+      status:
+        type: "string"
+        enum:
+          - idle
+          - error
+          - fatal
+          - syncing
+          - none
+        description: "Current replication status for this namespace"
+      master_state:
+        type: "object"
+        description: "State of current master namespace"
+        properties:
+           data_hash:
+             type: "integer"
+             description: "Hashsum of all records in namespace"
+           last_lsn:
+             type: "integer"
+             description: "Last Log Sequence Number (LSN) of applied namespace modification"
+           updated_unix_nano:
+             type: "integer"
+             description: "Last update time"
+           data_count:
+             type: "integer"
+             description: "Items count in master namespace"
       incarnation_counter:
         type: "integer"
         description: "Number of storage's master <-> slave switches"
@@ -1998,6 +2071,12 @@ definitions:
       wal_size:
         type: "integer"
         description: "Total memory consumption of Write Ahead Log (WAL)"
+      updated_unix_nano:
+        type: "integer"
+        description: "Last update time"
+      data_count:
+        type: "integer"
+        description: "Items count in namespace"
 
   DatabasePerfStats:
     type: "object"

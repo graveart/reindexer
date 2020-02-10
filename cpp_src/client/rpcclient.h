@@ -37,7 +37,7 @@ public:
 	RPCClient(const ReindexerConfig &config);
 	~RPCClient();
 
-	Error Connect(const string &dsn);
+	Error Connect(const string &dsn, const client::ConnectOpts &opts);
 	Error Stop();
 
 	Error OpenNamespace(string_view nsName, const InternalRdxContext &ctx,
@@ -46,10 +46,11 @@ public:
 	Error CloseNamespace(string_view nsName, const InternalRdxContext &ctx);
 	Error DropNamespace(string_view nsName, const InternalRdxContext &ctx);
 	Error TruncateNamespace(string_view nsName, const InternalRdxContext &ctx);
+	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx);
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx);
 	Error UpdateIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx);
 	Error DropIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx);
-	Error EnumNamespaces(vector<NamespaceDef> &defs, bool bEnumAll, const InternalRdxContext &ctx);
+	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts, const InternalRdxContext &ctx);
 	Error EnumDatabases(vector<string> &dbList, const InternalRdxContext &ctx);
 	Error Insert(string_view nsName, client::Item &item, const InternalRdxContext &ctx);
 	Error Update(string_view nsName, client::Item &item, const InternalRdxContext &ctx);
@@ -70,6 +71,7 @@ public:
 	Error EnumMeta(string_view nsName, vector<string> &keys, const InternalRdxContext &ctx);
 	Error SubscribeUpdates(IUpdatesObserver *observer, bool subscribe);
 	Error GetSqlSuggestions(string_view query, int pos, std::vector<std::string> &suggests);
+	Error Status();
 
 private:
 	Error selectImpl(string_view query, QueryResults &result, cproto::ClientConnection *, seconds netTimeout,
@@ -80,7 +82,7 @@ private:
 	Error modifyItemAsync(string_view nsName, Item *item, int mode, cproto::ClientConnection *, seconds netTimeout,
 						  const InternalRdxContext &ctx);
 	Namespace *getNamespace(string_view nsName);
-	void run(int thIdx);
+	void run(int thIdx, const ConnectOpts &opts);
 	void onUpdates(net::cproto::RPCAnswer &ans, cproto::ClientConnection *conn);
 
 	void checkSubscribes();

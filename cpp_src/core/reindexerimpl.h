@@ -5,7 +5,7 @@
 #include <string>
 #include <thread>
 
-#include "core/namespace.h"
+#include "core/nscloner.h"
 #include "core/nsselecter/nsselecter.h"
 #include "core/rdxcontext.h"
 #include "dbconfig.h"
@@ -27,6 +27,12 @@ class Replicator;
 class ReindexerImpl {
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Reindexer>;
 	using StorageMutex = MarkedMutex<shared_timed_mutex, MutexMark::ReindexerStorage>;
+	struct NsLockerItem {
+		NsLockerItem(Namespace::Ptr ins = {}) : ns(std::move(ins)), count(1) {}
+		Namespace::Ptr ns;
+		smart_lock<Namespace::Mutex> mtx;
+		unsigned count = 1;
+	};
 
 public:
 	using Completion = std::function<void(const Error &err)>;
@@ -42,12 +48,11 @@ public:
 	Error CloseNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error DropNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error TruncateNamespace(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
-	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, bool requireDst = false,
-						  const InternalRdxContext &ctx = InternalRdxContext());
+	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
 	Error UpdateIndex(string_view nsName, const IndexDef &indexDef, const InternalRdxContext &ctx = InternalRdxContext());
 	Error DropIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
-	Error EnumNamespaces(vector<NamespaceDef> &defs, bool bEnumAll, const InternalRdxContext &ctx = InternalRdxContext());
+	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts, const InternalRdxContext &ctx = InternalRdxContext());
 	Error Insert(string_view nsName, Item &item, const InternalRdxContext &ctx = InternalRdxContext());
 	Error Update(string_view nsName, Item &item, const InternalRdxContext &ctx = InternalRdxContext());
 	Error Update(const Query &query, QueryResults &result, const InternalRdxContext &ctx = InternalRdxContext());
@@ -60,7 +65,7 @@ public:
 	Item NewItem(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 
 	Transaction NewTransaction(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
-	Error CommitTransaction(Transaction &tr, const InternalRdxContext &ctx = InternalRdxContext());
+	Error CommitTransaction(Transaction &tr, QueryResults &result, const InternalRdxContext &ctx = InternalRdxContext());
 	Error RollBackTransaction(Transaction &tr);
 
 	Error GetMeta(string_view nsName, const string &key, string &data, const InternalRdxContext &ctx = InternalRdxContext());
@@ -70,6 +75,7 @@ public:
 	Error SubscribeUpdates(IUpdatesObserver *observer, bool subscribe);
 	Error GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string> &suggestions,
 							const InternalRdxContext &ctx = InternalRdxContext());
+	Error Status();
 
 	bool NeedTraceActivity() { return configProvider_.GetProfilingConfig().activityStats; }
 
@@ -80,7 +86,7 @@ protected:
 	typedef contexted_unique_lock<StorageMutex, const RdxContext> UStorageLock;
 
 	template <typename Context>
-	class NsLocker : public h_vector<pair<Namespace::Ptr, smart_lock<Namespace::Mutex>>, 4> {
+	class NsLocker : private h_vector<NsLockerItem, 4> {
 	public:
 		NsLocker(const Context &context) : context_(context) {}
 		~NsLocker() {
@@ -91,25 +97,36 @@ protected:
 
 		void Add(Namespace::Ptr ns) {
 			assert(!locked_);
-			for (auto it = begin(); it != end(); it++)
-				if (it->first.get() == ns.get()) return;
+			for (auto it = begin(); it != end(); ++it) {
+				if (it->ns.get() == ns.get()) {
+					++(it->count);
+					return;
+				}
+			}
 
-			push_back({ns, smart_lock<Namespace::Mutex>()});
+			emplace_back(ns);
 			return;
 		}
-		void Lock() {
-			std::sort(begin(), end(),
-					  [](const pair<Namespace::Ptr, smart_lock<Namespace::Mutex>> &lhs,
-						 const pair<Namespace::Ptr, smart_lock<Namespace::Mutex>> &rhs) { return lhs.first.get() < rhs.first.get(); });
+		void Delete(Namespace::Ptr ns) {
 			for (auto it = begin(); it != end(); ++it) {
-				it->second = smart_lock<Namespace::Mutex>(it->first->mtx_, context_, false);
+				if (it->ns.get() == ns.get()) {
+					if (!--(it->count)) erase(it);
+					return;
+				}
+			}
+			assert(0);
+		}
+		void Lock() {
+			std::sort(begin(), end(), [](const NsLockerItem &lhs, const NsLockerItem &rhs) { return lhs.ns.get() < rhs.ns.get(); });
+			for (auto it = begin(); it != end(); ++it) {
+				it->mtx = smart_lock<Namespace::Mutex>(it->ns->mtx_, context_, false);
 			}
 			locked_ = true;
 		}
 
 		Namespace::Ptr Get(const string &name) {
 			for (auto it = begin(); it != end(); it++)
-				if (iequals(it->first->name_, name)) return it->first;
+				if (iequals(it->ns->name_, name)) return it->ns;
 			return nullptr;
 		}
 
@@ -119,13 +136,16 @@ protected:
 	};
 	template <typename T>
 	void doSelect(const Query &q, QueryResults &result, NsLocker<T> &locks, SelectFunctionsHolder &func, const RdxContext &ctx);
+	struct QueryResultsContext;
 	template <typename T>
 	JoinedSelectors prepareJoinedSelectors(const Query &q, QueryResults &result, NsLocker<T> &locks, SelectFunctionsHolder &func,
-										   const RdxContext &ctx);
+										   vector<QueryResultsContext> &, const RdxContext &ctx);
+	void prepareJoinResults(const Query &q, QueryResults &result);
+	static bool isPreResultValuesModeOptimizationAvailable(const Query &jItemQ, const Namespace::Ptr &jns);
 
-	void ensureDataLoaded(Namespace::Ptr &ns, const RdxContext &ctx);
+	void ensureDataLoaded(NSCloner::Ptr &ns, const RdxContext &ctx);
 
-	void syncSystemNamespaces(string_view nsName, const RdxContext &ctx);
+	void syncSystemNamespaces(string_view sysNsName, string_view filterNsName, const RdxContext &ctx);
 	void createSystemNamespaces();
 	void updateToSystemNamespace(string_view nsName, Item &, const RdxContext &ctx);
 	void updateConfigProvider(const gason::JsonNode &config);
@@ -137,12 +157,13 @@ protected:
 	void backgroundRoutine();
 	Error closeNamespace(string_view nsName, const RdxContext &ctx, bool dropStorage, bool enableDropSlave = false);
 
-	Namespace::Ptr getNamespace(string_view nsName, const RdxContext &ctx);
+	NSCloner::Ptr getNamespace(string_view nsName, const RdxContext &ctx);
+	NSCloner::Ptr getNamespaceNoThrow(string_view nsName, const RdxContext &ctx);
 
-	std::vector<std::pair<string, Namespace::Ptr>> getNamespaces(const RdxContext &ctx);
+	std::vector<std::pair<string, NSCloner::Ptr>> getNamespaces(const RdxContext &ctx);
 	std::vector<string> getNamespacesNames(const RdxContext &ctx);
 
-	fast_hash_map<string, Namespace::Ptr, nocase_hash_str, nocase_equal_str> namespaces_;
+	fast_hash_map<string, NSCloner::Ptr, nocase_hash_str, nocase_equal_str> namespaces_;
 
 	Mutex mtx_;
 	string storagePath_;
@@ -162,6 +183,8 @@ protected:
 	StorageMutex storageMtx_;
 	StorageType storageType_;
 	bool autorepairEnabled_;
+	std::atomic<bool> connected_;
+
 	friend class Replicator;
 	friend class TransactionImpl;
 };

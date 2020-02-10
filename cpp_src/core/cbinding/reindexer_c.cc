@@ -108,11 +108,12 @@ static void procces_packed_item(Item& item, int mode, int state_token, reindexer
 				err = item.FromJSON(string_view(reinterpret_cast<const char*>(data.data), data.len), 0, mode == ModeDelete);
 				break;
 			case FormatCJson:
-				if (item.GetStateToken() != state_token)
+				if (item.GetStateToken() != state_token) {
 					err = Error(errStateInvalidated, "stateToken mismatch:  %08X, need %08X. Can't process item", state_token,
 								item.GetStateToken());
-				else
+				} else {
 					err = item.FromCJSON(string_view(reinterpret_cast<const char*>(data.data), data.len), mode == ModeDelete);
+				}
 				break;
 			default:
 				err = Error(-1, "Invalid source item format %d", format);
@@ -147,7 +148,13 @@ reindexer_error reindexer_modify_item_packed_tx(uintptr_t rx, uintptr_t tr, rein
 	Error err = err_not_init;
 	auto item = trw->tr_.NewItem();
 	procces_packed_item(item, mode, state_token, data, precepts, format, err);
-
+	if (err.code() == errTagsMissmatch) {
+		item = db->NewItem(trw->tr_.GetName());
+		err = item.Status();
+		if (err.ok()) {
+			procces_packed_item(item, mode, state_token, data, precepts, format, err);
+		}
+	}
 	if (err.ok()) {
 		trw->tr_.Modify(std::move(item), ItemModifyMode(mode));
 	}
@@ -239,34 +246,28 @@ reindexer_error reindexer_rollback_transaction(uintptr_t rx, uintptr_t tr) {
 }
 
 reindexer_ret reindexer_commit_transaction(uintptr_t rx, uintptr_t tr, reindexer_ctx_info ctx_info) {
+	reindexer_resbuffer out = {0, 0, 0};
+
 	if (!rx) {
-		return ret2c(err_not_init, reindexer_resbuffer());
+		return ret2c(err_not_init, out);
 	}
-	auto trw = std::unique_ptr<TransactionWrapper>(reinterpret_cast<TransactionWrapper*>(tr));
+	std::unique_ptr<TransactionWrapper> trw(reinterpret_cast<TransactionWrapper*>(tr));
 	if (!trw) {
-		return ret2c(errOK, reindexer_resbuffer());
+		return ret2c(errOK, out);
+	}
+
+	std::unique_ptr<QueryResultsWrapper> res(new_results());
+	if (!res) {
+		return ret2c(err_too_many_queries, out);
 	}
 
 	CGORdxCtxKeeper rdxKeeper(rx, ctx_info, ctx_pool);
-	auto err = rdxKeeper.db().CommitTransaction(trw->tr_);
 
-	reindexer_resbuffer out = {0, 0, 0};
-
-	bool tmUpdated = false;
+	auto err = rdxKeeper.db().CommitTransaction(trw->tr_, *res);
 
 	if (err.ok()) {
-		QueryResultsWrapper* res = new_results();
-		if (!res) {
-			return ret2c(err_too_many_queries, out);
-		}
-		for (auto& step : trw->tr_.GetSteps()) {
-			if (!step.query_) {
-				res->AddItem(step.item_);
-				if (!tmUpdated) tmUpdated = step.item_.IsTagsUpdated();
-			}
-		}
 		int32_t ptVers = -1;
-		results2c(res, &out, 0, tmUpdated ? &ptVers : nullptr, tmUpdated ? 1 : 0);
+		results2c(res.release(), &out, 0, trw->tr_.IsTagsUpdated() ? &ptVers : nullptr, trw->tr_.IsTagsUpdated() ? 1 : 0);
 	}
 
 	return ret2c(err, out);
@@ -295,6 +296,16 @@ reindexer_error reindexer_truncate_namespace(uintptr_t rx, reindexer_string nsNa
 	if (rx) {
 		CGORdxCtxKeeper rdxKeeper(rx, ctx_info, ctx_pool);
 		res = rdxKeeper.db().TruncateNamespace(str2cv(nsName));
+	}
+	return error2c(res);
+}
+
+reindexer_error reindexer_rename_namespace(uintptr_t rx, reindexer_string srcNsName, reindexer_string dstNsName,
+										   reindexer_ctx_info ctx_info) {
+	Error res = err_not_init;
+	if (rx) {
+		CGORdxCtxKeeper rdxKeeper(rx, ctx_info, ctx_pool);
+		res = rdxKeeper.db().RenameNamespace(str2cv(srcNsName), str2c(dstNsName));
 	}
 	return error2c(res);
 }

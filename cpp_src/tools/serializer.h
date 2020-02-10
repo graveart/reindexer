@@ -94,7 +94,7 @@ public:
 		SliceHelper(WrSerializer *ser, size_t pos) : ser_(ser), pos_(pos) {}
 		SliceHelper(const WrSerializer &) = delete;
 		SliceHelper operator=(const WrSerializer &) = delete;
-		SliceHelper(SliceHelper &&other) noexcept : ser_(other.ser_), pos_(other.pos_) { other.ser_ = nullptr; };
+		SliceHelper(SliceHelper &&other) noexcept : ser_(other.ser_), pos_(other.pos_) { other.ser_ = nullptr; }
 		~SliceHelper();
 
 		WrSerializer *ser_;
@@ -183,6 +183,7 @@ public:
 	// Buffer manipulation functions
 	void Write(string_view buf);
 	uint8_t *Buf() const;
+	std::unique_ptr<uint8_t[]> DetachBuf();
 	chunk DetachChunk();
 	void Reset() { len_ = 0; }
 	size_t Len() const { return len_; }

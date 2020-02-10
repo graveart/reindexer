@@ -1,20 +1,25 @@
 #pragma once
+#include "core/itemimpl.h"
+#include "payload/fieldsset.h"
 #include "transaction.h"
 
 namespace reindexer {
 
 class TransactionStep {
 public:
-	TransactionStep(Item &&item, ItemModifyMode status) : item_(move(item)), status_(status), query_(nullptr) {}
-	TransactionStep(Query &&query) : status_(ModeUpdate), query_(new Query(std::move(query))) {}
+	TransactionStep(Item &&item, ItemModifyMode modifyMode) : itemData_(move(*item.impl_)), modifyMode_(modifyMode), query_(nullptr) {
+		delete item.impl_;
+		item.impl_ = nullptr;
+	}
+	TransactionStep(Query &&query) : modifyMode_(ModeUpdate), query_(new Query(std::move(query))) {}
 
 	TransactionStep(const TransactionStep &) = delete;
 	TransactionStep &operator=(const TransactionStep &) = delete;
 	TransactionStep(TransactionStep && /*rhs*/) noexcept = default;
 	TransactionStep &operator=(TransactionStep && /*rhs*/) = default;
 
-	Item item_;
-	ItemModifyMode status_;
+	ItemImplRawData itemData_;
+	ItemModifyMode modifyMode_;
 	std::unique_ptr<Query> query_;
 };
 
@@ -31,6 +36,7 @@ public:
 
 	void UpdateTagsMatcherFromItem(ItemImpl *ritem);
 	Item NewItem();
+	Item GetItem(TransactionStep &&st);
 
 	const std::string &GetName() { return nsName_; }
 
@@ -42,6 +48,7 @@ public:
 
 	std::vector<TransactionStep> steps_;
 	std::string nsName_;
+	bool tagsUpdated_;
 };
 
 }  // namespace reindexer

@@ -1,13 +1,16 @@
 
 #include "walrecord.h"
 #include "core/cjson/baseencoder.h"
+#include "core/transactionimpl.h"
 #include "tools/serializer.h"
 
 namespace reindexer {
 
+enum { TxBit = (1 << 7) };
+
 void PackedWALRecord::Pack(const WALRecord &rec) {
 	WrSerializer ser;
-	ser.PutVarUint(rec.type);
+	ser.PutVarUint(rec.inTransaction ? (rec.type | TxBit) : rec.type);
 	switch (rec.type) {
 		case WalItemUpdate:
 			ser.PutUInt32(rec.id);
@@ -17,6 +20,7 @@ void PackedWALRecord::Pack(const WALRecord &rec) {
 		case WalIndexDrop:
 		case WalIndexUpdate:
 		case WalReplState:
+		case WalNamespaceRename:
 			ser.PutVString(rec.data);
 			break;
 		case WalPutMeta:
@@ -29,13 +33,18 @@ void PackedWALRecord::Pack(const WALRecord &rec) {
 			ser.PutVarUint(rec.itemModify.tmVersion);
 			break;
 		case WalEmpty:
+			ser.Reset();
+			break;
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
+		case WalInitTransaction:
+		case WalCommitTransaction:
 			break;
 		default:
 			fprintf(stderr, "Unexpected WAL rec type %d\n", int(rec.type));
 			std::abort();
 	}
+	clear();
 	assign(ser.Buf(), ser.Buf() + ser.Len());
 }
 
@@ -45,7 +54,14 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 		return;
 	}
 	Serializer ser(packed.data(), packed.size());
-	type = WALRecType(ser.GetVarUint());
+	const unsigned unpackedType = ser.GetVarUint();
+	if (unpackedType & TxBit) {
+		inTransaction = true;
+		type = static_cast<WALRecType>(unpackedType ^ TxBit);
+	} else {
+		inTransaction = false;
+		type = static_cast<WALRecType>(unpackedType);
+	}
 	switch (type) {
 		case WalItemUpdate:
 			id = ser.GetUInt32();
@@ -55,6 +71,7 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 		case WalIndexDrop:
 		case WalIndexUpdate:
 		case WalReplState:
+		case WalNamespaceRename:
 			data = ser.GetVString();
 			break;
 		case WalPutMeta:
@@ -69,6 +86,8 @@ WALRecord::WALRecord(span<uint8_t> packed) {
 		case WalEmpty:
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
+		case WalInitTransaction:
+		case WalCommitTransaction:
 			break;
 		default:
 			fprintf(stderr, "Unexpected WAL rec type %d\n", int(type));
@@ -98,22 +117,33 @@ string_view wrecType2Str(WALRecType t) {
 			return "WalNamespaceAdd"_sv;
 		case WalNamespaceDrop:
 			return "WalNamespaceDrop"_sv;
+		case WalNamespaceRename:
+			return "WalNamespaceRename"_sv;
 		case WalItemModify:
 			return "WalItemMofify"_sv;
+		case WalInitTransaction:
+			return "WalInitTransaction"_sv;
+		case WalCommitTransaction:
+			return "WalCommitTransaction"_sv;
 		default:
-			return "<Unknown"_sv;
+			return "<Unknown>"_sv;
 	}
 }
 
 WrSerializer &WALRecord::Dump(WrSerializer &ser, std::function<string(string_view)> cjsonViewer) const {
 	ser << wrecType2Str(type);
+	if (inTransaction) ser << " InTransaction";
 	switch (type) {
 		case WalEmpty:
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
+		case WalInitTransaction:
+		case WalCommitTransaction:
 			return ser;
 		case WalItemUpdate:
 			return ser << " rowId=" << id;
+		case WalNamespaceRename:
+			return ser << ' ' << data;
 		case WalUpdateQuery:
 		case WalIndexAdd:
 		case WalIndexDrop:
@@ -133,17 +163,23 @@ WrSerializer &WALRecord::Dump(WrSerializer &ser, std::function<string(string_vie
 
 void WALRecord::GetJSON(JsonBuilder &jb, std::function<string(string_view)> cjsonViewer) const {
 	jb.Put("type", wrecType2Str(type));
+	jb.Put("in_transaction", inTransaction);
 
 	switch (type) {
 		case WalEmpty:
 		case WalNamespaceAdd:
 		case WalNamespaceDrop:
+		case WalInitTransaction:
+		case WalCommitTransaction:
 			return;
 		case WalItemUpdate:
 			jb.Put("row_id", id);
 			return;
 		case WalUpdateQuery:
 			jb.Put("query", data);
+			return;
+		case WalNamespaceRename:
+			jb.Put("dst_ns_name", data);
 			return;
 		case WalIndexAdd:
 		case WalIndexDrop:
@@ -156,7 +192,7 @@ void WALRecord::GetJSON(JsonBuilder &jb, std::function<string(string_view)> cjso
 		case WalPutMeta:
 			jb.Put("key", putMeta.key);
 			jb.Put("value", putMeta.value);
-			break;
+			return;
 		case WalItemModify:
 			jb.Put("mode", itemModify.modifyMode);
 			jb.Raw("item", cjsonViewer(itemModify.itemCJson));

@@ -41,6 +41,24 @@ void Transaction::Modify(Query &&query) {
 
 Item Transaction::NewItem() { return impl_->NewItem(); }
 
-vector<TransactionStep> &Transaction::GetSteps() { return impl_->steps_; }
+vector<TransactionStep> &Transaction::GetSteps() {
+	assert(impl_);
+	return impl_->steps_;
+}
+
+const vector<TransactionStep> &Transaction::GetSteps() const {
+	assert(impl_);
+	return impl_->steps_;
+}
+
+Item Transaction::GetItem(TransactionStep &&st) {
+	assert(impl_);
+	return impl_->GetItem(std::move(st));
+}
+
+bool Transaction::IsTagsUpdated() const {
+	assert(impl_);
+	return impl_->tagsUpdated_;
+}
 
 }  // namespace reindexer

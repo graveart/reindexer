@@ -1,24 +1,23 @@
 #pragma once
 
-#include <unordered_map>
 #include "aggregationresult.h"
 #include "core/item.h"
 #include "core/payload/payloadvalue.h"
 #include "core/rdxcontext.h"
-#include "estl/h_vector.h"
 #include "itemref.h"
-#include "joinresults.h"
 #include "tools/serializer.h"
 
 namespace reindexer {
 
 using std::string;
-using std::unordered_map;
-using std::unique_ptr;
 
 class TagsMatcher;
 class PayloadType;
 class WrSerializer;
+
+namespace joins {
+class NamespaceResults;
+}
 
 /// QueryResults is an interface for iterating over documents, returned by Query from Reindexer.<br>
 /// *Lifetime*: QueryResults uses Copy-On-Write semantics, so it has independent lifetime and state - e.g., acquired from Reindexer.
@@ -53,9 +52,8 @@ public:
 		Error GetJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Error GetCJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Item GetItem();
-		joins::ItemIterator GetJoinedItemsIterator();
 		const ItemRef &GetItemRef() const { return qr_->items_[idx_]; }
-		int64_t GetLSN() const { return qr_->items_[idx_].value.GetLSN(); }
+		int64_t GetLSN() const { return qr_->items_[idx_].Value().GetLSN(); }
 		bool IsRaw() const;
 		string_view GetRaw() const;
 		Iterator &operator++();
@@ -74,7 +72,7 @@ public:
 	Iterator end() const { return Iterator{this, int(items_.size()), errOK}; }
 	Iterator operator[](int idx) const { return Iterator{this, idx, errOK}; }
 
-	joins::Results joined_;
+	std::vector<joins::NamespaceResults> joined_;
 	vector<AggregationResult> aggregationResults;
 	int totalCount = 0;
 	bool haveProcent = false;
@@ -82,7 +80,12 @@ public:
 
 	struct Context;
 	// precalc context size
-	static constexpr int kSizeofContext = 128;  // sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *);
+	static constexpr int kSizeofContext = 128;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *);
+
+	// Order of storing contexts for namespaces:
+	// [0]      - main NS context
+	// [1;N]    - contexts of all the merged namespaces
+	// [N+1; M] - contexts of all the joined namespaces for all the merged namespaces:
 	using ContextsVector = h_vector<Context, 1, kSizeofContext>;
 	ContextsVector ctxs;
 
@@ -96,6 +99,7 @@ public:
 	void lockResults();
 	ItemRefVector &Items() { return items_; }
 	const ItemRefVector &Items() const { return items_; }
+	int GetJoinedNsCtxIndex(int nsid) const;
 
 	string explainResults;
 

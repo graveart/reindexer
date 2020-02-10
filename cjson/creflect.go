@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"unsafe"
 
-	"github.com/restream/reindexer/bindings"
+	"github.com/graveart/reindexer/bindings"
 )
 
 const (

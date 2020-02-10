@@ -3,10 +3,10 @@ package reindexer
 import (
 	"context"
 
-	"github.com/restream/reindexer/bindings"
-	_ "github.com/restream/reindexer/bindings/cproto"
-	"github.com/restream/reindexer/dsl"
-	// _ "github.com/restream/reindexer/bindings/builtinserver"
+	"github.com/graveart/reindexer/bindings"
+	_ "github.com/graveart/reindexer/bindings/cproto"
+	"github.com/graveart/reindexer/dsl"
+	// _ "github.com/graveart/reindexer/bindings/builtinserver"
 )
 
 // Condition types
@@ -161,7 +161,7 @@ func NewReindex(dsn string, options ...interface{}) *Reindexer {
 
 // Status will return current db status
 func (db *Reindexer) Status() bindings.Status {
-	return db.impl.getStatus()
+	return db.impl.getStatus(db.ctx)
 }
 
 // SetLogger sets logger interface for output reindexer logs
@@ -176,6 +176,19 @@ func (db *Reindexer) Ping() error {
 
 func (db *Reindexer) Close() {
 	db.impl.close()
+}
+
+func (db *Reindexer) RenameNs(srcNsName string, dstNsName string) {
+	db.impl.lock.Lock()
+	defer db.impl.lock.Unlock()
+	srcNs, ok := (db.impl).ns[srcNsName]
+	if ok {
+		delete(db.impl.ns, srcNsName)
+		db.impl.ns[dstNsName] = srcNs
+	} else {
+		delete(db.impl.ns, dstNsName)
+	}
+
 }
 
 // NamespaceOptions is options for namespace
@@ -234,6 +247,11 @@ func (db *Reindexer) DropNamespace(namespace string) error {
 // TruncateNamespace - delete all items from namespace
 func (db *Reindexer) TruncateNamespace(namespace string) error {
 	return db.impl.truncateNamespace(db.ctx, namespace)
+}
+
+// RenameNamespace - Rename namespace. If namespace with dstNsName exists, then it is replaced.
+func (db *Reindexer) RenameNamespace(srcNsName string, dstNsName string) error {
+	return db.impl.renameNamespace(db.ctx, srcNsName, dstNsName)
 }
 
 // CloseNamespace - close namespace, but keep storage

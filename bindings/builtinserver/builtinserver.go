@@ -12,9 +12,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/bindings/builtin"
-	"github.com/restream/reindexer/bindings/builtinserver/config"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/bindings/builtin"
+	"github.com/graveart/reindexer/bindings/builtinserver/config"
 )
 
 var defaultStartupTimeout time.Duration = time.Minute * 3
@@ -151,6 +151,10 @@ func (server *BuiltinServer) TruncateNamespace(ctx context.Context, namespace st
 	return server.builtin.TruncateNamespace(ctx, namespace)
 }
 
+func (server *BuiltinServer) RenameNamespace(ctx context.Context, srcNs string, dstNs string) error {
+	return server.builtin.RenameNamespace(ctx, srcNs, dstNs)
+}
+
 func (server *BuiltinServer) EnableStorage(ctx context.Context, namespace string) error {
 	return server.builtin.EnableStorage(ctx, namespace)
 }
@@ -246,8 +250,8 @@ func (server *BuiltinServer) Finalize() error {
 	return nil
 }
 
-func (server *BuiltinServer) Status() (status bindings.Status) {
-	return server.builtin.Status()
+func (server *BuiltinServer) Status(ctx context.Context) (status bindings.Status) {
+	return server.builtin.Status(ctx)
 }
 
 func (server *BuiltinServer) Ping(ctx context.Context) error {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/restream/reindexer/bindings"
+	"github.com/graveart/reindexer/bindings"
 
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/cjson"
 )
 
 type rpcEncoder struct {

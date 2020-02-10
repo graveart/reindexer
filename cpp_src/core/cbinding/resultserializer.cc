@@ -1,5 +1,6 @@
 #include "resultserializer.h"
 #include "core/cjson/tagsmatcher.h"
+#include "core/queryresults/joinresults.h"
 #include "core/queryresults/queryresults.h"
 #include "tools/logger.h"
 
@@ -64,21 +65,21 @@ void WrResultSerializer::putItemParams(const QueryResults* result, int idx, bool
 	auto& itemRef = it.GetItemRef();
 
 	if (opts_.flags & kResultsWithItemID) {
-		PutVarUint(itemRef.id);
-		PutVarUint(itemRef.value.GetLSN());
+		PutVarUint(itemRef.Id());
+		PutVarUint(itemRef.Value().GetLSN());
 	}
 
 	if (opts_.flags & kResultsWithNsID) {
-		PutVarUint(itemRef.nsid);
+		PutVarUint(itemRef.Nsid());
 	}
 
 	if (opts_.flags & kResultsWithPercents) {
-		PutVarUint(itemRef.proc);
+		PutVarUint(itemRef.Proc());
 	}
 
 	if (opts_.flags & kResultsWithRaw) {
-		PutBool(itemRef.raw);
-		if (itemRef.raw) {
+		PutBool(itemRef.Raw());
+		if (itemRef.Raw()) {
 			PutSlice(it.GetRaw());
 			return;
 		}
@@ -93,7 +94,7 @@ void WrResultSerializer::putItemParams(const QueryResults* result, int idx, bool
 			err = it.GetCJSON(*this);
 			break;
 		case kResultsPtrs:
-			PutUInt64(uintptr_t(itemRef.value.Ptr()));
+			PutUInt64(uintptr_t(itemRef.Value().Ptr()));
 			break;
 		case kResultsPure:
 			break;
@@ -146,11 +147,11 @@ bool WrResultSerializer::PutResults(const QueryResults* result) {
 
 		if (opts_.flags & kResultsWithJoined) {
 			auto rowIt = result->begin() + (i + opts_.fetchOffset);
-			joins::ItemIterator jIt = rowIt.GetJoinedItemsIterator();
+			auto jIt = joins::ItemIterator::FromQRIterator(rowIt);
 			PutVarUint(jIt.getJoinedItemsCount() > 0 ? jIt.getJoinedFieldsCount() : 0);
 			if (jIt.getJoinedItemsCount() > 0) {
 				size_t joinedField = rowIt.qr_->joined_.size();
-				for (size_t ns = 0; ns < rowIt.GetItemRef().nsid; ++ns) {
+				for (size_t ns = 0; ns < rowIt.GetItemRef().Nsid(); ++ns) {
 					joinedField += rowIt.qr_->joined_[ns].GetJoinedSelectorsCount();
 				}
 				for (auto it = jIt.begin(); it != jIt.end(); ++it, ++joinedField) {

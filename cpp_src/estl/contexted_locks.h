@@ -37,12 +37,30 @@ public:
 		: _M_mtx(&__mtx), _M_owns(__mtx.try_lock()), _M_context(__context), _M_chkTimeout(__chkTimeout) {
 		assert(_M_context);
 	}
+	contexted_unique_lock(contexted_unique_lock&& lck)
+		: _M_mtx(lck._M_mtx), _M_owns(lck._M_owns), _M_context(lck._M_context), _M_chkTimeout(lck._M_chkTimeout) {
+		lck._M_owns = false;
+		lck._M_mtx = nullptr;
+		lck._M_context = nullptr;
+	}
 	~contexted_unique_lock() {
 		if (_M_owns) _M_mtx->unlock();
 	}
 
 	contexted_unique_lock(const contexted_unique_lock&) = delete;
 	contexted_unique_lock& operator=(const contexted_unique_lock&) = delete;
+	contexted_unique_lock& operator=(contexted_unique_lock&& lck) {
+		if (this != &lck) {
+			_M_mtx = lck._M_mtx;
+			_M_owns = lck._M_owns;
+			_M_context = lck._M_context;
+			_M_chkTimeout = lck._M_chkTimeout;
+			lck._M_owns = false;
+			lck._M_mtx = nullptr;
+			lck._M_context = nullptr;
+		}
+		return *this;
+	}
 
 	void lock() {
 		_M_lockable();
@@ -101,6 +119,18 @@ public:
 		: _M_mtx(&__mtx), _M_owns(false), _M_context(__context), _M_chkTimeout(__chkTimeout) {
 		assert(_M_context);
 		lock();
+	}
+	explicit contexted_shared_lock(MutexType& __mtx, defer_lock_t, Context* __context, milliseconds __chkTimeout = kDefaultCondChkTime)
+		: _M_mtx(&__mtx), _M_owns(false), _M_context(__context), _M_chkTimeout(__chkTimeout) {
+		assert(_M_context);
+	}
+	explicit contexted_shared_lock(MutexType& __mtx, adopt_lock_t, Context* __context, milliseconds __chkTimeout = kDefaultCondChkTime)
+		: _M_mtx(&__mtx), _M_owns(true), _M_context(__context), _M_chkTimeout(__chkTimeout) {
+		assert(_M_context);
+	}
+	explicit contexted_shared_lock(MutexType& __mtx, try_to_lock_t, Context* __context, milliseconds __chkTimeout = kDefaultCondChkTime)
+		: _M_mtx(&__mtx), _M_owns(__mtx.try_lock()), _M_context(__context), _M_chkTimeout(__chkTimeout) {
+		assert(_M_context);
 	}
 	~contexted_shared_lock() {
 		if (_M_owns) _M_mtx->unlock_shared();

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/bindings/builtinserver/config"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/bindings/builtinserver/config"
+	"github.com/graveart/reindexer/cjson"
 )
 
 const (
@@ -490,4 +490,8 @@ func WithServerConfig(startupTimeout time.Duration, serverConfig *config.ServerC
 
 func WithTimeouts(loginTimeout time.Duration, requestTimeout time.Duration) interface{} {
 	return bindings.OptionTimeouts{loginTimeout, requestTimeout}
+}
+
+func WithCreateDBIfMissing() interface{} {
+	return bindings.OptionConnect{CreateDBIfMissing: true}
 }

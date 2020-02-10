@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 )
 
 func init() {

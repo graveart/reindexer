@@ -3,8 +3,8 @@
 #include <string>
 #include <thread>
 #include "core/dbconfig.h"
-#include "core/namespace.h"
 #include "core/namespacestat.h"
+#include "core/nscloner.h"
 #include "estl/atomic_unique_ptr.h"
 #include "estl/fast_hash_map.h"
 #include "net/ev/ev.h"
@@ -44,19 +44,21 @@ protected:
 	// Read and apply WAL from master
 	Error syncNamespaceByWAL(const NamespaceDef &ns);
 	// Apply WAL from master to namespace
-	Error applyWAL(string_view nsName, client::QueryResults &qr);
-	// Apply WAL from master to namespace
-	Error applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr);
+	Error applyWAL(NSCloner::Ptr slaveNs, client::QueryResults &qr);
 	// Sync indexes of namespace
-	Error syncIndexesForced(Namespace::Ptr slaveNs, const NamespaceDef &masterNsDef);
+	Error syncIndexesForced(NSCloner::Ptr slaveNs, const NamespaceDef &masterNsDef);
 	// Forced sync of namespace
 	Error syncNamespaceForced(const NamespaceDef &ns, string_view reason);
 	// Sync meta data
-	Error syncMetaForced(reindexer::Namespace::Ptr slaveNs);
+	Error syncMetaForced(reindexer::NSCloner::Ptr slaveNs, string_view nsName);
 	// Apply single WAL record
-	Error applyWALRecord(int64_t lsn, string_view nsName, std::shared_ptr<Namespace> ns, const WALRecord &wrec, SyncStat &stat);
+	Error applyWALRecord(int64_t lsn, string_view nsName, NSCloner::Ptr ns, const WALRecord &wrec, SyncStat &stat);
+	// Apply single transaction WAL record
+	Error applyTxWALRecord(int64_t lsn, string_view nsName, NSCloner::Ptr ns, const WALRecord &wrec);
+	void checkNoOpenedTransaction(string_view nsName, NSCloner::Ptr slaveNs);
 	// Apply single cjson item
-	Error applyItemCJson(int64_t, std::shared_ptr<Namespace> ns, string_view cjson, int modifyMode, const TagsMatcher &tm, SyncStat &stat);
+	Error modifyItem(int64_t, NSCloner::Ptr ns, string_view cjson, int modifyMode, const TagsMatcher &tm, SyncStat &stat);
+	static Error unpackItem(Item &, int64_t, string_view cjson, const TagsMatcher &tm);
 
 	void OnWALUpdate(int64_t lsn, string_view nsName, const WALRecord &walRec) override final;
 	void OnConnectionState(const Error &err) override final;
@@ -83,6 +85,7 @@ protected:
 	std::atomic<bool> enabled_;
 
 	const RdxContext dummyCtx_;
+	std::unordered_map<const NSCloner *, Transaction> transactions_;
 };
 
 }  // namespace reindexer

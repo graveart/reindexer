@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/restream/reindexer"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer"
+	"github.com/graveart/reindexer/cjson"
 )
 
 var nsName = "validate_json_tags"

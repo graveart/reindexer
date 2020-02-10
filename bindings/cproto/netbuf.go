@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/restream/reindexer/bindings"
+	"github.com/graveart/reindexer/bindings"
 )
 
 var bufPool sync.Pool

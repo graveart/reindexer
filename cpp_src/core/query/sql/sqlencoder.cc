@@ -1,7 +1,7 @@
 
 
 #include "core/query/sql/sqlencoder.h"
-#include "core/query/query.h"
+#include "core/nsselecter/sortexpression.h"
 #include "core/queryresults/aggregationresult.h"
 #include "tools/serializer.h"
 
@@ -69,29 +69,61 @@ void SQLEncoder::dumpOrderBy(WrSerializer &ser, bool stripArgs) const {
 	ser << " ORDER BY ";
 	for (size_t i = 0; i < query_.sortingEntries_.size(); ++i) {
 		const SortingEntry &sortingEntry(query_.sortingEntries_[i]);
-		if (query_.forcedSortOrder.empty()) {
-			ser << sortingEntry.column;
-		} else {
-			ser << "FIELD(" << sortingEntry.column;
-			if (stripArgs) {
-				ser << '?';
+		if (SortExpression::Parse(sortingEntry.expression).JustByIndex()) {
+			if (query_.forcedSortOrder_.empty()) {
+				ser << sortingEntry.expression;
 			} else {
-				for (auto &v : query_.forcedSortOrder) {
-					ser << ", '" << v.As<string>() << "'";
+				ser << "FIELD(" << sortingEntry.expression;
+				if (stripArgs) {
+					ser << '?';
+				} else {
+					for (auto &v : query_.forcedSortOrder_) {
+						ser << ", '" << v.As<string>() << "'";
+					}
 				}
+				ser << ")";
 			}
-			ser << ")";
+		} else {
+			ser << '\'' << sortingEntry.expression << '\'';
 		}
 		ser << (sortingEntry.desc ? " DESC" : "");
 		if (i != query_.sortingEntries_.size() - 1) ser << ", ";
 	}
 }
 
+void SQLEncoder::dumpEqualPositions(WrSerializer &ser, int parenthesisIndex) const {
+	if (query_.equalPositions_.empty()) return;
+	auto range = query_.equalPositions_.equal_range(parenthesisIndex);
+	if (range.first == query_.equalPositions_.end()) return;
+	for (auto it = range.first; it != range.second; ++it) {
+		assert(it->second.size() > 0);
+		ser << " equal_position(";
+		for (size_t i = 0; i < it->second.size(); ++i) {
+			if (i != 0) ser << ",";
+			assert(query_.entries.IsValue(it->second[i]));
+			ser << query_.entries[it->second[i]].index;
+		}
+		ser << ")";
+	}
+}
+
 WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 	switch (query_.type_) {
-		case QuerySelect:
+		case QuerySelect: {
 			ser << "SELECT ";
+			vector<int> distinctIndices;
+			for (size_t i = 0; i != query_.entries.Size(); ++i) {
+				if (query_.entries.IsValue(i) && query_.entries[i].distinct) {
+					distinctIndices.emplace_back(i);
+				}
+			}
+			for (size_t i = 0; i < distinctIndices.size(); ++i) {
+				assert(size_t(distinctIndices[i]) < query_.entries.Size());
+				if (i != 0) ser << ",";
+				ser << "DISTINCT(" << query_.entries[distinctIndices[i]].index << ")";
+			}
 			if (query_.aggregations_.size()) {
+				if (distinctIndices.size() > 0) ser << ",";
 				for (const auto &a : query_.aggregations_) {
 					if (&a != &*query_.aggregations_.begin()) ser << ',';
 					ser << AggregationResult::aggTypeToStr(a.type_) << "(";
@@ -100,7 +132,13 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 						ser << f;
 					}
 					for (const auto &se : a.sortingEntries_) {
-						ser << " ORDER BY " << se.column << (se.desc ? " DESC" : " ASC");
+						ser << " ORDER BY ";
+						if (SortExpression::Parse(se.expression).JustByIndex()) {
+							ser << se.expression;
+						} else {
+							ser << '\'' << se.expression << '\'';
+						}
+						ser << (se.desc ? " DESC" : " ASC");
 					}
 
 					if (a.offset_ != 0 && !stripArgs) ser << " OFFSET " << a.offset_;
@@ -108,15 +146,28 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 					ser << ')';
 				}
 			} else if (query_.selectFilter_.size()) {
-				for (auto &f : query_.selectFilter_) {
-					if (&f != &*query_.selectFilter_.begin()) ser << ',';
-					ser << f;
+				for (size_t i = 0; i < query_.selectFilter_.size(); ++i) {
+					bool isDistinct = false;
+					for (size_t j = 0; j < distinctIndices.size(); ++j) {
+						if (query_.selectFilter_[i] == query_.entries[j].index) {
+							isDistinct = true;
+							break;
+						}
+					}
+					if (isDistinct) continue;
+					if (i != 0 || distinctIndices.size() > 0) {
+						ser << ',';
+					}
+					ser << query_.selectFilter_[i];
 				}
-			} else
+			} else {
+				if (distinctIndices.size() > 0) ser << ",";
 				ser << '*';
-			if (query_.calcTotal != ModeNoTotal) ser << ", COUNT(*)";
+			}
+			if (query_.calcTotal == ModeAccurateTotal) ser << ", COUNT(*)";
+			if (query_.calcTotal == ModeCachedTotal) ser << ", COUNT_CACHED(*)";
 			ser << " FROM " << query_._namespace;
-			break;
+		} break;
 		case QueryDelete:
 			ser << "DELETE FROM " << query_._namespace;
 			break;
@@ -161,13 +212,16 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 extern const char *condNames[];
 const char *opNames[] = {"-", "OR", "AND", "AND NOT"};
 
-static void writeSQL(const Query &parentQuery, QueryEntries::const_iterator from, QueryEntries::const_iterator to, WrSerializer &ser,
-					 bool stripArgs) {
+void SQLEncoder::dumpWhereEntries(QueryEntries::const_iterator from, QueryEntries::const_iterator to, WrSerializer &ser,
+								  bool stripArgs) const {
+	int encodedEntries = 0;
 	for (auto it = from; it != to; ++it) {
-		if (it != from) {
+		bool isLeaf = it->IsLeaf();
+		if (isLeaf && it->Value().distinct) continue;
+		if (encodedEntries++) {
 			bool orInnerJoin = false;
 			if (it->IsLeaf() && (it->Value().joinIndex != QueryEntry::kNoJoins)) {
-				if (parentQuery.joinQueries_[it->Value().joinIndex].joinType == JoinType::OrInnerJoin) {
+				if (query_.joinQueries_[it->Value().joinIndex].joinType == JoinType::OrInnerJoin) {
 					orInnerJoin = true;
 				}
 			}
@@ -176,14 +230,14 @@ static void writeSQL(const Query &parentQuery, QueryEntries::const_iterator from
 		} else if (it->Op == OpNot) {
 			ser << "NOT ";
 		}
-		if (!it->IsLeaf()) {
+		if (!isLeaf) {
 			ser << '(';
-			writeSQL(parentQuery, it->cbegin(it), it->cend(it), ser, stripArgs);
+			dumpWhereEntries(it.cbegin(), it.cend(), ser, stripArgs);
 			ser << ')';
 		} else {
 			const QueryEntry &entry = it->Value();
 			if (entry.joinIndex == QueryEntry::kNoJoins) {
-				if (entry.index.find('.') == string::npos)
+				if (entry.index.find('.') == string::npos && entry.index.find('+') == string::npos)
 					ser << entry.index << ' ';
 				else
 					ser << '\'' << entry.index << "\' ";
@@ -205,16 +259,18 @@ static void writeSQL(const Query &parentQuery, QueryEntries::const_iterator from
 					ser << ((entry.values.size() != 1) ? ")" : "");
 				}
 			} else {
-				SQLEncoder(parentQuery).DumpSingleJoinQuery(entry.joinIndex, ser, stripArgs);
+				SQLEncoder(query_).DumpSingleJoinQuery(entry.joinIndex, ser, stripArgs);
 			}
 		}
 	}
+	int parenthesisIndex = (from.PlainIterator() - query_.entries.begin().PlainIterator());
+	dumpEqualPositions(ser, parenthesisIndex);
 }
 
 void SQLEncoder::dumpSQLWhere(WrSerializer &ser, bool stripArgs) const {
 	if (query_.entries.Empty()) return;
 	ser << " WHERE ";
-	writeSQL(query_, query_.entries.cbegin(), query_.entries.cend(), ser, stripArgs);
+	dumpWhereEntries(query_.entries.cbegin(), query_.entries.cend(), ser, stripArgs);
 }
 
 }  // namespace reindexer

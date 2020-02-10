@@ -28,6 +28,7 @@ public:
 	void Modify(Query &&query);
 	bool IsFree() { return impl_ == nullptr; }
 	Item NewItem();
+	Item GetItem(TransactionStep &&st);
 	Error Status() { return status_; }
 
 	const std::string &GetName();
@@ -35,6 +36,8 @@ public:
 	friend class ReindexerImpl;
 
 	vector<TransactionStep> &GetSteps();
+	const vector<TransactionStep> &GetSteps() const;
+	bool IsTagsUpdated() const;
 
 protected:
 	std::unique_ptr<TransactionImpl> impl_;

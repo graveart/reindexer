@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/restream/reindexer"
-	_ "github.com/restream/reindexer/bindings/cproto"
-	// _ "github.com/restream/reindexer/bindings/builtinserver"
+	"github.com/graveart/reindexer"
+	_ "github.com/graveart/reindexer/bindings/cproto"
+	// _ "github.com/graveart/reindexer/bindings/builtinserver"
 )
 
 type ReindexerWrapper struct {
@@ -25,7 +25,7 @@ type ReindexerWrapper struct {
 }
 
 func NewReindexWrapper(dsn string, options ...interface{}) *ReindexerWrapper {
-	return &ReindexerWrapper{Reindexer: *reindexer.NewReindex(dsn, options), isMaster: true, dsn: dsn, syncedStatus: 0}
+	return &ReindexerWrapper{Reindexer: *reindexer.NewReindex(dsn, options...), isMaster: true, dsn: dsn, syncedStatus: 0}
 }
 
 func (dbw *ReindexerWrapper) SetSynced(sync bool) {
@@ -48,7 +48,7 @@ func (dbw *ReindexerWrapper) addSlave(dsn string, options ...interface{}) *Reind
 	if dbw.dsn == dsn {
 		return nil
 	}
-	slaveDb := NewReindexWrapper(dsn, options)
+	slaveDb := NewReindexWrapper(dsn, options...)
 	slaveDb.isMaster = false
 	slaveDb.master = dbw
 	slaveDb.SetSynced(false)
@@ -134,7 +134,7 @@ func (dbw *ReindexerWrapper) execQueryCtx(ctx context.Context, qt *queryTest) *r
 	if !qt.deepReplEqual {
 		sdb := dbw.slaveList[rand.Intn(len(dbw.slaveList))]
 		if !dbw.IsSynced() {
-			sdb.WaitForSyncMithMaster()
+			sdb.WaitForSyncWithMaster()
 			dbw.SetSynced(true)
 			sdb.ResetCaches()
 		}
@@ -154,7 +154,7 @@ func (dbw *ReindexerWrapper) execQueryCtx(ctx context.Context, qt *queryTest) *r
 	}
 	for _, db := range dbw.slaveList {
 		if !dbw.IsSynced() {
-			db.WaitForSyncMithMaster()
+			db.WaitForSyncWithMaster()
 		}
 		slaveQuery := qt.q.MakeCopy(&db.Reindexer)
 		rs, err := slaveQuery.ExecCtx(ctx).FetchAll()
@@ -200,7 +200,7 @@ func (dbw *ReindexerWrapper) setSlaveConfig(slaveDb *ReindexerWrapper) {
 
 }
 
-func (dbw *ReindexerWrapper) WaitForSyncMithMaster() {
+func (dbw *ReindexerWrapper) WaitForSyncWithMaster() {
 	complete := true
 
 	var nameBad string
@@ -261,6 +261,22 @@ func (dbw *ReindexerWrapper) WaitForSyncMithMaster() {
 func (dbw *ReindexerWrapper) TruncateNamespace(namespace string) error {
 	dbw.SetSynced(false)
 	return dbw.Reindexer.TruncateNamespace(namespace)
+}
+
+func (dbw *ReindexerWrapper) RenameNamespace(srcNsName string, dstNsName string) error {
+	dbw.SetSynced(false)
+
+	err := dbw.Reindexer.RenameNamespace(srcNsName, dstNsName)
+	if err != nil {
+		return err
+	}
+	//change client ns tables
+	for _, db := range dbw.slaveList {
+		db.Reindexer.RenameNs(srcNsName, dstNsName)
+	}
+
+	renameTestNamespace(srcNsName, dstNsName)
+	return err
 }
 
 func (dbw *ReindexerWrapper) CloseNamespace(namespace string) error {

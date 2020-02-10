@@ -4,7 +4,7 @@
 #include "core/query/query.h"
 #include "core/queryresults/queryresults.h"
 #include "core/rdxcontext.h"
-#include "transaction.h"
+#include "core/transaction.h"
 
 #include <chrono>
 
@@ -70,6 +70,10 @@ public:
 	/// Delete all items from namespace
 	/// @param nsName - Name of namespace
 	Error TruncateNamespace(string_view nsName);
+	/// Rename namespace. If namespace with dstNsName exists, then it is replaced.
+	/// @param srcNsName  - Name of namespace
+	/// @param dstNsName  - desired name of namespace
+	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName);
 	/// Add index to namespace
 	/// @param nsName - Name of namespace
 	/// @param index - IndexDef with index name and parameters
@@ -84,8 +88,8 @@ public:
 	Error DropIndex(string_view nsName, const IndexDef &index);
 	/// Get list of all available namespaces
 	/// @param defs - std::vector of NamespaceDef of available namespaves
-	/// @param bEnumAll - Also include currenty not opened, but exists on disk namespaces
-	Error EnumNamespaces(vector<NamespaceDef> &defs, bool bEnumAll);
+	/// @param opts - Enumeration options
+	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts);
 	/// Insert new Item to namespace. If item with same PK is already exists, when item.GetID will
 	/// return -1, on success item.GetID() will return internal Item ID
 	/// May be used with completion
@@ -140,7 +144,8 @@ public:
 	Transaction NewTransaction(string_view nsName);
 	/// Commit transaction - transaction will be deleted after commit
 	/// @param tr - transaction to commit
-	Error CommitTransaction(Transaction &tr);
+	/// @param result - QueryResults with IDs of changed by tx items.
+	Error CommitTransaction(Transaction &tr, QueryResults &result);
 	/// RollBack transaction - transaction will be deleted after rollback
 	/// Cancelation context doesn't affect this call
 	/// @param tr - transaction to rollback
@@ -165,6 +170,8 @@ public:
 	/// @param pos - position in sql query for suggestions.
 	/// @param suggestions - all the suggestions for 'pos' position in query.
 	Error GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string> &suggestions);
+	/// Get curret connection status
+	Error Status();
 
 	/// Init system namepaces, and load config from config namespace
 	/// Cancelation context doesn't affect this call

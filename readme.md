@@ -30,6 +30,7 @@ The core is written in C++ and the application level API is in Go.
 	- [Index Types and Their Capabilites](#index-types-and-their-capabilites)
 	- [Nested Structs](#nested-structs)
 	- [Complex Primary Keys and Composite Indexes](#complex-primary-keys-and-composite-indexes)
+	- [Sort](#sort)
 	- [Join](#join)
 		- [Joinable interface](#joinable-interface)
 	- [Complex Primary Keys and Composite Indices](#complex-primary-keys-and-composite-indices)
@@ -125,13 +126,13 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 	// choose how the Reindexer binds to the app (in this case "builtin," which means link Reindexer as a static library)
-	_ "github.com/restream/reindexer/bindings/builtin"
+	_ "github.com/graveart/reindexer/bindings/builtin"
 
 	// OR link Reindexer as static library with bundled server.
-	// _ "github.com/restream/reindexer/bindings/builtinserver"
-	// "github.com/restream/reindexer/bindings/builtinserver/config"
+	// _ "github.com/graveart/reindexer/bindings/builtinserver"
+	// "github.com/graveart/reindexer/bindings/builtinserver/config"
 
 )
 
@@ -148,7 +149,8 @@ func main() {
 	db := reindexer.NewReindex("builtin:///tmp/reindex/testdb")
 
 	// OR - Init a database instance and choose the binding (connect to server)
-	// db := reindexer.NewReindex("cproto://127.0.0.1:6534/testdb")
+	// Database should be created explicitly via reindexer_tool or via WithCreateDBIfMissing option:
+	// db := reindexer.NewReindex("cproto://127.0.0.1:6534/testdb", reindexer.WithCreateDBIfMissing())
 
 	// OR - Init a database instance and choose the binding (builtin, with bundled server)
 	// serverConfig := config.DefaultServerConfig ()
@@ -313,6 +315,45 @@ type ComplexItem struct {
 	Year     int     `reindex:"year,tree"`
 	parent   *Item   `reindex:"-"` // Index fields of parent will NOT be added to reindex
 }
+```
+
+### Sort
+
+Reindexer can sort documents by fields (including nested) or by expressions in asceding or descending order.
+
+Sort expressions can contain fields names (including nested) of int, float or bool type, numbers, function rank(), parenthesis and arithmetic operations: +, - (unary and binary), * and /.
+Fields names must end by space (before close parenthesis space is optional).
+Rank() means fulltext rank of match and is applicable only in fulltext query.
+In SQL query sort expression must be quoted.
+
+```go
+type Person struct {
+	Name string `reindex:"name"`
+	Age  int    `reindex:"age"`
+}
+
+type Actor struct {
+	ID          int    `reindex:"id"`
+	PersonData  Person `reindex:"person"`
+	Price       int    `reindex:"price"`
+	Description string `reindex:"description,text"`
+}
+....
+
+query := db.Query("actors").Sort("id", true)           // Sort by field
+....
+query = db.Query("actors").Sort("person.age", true)   // Sort by nested field
+....
+// Sort by expression:
+query = db.Query("actors").Sort("person.age / -10 + price / 1000 * (id - 5)", true)
+....
+query = db.Query("actors").Where("description", reindexer.EQ, "ququ").
+    Sort("rank() + id / 100", true)   // Sort with fulltext rank
+....
+// In SQL query:
+iterator := db.ExecSQL ("SELECT * FROM actors ORDER BY person.name ASC")
+....
+iterator := db.ExecSQL ("SELECT * FROM actors WHERE description = 'ququ' ORDER BY 'rank() + id / 100' DESC")
 ```
 
 ### Join
@@ -506,6 +547,43 @@ Example code for aggregate `items` by `price` and `name`
 		fmt.Printf ("'%s' '%s' -> %d", facet.Values[0], facet.Values[1], facet.Count)
 	}
 
+```
+
+### Searching in array fields with matching array indexes
+Reindexer allows to search data in array fields when matching values have same indixes positions.
+For instance, we've got an array of structures:
+
+```go
+type Elem struct {
+   F1 int `reindex:"f1"`
+   F2 int `reindex:"f2"`
+}
+
+type A struct {
+   Elems []Elem
+}
+```
+Common attempt to search values in this array 
+```go 
+Where ("f1",EQ,1).Where ("f2",EQ,2) 
+```
+finds all items of array `Elem[]` where `f1` is equal to 1 and `f2` is equal to 2. 
+
+`EqualPosition` function allows to search in array fields with equal indices. 
+Search like this:
+```go 
+Where("f1", reindexer.GE, 5).Where("f2", reindexer.EQ, 100).EqualPosition("f1", "f2")
+```
+or
+```sql
+SELECT * FROM Namespace WHERE f1 >= 5 AND f2 = 100 EQUAL_POSITION(f1,f2); 
+```
+
+finds all items of array `Elem[]` where `f1` is greater or equal to 5 and `f2` is equal to 100 `and` their indices are always equal (for instance, query returned 5 items where only 3rd element of array has appropriate values). 
+
+With complex expressions (expressions with brackets) equal_position() works only within a bracket:
+```sql
+SELECT * FROM Namespace WHERE (f1 >= 5 AND f2 = 100 EQUAL_POSITION(f1,f2)) OR (f3 = 3 AND f4 < 4 EQUAL_POSITION(f3,f4)); 
 ```
 
 ### Atomic on update functions
@@ -734,6 +812,11 @@ Command line tool can run in 2 modes. With server via network, and in server-les
 
 ### Dump and restore database
 
+Database creation via reindexer_tool:
+```sh
+reindexer_tool --dsn cproto://127.0.0.1:6534/mydb --command '\databases create mydb'
+```
+
 To dump and restore database in normal way there reindexer command line tool is used
 
 Backup whole database into single backup file:
@@ -782,7 +865,7 @@ To configure storage type for Go bindings either `bindings.ConnectOptions` (for 
 
 ### RocksDB
 
-Reindexer will try to autodetect RocksDB library and it's dependencies at compile time if CMake flag `ENABLE_ROCKSDB` was passed (enabled by default). 
+Reindexer will try to autodetect RocksDB library and it's dependencies at compile time if CMake flag `ENABLE_ROCKSDB` was passed (enabled by default).
 If reindexer library was built with rocksdb, it requires Go build tag `rocksdb` in order to link with go-applications and go-bindinds.
 
 ## Integration with other program languages

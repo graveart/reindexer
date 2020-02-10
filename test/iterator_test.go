@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/restream/reindexer"
-	"github.com/restream/reindexer/test/custom_struct_another"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/graveart/reindexer"
+	"github.com/graveart/reindexer/test/custom_struct_another"
 )
 
 func init() {
@@ -161,6 +163,139 @@ func TestRaceConditions(t *testing.T) {
 	}
 
 	time.Sleep(time.Millisecond * 20000)
+	close(done)
+	wg.Wait()
+}
+
+func TestRaceConditionsTx(t *testing.T) {
+	done := make(chan bool)
+	wg := sync.WaitGroup{}
+	writer := func() {
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Println("Panic silenced:", p)
+				wg.Done()
+			}
+		}()
+		for {
+			select {
+			case <-done:
+				wg.Done()
+				return
+			case <-time.After(time.Millisecond * 1):
+				ctx, cancel := context.WithCancel(context.Background())
+				DB.UpsertCtx(ctx, "test_items_iter", newTestItem(rand.Intn(20000), 5))
+				cancel()
+			}
+		}
+	}
+	reader := func() {
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Println("Panic silenced:", p)
+				wg.Done()
+			}
+		}()
+		for {
+			select {
+			case <-done:
+				wg.Done()
+				return
+			default:
+				ctx, cancel := context.WithCancel(context.Background())
+				q := DB.Query("test_items_iter").Limit(2)
+
+				if rand.Int()%100 > 50 {
+					q.WhereInt("year", reindexer.GT, 2010)
+				}
+				if rand.Int()%100 > 50 {
+					q.WhereInt("genre", reindexer.SET, 1, 2)
+				}
+				if rand.Int()%100 > 50 {
+					q.WhereString("name", reindexer.EQ, randString())
+				}
+				if rand.Int()%100 > 80 {
+					qj1 := DB.Query("test_join_items").Where("device", reindexer.EQ, "ottstb").Sort("name", false)
+					qj2 := DB.Query("test_join_items").Where("device", reindexer.EQ, "android")
+					qj3 := DB.Query("test_join_items").Where("device", reindexer.EQ, "iphone")
+					q.LeftJoin(qj1, "prices").On("price_id", reindexer.SET, "id")
+					q.LeftJoin(qj2, "pricesx").On("location", reindexer.EQ, "location").On("price_id", reindexer.SET, "id")
+					q.LeftJoin(qj3, "pricesx").On("location", reindexer.LT, "location").Or().On("price_id", reindexer.SET, "id")
+				}
+
+				it := q.ExecCtx(ctx)
+				_ = it.TotalCount()
+				for it.Next() {
+					_ = it.Object().(*TestItem)
+				}
+				it.Close()
+				cancel()
+				_ = q
+			}
+		}
+	}
+	txWriter := func() {
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Println("Panic silenced:", p)
+				wg.Done()
+			}
+		}()
+		for {
+			select {
+			case <-done:
+				wg.Done()
+				return
+			case <-time.After(time.Millisecond * 10):
+				tx, _ := DB.BeginTx("test_join_items")
+				bigTx := rand.Intn(2) > 0
+				txItemsCount := 1000
+				if bigTx {
+					txItemsCount = 20000
+				}
+				for i := 0; i < txItemsCount; i++ {
+					tx.UpsertAsync(TestJoinItem{ID: i}, func(err error) {
+						if err != nil {
+							panic(err)
+						}
+					})
+				}
+				tx.Commit()
+			}
+		}
+	}
+	deleter := func() {
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Println("Panic silenced:", p)
+				wg.Done()
+			}
+		}()
+		for {
+			select {
+			case <-done:
+				wg.Done()
+				return
+			case <-time.After(time.Millisecond * 10):
+				startID := rand.Intn(20000)
+				_, err := DB.Query("test_join_items").Where("id", reindexer.GE, startID).Where("id", reindexer.LE, startID+rand.Intn(1000)).Delete()
+				assert.NoError(t, err)
+			}
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go writer()
+		wg.Add(1)
+		go reader()
+		wg.Add(1)
+		go txWriter()
+		wg.Add(1)
+		go deleter()
+	}
+
+	time.Sleep(time.Millisecond * 40000)
 	close(done)
 	wg.Wait()
 }

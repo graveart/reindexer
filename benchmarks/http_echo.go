@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/restream/reindexer/benchmarks/repo"
+	"github.com/graveart/reindexer/benchmarks/repo"
 
 	"github.com/labstack/echo"
 )

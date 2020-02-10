@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 )
 
 func TestJoinCache(t *testing.T) {

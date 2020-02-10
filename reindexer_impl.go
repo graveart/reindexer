@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/cjson"
-	"github.com/restream/reindexer/dsl"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/cjson"
+	"github.com/graveart/reindexer/dsl"
 )
 
 type reindexerNamespace struct {
@@ -87,8 +87,8 @@ func newReindexImpl(dsn string, options ...interface{}) *reindexerImpl {
 }
 
 // getStatus will return current db status
-func (db *reindexerImpl) getStatus() bindings.Status {
-	status := db.binding.Status()
+func (db *reindexerImpl) getStatus(ctx context.Context) bindings.Status {
+	status := db.binding.Status(ctx)
 	status.Err = db.status
 	return status
 }
@@ -184,7 +184,8 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 	haveDeepCopy := false
 
 	if !opts.disableObjCache {
-		copier, haveDeepCopy := reflect.New(t).Interface().(DeepCopy)
+		var copier DeepCopy
+		copier, haveDeepCopy = reflect.New(t).Interface().(DeepCopy)
 		if haveDeepCopy {
 			cpy := copier.DeepCopy()
 			cpyType := reflect.TypeOf(reflect.Indirect(reflect.ValueOf(cpy)).Interface())
@@ -234,6 +235,27 @@ func (db *reindexerImpl) dropNamespace(ctx context.Context, namespace string) er
 func (db *reindexerImpl) truncateNamespace(ctx context.Context, namespace string) error {
 	namespace = strings.ToLower(namespace)
 	return db.binding.TruncateNamespace(ctx, namespace)
+}
+
+// RenameNamespace - Rename namespace. If namespace with dstNsName exists, then it is replaced.
+func (db *reindexerImpl) renameNamespace(ctx context.Context, srcNsName string, dstNsName string) error {
+	srcNsName = strings.ToLower(srcNsName)
+	dstNsName = strings.ToLower(dstNsName)
+	err := db.binding.RenameNamespace(ctx, srcNsName, dstNsName)
+	if err != nil {
+		return err
+	}
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
+	srcNs, ok := db.ns[srcNsName]
+	if ok {
+		delete(db.ns, srcNsName)
+		db.ns[dstNsName] = srcNs
+	} else {
+		delete(db.ns, dstNsName)
+	}
+	return err
 }
 
 // closeNamespace - close namespace, but keep storage

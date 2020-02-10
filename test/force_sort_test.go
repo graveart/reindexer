@@ -5,7 +5,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 )
 
 const testNs string = "test_items_force_sort_order"

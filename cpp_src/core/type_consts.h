@@ -105,13 +105,17 @@ enum ErrorCode {
 	errNoWAL = 17,
 	errDataHashMismatch = 18,
 	errTimeout = 19,
-	errCanceled = 20
-
+	errCanceled = 20,
+	errTagsMissmatch = 21,
+	errReplParams = 22,
+	errNamespaceInvalidated = 23,
 };
 
 enum QueryType { QuerySelect, QueryDelete, QueryUpdate, QueryTruncate };
 
 enum OpType { OpOr = 1, OpAnd = 2, OpNot = 3 };
+
+enum ArithmeticOpType { OpPlus = 0, OpMinus = 1, OpMult = 2, OpDiv = 3 };
 
 enum AggType { AggSum, AggAvg, AggFacet, AggMin, AggMax, AggUnknown = -1 };
 
@@ -240,6 +244,7 @@ typedef enum ConnectOpt {
 	kConnectOptOpenNamespaces = 1 << 0,
 	kConnectOptAllowNamespaceErrors = 1 << 1,
 	kConnectOptAutorepair = 1 << 2,
+	kConnectOptCheckClusterID = 1 << 3,
 } ConnectOpt;
 
 typedef enum StorageTypeOpt {
@@ -249,11 +254,19 @@ typedef enum StorageTypeOpt {
 
 typedef struct ConnectOpts {
 #ifdef __cplusplus
-	ConnectOpts() : storage(kStorageTypeOptLevelDB), options(kConnectOptOpenNamespaces) {}
+	ConnectOpts() : storage(kStorageTypeOptLevelDB), options(kConnectOptOpenNamespaces), expectedClusterID(-1) {}
 
 	bool IsOpenNamespaces() const { return options & kConnectOptOpenNamespaces; }
 	bool IsAllowNamespaceErrors() const { return options & kConnectOptAllowNamespaceErrors; }
 	bool IsAutorepair() const { return options & kConnectOptAutorepair; }
+	StorageTypeOpt StorageType() const {
+		if (storage == static_cast<uint16_t>(kStorageTypeOptRocksDB)) {
+			return kStorageTypeOptRocksDB;
+		}
+		return kStorageTypeOptLevelDB;
+	}
+	int ExpectedClusterID() const { return expectedClusterID; }
+	bool HasExpectedClusterID() const { return options & kConnectOptCheckClusterID; }
 
 	ConnectOpts& OpenNamespaces(bool value = true) {
 		options = value ? options | kConnectOptOpenNamespaces : options & ~(kConnectOptOpenNamespaces);
@@ -274,15 +287,16 @@ typedef struct ConnectOpts {
 		storage = static_cast<uint16_t>(type);
 		return *this;
 	}
-	StorageTypeOpt StorageType() const {
-		if (storage == static_cast<uint16_t>(kStorageTypeOptRocksDB)) {
-			return kStorageTypeOptRocksDB;
-		}
-		return kStorageTypeOptLevelDB;
+
+	ConnectOpts& WithExpectedClusterID(int clusterID) {
+		expectedClusterID = clusterID;
+		options |= kConnectOptCheckClusterID;
+		return *this;
 	}
 #endif
 	uint16_t storage;
 	uint16_t options;
+	int expectedClusterID;
 } ConnectOpts;
 
 enum IndexValueType { NotSet = -1, SetByJsonPath = -2 };

@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/restream/reindexer/bindings/builtinserver/config"
+	"github.com/graveart/reindexer/bindings/builtinserver/config"
 )
 
 type IndexDef struct {
@@ -162,6 +162,7 @@ type RawBinding interface {
 	CloseNamespace(ctx context.Context, namespace string) error
 	DropNamespace(ctx context.Context, namespace string) error
 	TruncateNamespace(ctx context.Context, namespace string) error
+	RenameNamespace(ctx context.Context, srcNs string, dstNs string) error
 	EnableStorage(ctx context.Context, namespace string) error
 	AddIndex(ctx context.Context, namespace string, indexDef IndexDef) error
 	UpdateIndex(ctx context.Context, namespace string, indexDef IndexDef) error
@@ -186,7 +187,7 @@ type RawBinding interface {
 	DisableLogger()
 	Ping(ctx context.Context) error
 	Finalize() error
-	Status() Status
+	Status(ctx context.Context) Status
 }
 
 type RawBindingChanging interface {
@@ -243,6 +244,12 @@ type OptionBuiltinWithServer struct {
 	StartupTimeout  time.Duration
 	ShutdownTimeout time.Duration
 	ServerConfig    *config.ServerConfig
+}
+
+// OptionConnect - DB connect options for server
+// CreateDBIfMissing - allow to create DB on coonect if DB doesn't exist already
+type OptionConnect struct {
+	CreateDBIfMissing bool
 }
 
 type Status struct {

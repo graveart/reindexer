@@ -35,8 +35,12 @@ Error Replicator::Start() {
 		new client::Reindexer(client::ReindexerConfig(config_.connPoolSize, config_.workerThreads, 10000,
 													  std::chrono::seconds(config_.timeoutSec), std::chrono::seconds(config_.timeoutSec))));
 
-	auto err = master_->Connect(config_.masterDSN);
-	terminate_ = false;
+	auto err = master_->Connect(config_.masterDSN, client::ConnectOpts().WithExpectedClusterID(config_.clusterID));
+	if (err.ok()) err = master_->Status();
+	if (err.code() == errOK || err.code() == errNetwork) {
+		err = errOK;
+		terminate_ = false;
+	}
 	if (err.ok()) thread_ = std::thread([this]() { this->run(); });
 
 	return err;
@@ -107,13 +111,18 @@ Error Replicator::syncDatabase() {
 	vector<NamespaceDef> nses;
 	logPrintf(LogInfo, "[repl] Starting sync from '%s'", config_.masterDSN);
 
-	Error err = master_->EnumNamespaces(nses, false);
+	Error err = master_->EnumNamespaces(nses, EnumNamespacesOpts());
 	if (!err.ok()) {
-		logPrintf(LogError, "[repl] EnumNamespaces error: %s", err.what());
+		if (err.code() == errForbidden || err.code() == errReplParams) {
+			terminate_ = true;
+		}
+		logPrintf(LogError, "[repl] EnumNamespaces error: %s%s", err.what(), terminate_ ? ", terminatng replication"_sv : ""_sv);
 		return err;
 	}
 
 	syncMtx_.lock();
+	// Protection for concurent updates stream of same namespace
+	// if state is StateSyncing is set, then concurent updates will not modify data, but just set maxLsns_[nsname]
 	for (auto &ns : nses) maxLsns_[ns.name] = -1;
 	state_.store(StateSyncing, std::memory_order_release);
 	syncMtx_.unlock();
@@ -125,93 +134,78 @@ Error Replicator::syncDatabase() {
 
 		if (terminate_) break;
 
-		auto openErr = slave_->OpenNamespace(ns.name, StorageOpts().Enabled().SlaveMode());
-		if (!openErr.ok()) {
-			logPrintf(LogError, "[repl:%s] Error: %s", ns.name, openErr.what());
+		ReplicationState replState;
+		err = slave_->OpenNamespace(ns.name, StorageOpts().Enabled().SlaveMode());
+		auto slaveNs = slave_->getNamespaceNoThrow(ns.name, dummyCtx_);
+		if (err.ok() && slaveNs) {
+			replState = slaveNs->GetReplState(dummyCtx_);
+			slaveNs->SetSlaveReplStatus(ReplicationState::Status::Syncing, errOK, dummyCtx_);
+		} else if (err.code() != errNotFound) {
+			logPrintf(LogWarning, "[repl:%s] Error: %s", ns.name, err.what());
 		}
 
-		// Protect for concurent updates stream of same namespace
-		// if state is StateSync is set, then concurent updates will not modify data, but just set maxLsn_
+		// If there are open error or fatal error in state, then force full sync
+		bool forceSync = !err.ok() || (config_.forceSyncOnLogicError && replState.status == ReplicationState::Status::Fatal);
 
+		err = errOK;
 		for (bool done = false; err.ok() && !done && !terminate_;) {
-			if (openErr.ok()) {
+			if (!forceSync) {
 				err = syncNamespaceByWAL(ns);
-				if (!err.ok()) {
-					logPrintf(LogError, "[repl:%s] syncNamespace error: %s", ns.name, err.what());
-					if (err.code() == errDataHashMismatch && !terminate_) {
-						if (config_.forceSyncOnWrongDataHash) {
-							err = syncNamespaceForced(ns, "DataHash mismatch");
-						} else {
-							err = errOK;
-						}
-					} else if (err.code() != errNetwork && !terminate_ && config_.forceSyncOnLogicError) {
-						err = syncNamespaceForced(ns, "Logic error occurried");
-					} else
-						break;
-					if (!err.ok()) {
-						logPrintf(LogError, "[repl:%s] syncNamespace error: %s", ns.name, err.what());
-						break;
+				if (!err.ok() && !terminate_) {
+					if ((err.code() == errDataHashMismatch && config_.forceSyncOnWrongDataHash) ||
+						(err.code() != errNetwork && config_.forceSyncOnLogicError)) {
+						err = syncNamespaceForced(ns, err.what());
 					}
 				}
 			} else {
-				openErr = err = syncNamespaceForced(ns, "Can't open namespace");
+				err = syncNamespaceForced(ns, !replState.replError.ok() ? replState.replError.what() : "Namespace doesn't exists");
+				forceSync = false;
 			}
-			if (err.ok()) {
+			slaveNs = slave_->getNamespaceNoThrow(ns.name, dummyCtx_);
+			if (err.ok() && slaveNs) {
 				int64_t curLSN = -1;
-				try {
-					curLSN = slave_->getNamespace(ns.name, dummyCtx_)->GetReplState(dummyCtx_).lastLsn;
+				curLSN = slaveNs->GetReplState(dummyCtx_).lastLsn;
+				{
 					std::lock_guard<std::mutex> lck(syncMtx_);
 					// Check, if concurrent update attempt happened with LSN bigger, than current LSN
 					// In this case retry sync
 					if (maxLsns_[ns.name] <= curLSN) {
 						done = true;
 						maxLsns_.erase(ns.name);
-					}
-				} catch (const Error &e) {
-					err = e;
-				}
-			} else {
-				if (openErr.ok()) {
-					try {
-						slave_->getNamespace(ns.name, dummyCtx_)->SetSlaveReplError(err, dummyCtx_);
-					} catch (const Error &e) {
-						err = e;
+					} else {
+						logPrintf(LogInfo, "[repl:%s] Retrying sync due to concurrent online WAL update (lsn=%d) > %d", ns.name,
+								  maxLsns_[ns.name], curLSN);
 					}
 				}
-				logPrintf(LogError, "Sync error: %s", err.what());
-			}
+				slaveNs->SetSlaveReplStatus(ReplicationState::Status::Idle, errOK, dummyCtx_);
+			} else if (slaveNs)
+				slaveNs->SetSlaveReplStatus(err.code() == errNetwork ? ReplicationState::Status::Error : ReplicationState::Status::Fatal,
+											err, dummyCtx_);
 		}
 	}
 	state_.store(StateIdle, std::memory_order_release);
+	logPrintf(LogInfo, "[repl] Done sync with '%s'", config_.masterDSN);
 
 	return err;
 }
 
-// Foced namespace sync
-// This will completely drop slave namespace
-// read all indexes and data from master, then apply to slave
-Error Replicator::syncNamespaceByWAL(const NamespaceDef &ns) {
-	Namespace::Ptr slaveNs;
-	try {
-		slaveNs = slave_->getNamespace(ns.name, dummyCtx_);
-	} catch (const Error &err) {
-		return err;
-	}
+Error Replicator::syncNamespaceByWAL(const NamespaceDef &nsDef) {
+	auto slaveNs = slave_->getNamespaceNoThrow(nsDef.name, dummyCtx_);
+	if (!slaveNs) return Error(errNotFound, "Namespace %s not found", nsDef.name);
 
-	int64_t lsn = slaveNs->GetReplState(dummyCtx_).lastLsn;
+	auto lsn = slaveNs->GetReplState(dummyCtx_).lastLsn;
 
-	logPrintf(LogTrace, "[repl:%s] Start sync items, lsn %ld", ns.name, lsn);
-
+	logPrintf(LogTrace, "[repl:%s] Start sync items, lsn %ld", nsDef.name, lsn);
 	//  Make query to master's WAL
 	client::QueryResults qr(kResultsWithPayloadTypes | kResultsCJson | kResultsWithItemID | kResultsWithRaw);
-	Error err = master_->Select(Query(ns.name).Where("#lsn", CondGt, lsn), qr);
+	Error err = master_->Select(Query(nsDef.name).Where("#lsn", CondGt, lsn), qr);
 
 	switch (err.code()) {
 		case errOutdatedWAL:
 			// Check if WAL has been outdated, if yes, then force resync
-			return syncNamespaceForced(ns, err.what());
+			return syncNamespaceForced(nsDef, err.what());
 		case errOK:
-			return applyWAL(ns.name, qr);
+			return applyWAL(slaveNs, qr);
 		case errNoWAL:
 			terminate_ = true;
 			return err;
@@ -220,7 +214,7 @@ Error Replicator::syncNamespaceByWAL(const NamespaceDef &ns) {
 	}
 }
 
-// Foced namespace sync
+// Forced namespace sync
 // This will completely drop slave namespace
 // read all indexes and data from master, then apply to slave
 Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason) {
@@ -229,7 +223,7 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 	// Create temporary namespace
 	NamespaceDef tmpNsDef;
 	tmpNsDef.storage = StorageOpts().Enabled().CreateIfMissing().SlaveMode().Temporary();
-	shared_ptr<Namespace> tmpNs;
+	NSCloner::Ptr tmpNs;
 	tmpNsDef.name = ns.name + "_tmp_" + randStringAlph(kTmpNsPostfixLen);
 	auto err = slave_->AddNamespace(tmpNsDef);
 	if (!err.ok()) {
@@ -237,14 +231,15 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 		return err;
 	}
 
-	try {
-		tmpNs = slave_->getNamespace(tmpNsDef.name, dummyCtx_);
-	} catch (const Error &exErr) {
-		logPrintf(LogWarning, "Unable to get temporary namespace %s for the force sync: %s", tmpNsDef.name, err.what());
-		return exErr;
+	tmpNs = slave_->getNamespaceNoThrow(tmpNsDef.name, dummyCtx_);
+	if (!tmpNs) {
+		logPrintf(LogWarning, "Unable to get temporary namespace %s for the force sync:", tmpNsDef.name);
+		return Error(errNotFound, "Namespace %s not found", tmpNsDef.name);
 	}
+
+	tmpNs->SetSlaveReplStatus(ReplicationState::Status::Syncing, errOK, dummyCtx_);
 	err = syncIndexesForced(tmpNs, ns);
-	if (err.ok()) err = syncMetaForced(tmpNs);
+	if (err.ok()) err = syncMetaForced(tmpNs, ns.name);
 
 	//  Make query to complete master's namespace data
 	client::QueryResults qr(kResultsWithPayloadTypes | kResultsCJson | kResultsWithItemID | kResultsWithRaw);
@@ -252,9 +247,14 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 	if (err.ok()) {
 		tmpNs->ReplaceTagsMatcher(qr.getTagsMatcher(0), dummyCtx_);
 		err = applyWAL(tmpNs, qr);
+		if (err.code() == errDataHashMismatch) {
+			logPrintf(LogError, "[repl:%s] Internal error. dataHash mismatch while fullSync!", ns.name, err.what());
+			err = errOK;
+		}
 	}
 	if (err.ok()) err = slave_->RenameNamespace(tmpNsDef.name, ns.name);
 	if (!err.ok()) {
+		logPrintf(LogError, "[repl:%s] FORCED sync error: %s", ns.name, err.what());
 		auto dropErr = slave_->closeNamespace(tmpNsDef.name, dummyCtx_, true, true);
 		if (!dropErr.ok()) logPrintf(LogWarning, "Unable to drop temporary namespace %s: %s", tmpNsDef.name, dropErr.what());
 	}
@@ -262,15 +262,7 @@ Error Replicator::syncNamespaceForced(const NamespaceDef &ns, string_view reason
 	return err;
 }
 
-Error Replicator::applyWAL(string_view nsName, client::QueryResults &qr) {
-	try {
-		return applyWAL(slave_->getNamespace(nsName, dummyCtx_), qr);
-	} catch (const Error &err) {
-		return err;
-	}
-}
-
-Error Replicator::applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr) {
+Error Replicator::applyWAL(NSCloner::Ptr slaveNs, client::QueryResults &qr) {
 	Error err;
 	SyncStat stat;
 	WrSerializer ser;
@@ -289,7 +281,7 @@ Error Replicator::applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr) {
 					// Simple item updated
 					ser.Reset();
 					err = it.GetCJSON(ser, false);
-					if (err.ok()) err = applyItemCJson(lsn, slaveNs, ser.Slice(), ModeUpsert, qr.getTagsMatcher(0), stat);
+					if (err.ok()) err = modifyItem(lsn, slaveNs, ser.Slice(), ModeUpsert, qr.getTagsMatcher(0), stat);
 				}
 			} catch (const Error &e) {
 				err = e;
@@ -301,7 +293,7 @@ Error Replicator::applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr) {
 			}
 			stat.processed++;
 		} else {
-			err = stat.lastError = qr.Status();
+			stat.lastError = qr.Status();
 			logPrintf(LogInfo, "[repl:%s] Error executing WAL query: %s", nsName, stat.lastError.what());
 			break;
 		}
@@ -317,21 +309,71 @@ Error Replicator::applyWAL(Namespace::Ptr slaveNs, client::QueryResults &qr) {
 
 	// Check data hash, if operation successfull
 	if (stat.masterState.lastLsn >= 0 && stat.lastError.ok() && !terminate_ && slaveState.dataHash != stat.masterState.dataHash) {
-		err = stat.lastError = Error(errDataHashMismatch, "[repl:%s] dataHash mismatch with master %u != %u; itemsCount %d %d; lsn %d %d",
-									 nsName, stat.masterState.dataHash, slaveState.dataHash, stat.masterState.dataCount,
-									 slaveState.dataCount, stat.masterState.lastLsn, slaveLSN);
+		stat.lastError = Error(errDataHashMismatch, "[repl:%s] dataHash mismatch with master %u != %u; itemsCount %d %d; lsn %d %d", nsName,
+							   stat.masterState.dataHash, slaveState.dataHash, stat.masterState.dataCount, slaveState.dataCount,
+							   stat.masterState.lastLsn, slaveLSN);
 	}
 
 	ser.Reset();
 	stat.Dump(ser) << "lsn #" << slaveState.lastLsn;
 
-	logPrintf(stat.errors ? LogError : LogInfo, "[repl:%s] Sync %s: %s", nsName, terminate_ ? "terminated" : "done", ser.c_str());
+	logPrintf(!stat.lastError.ok() ? LogError : LogInfo, "[repl:%s] Sync %s: %s", nsName, terminate_ ? "terminated" : "done", ser.Slice());
 
-	return err;
+	return stat.lastError;
 }
 
-Error Replicator::applyWALRecord(int64_t lsn, string_view nsName, std::shared_ptr<Namespace> slaveNs, const WALRecord &rec,
-								 SyncStat &stat) {
+Error Replicator::applyTxWALRecord(int64_t lsn, string_view nsName, NSCloner::Ptr slaveNs, const WALRecord &rec) {
+	switch (rec.type) {
+		// Modify item
+		case WalItemModify: {
+			std::lock_guard<std::mutex> lck(syncMtx_);
+			Transaction &tx = transactions_[slaveNs.get()];
+			if (tx.IsFree()) return Error(errLogic, "[repl:%s] Transaction was not initiated.", nsName);
+			Item item = tx.NewItem();
+			const Error err = unpackItem(item, lsn, rec.itemModify.itemCJson, master_->NewItem(nsName).impl_->tagsMatcher());
+			if (!err.ok()) return err;
+			tx.Modify(std::move(item), static_cast<ItemModifyMode>(rec.itemModify.modifyMode));
+		} break;
+		// Update query
+		case WalUpdateQuery: {
+			QueryResults result;
+			Query q;
+			q.FromSQL(rec.data);
+			std::lock_guard<std::mutex> lck(syncMtx_);
+			Transaction &tx = transactions_[slaveNs.get()];
+			if (tx.IsFree()) return Error(errLogic, "[repl:%s] Transaction was not initiated.", nsName);
+			tx.Modify(std::move(q));
+		} break;
+		case WalInitTransaction: {
+			std::lock_guard<std::mutex> lck(syncMtx_);
+			Transaction &tx = transactions_[slaveNs.get()];
+			if (!tx.IsFree()) logPrintf(LogError, "[repl:%s] Init transaction befor commit of previous one.", nsName);
+			tx = slaveNs->NewTransaction(dummyCtx_);
+		} break;
+		case WalCommitTransaction: {
+			QueryResults res;
+			std::lock_guard<std::mutex> lck(syncMtx_);
+			Transaction &tx = transactions_[slaveNs.get()];
+			if (tx.IsFree()) return Error(errLogic, "[repl:%s] Commit of transaction befor initiate it.", nsName);
+			slaveNs->CommitTransaction(tx, res, dummyCtx_);
+			tx = Transaction{};
+		} break;
+		default:
+			return Error(errLogic, "Unexpected for transaction WAL rec type %d\n", int(rec.type));
+	}
+	return {};
+}
+
+void Replicator::checkNoOpenedTransaction(string_view nsName, NSCloner::Ptr slaveNs) {
+	std::lock_guard<std::mutex> lck(syncMtx_);
+	Transaction &tx = transactions_[slaveNs.get()];
+	if (!tx.IsFree()) {
+		logPrintf(LogError, "[repl:%s] Transaction started but not commited", nsName);
+		tx = Transaction{};
+	}
+}
+
+Error Replicator::applyWALRecord(int64_t lsn, string_view nsName, NSCloner::Ptr slaveNs, const WALRecord &rec, SyncStat &stat) {
 	Error err;
 	IndexDef iDef;
 
@@ -339,11 +381,14 @@ Error Replicator::applyWALRecord(int64_t lsn, string_view nsName, std::shared_pt
 		return Error(errParams, "Namespace %s not found", nsName);
 	}
 
+	if (rec.inTransaction) return applyTxWALRecord(lsn, nsName, slaveNs, rec);
+
 	switch (rec.type) {
 		// Modify item
 		case WalItemModify:
-			err = applyItemCJson(lsn, slaveNs, rec.itemModify.itemCJson, rec.itemModify.modifyMode,
-								 master_->NewItem(nsName).impl_->tagsMatcher(), stat);
+			checkNoOpenedTransaction(nsName, slaveNs);
+			err = modifyItem(lsn, slaveNs, rec.itemModify.itemCJson, rec.itemModify.modifyMode,
+							 master_->NewItem(nsName).impl_->tagsMatcher(), stat);
 			break;
 		// Index added
 		case WalIndexAdd:
@@ -365,23 +410,25 @@ Error Replicator::applyWALRecord(int64_t lsn, string_view nsName, std::shared_pt
 			break;
 		// Metadata updated
 		case WalPutMeta:
-			slaveNs->PutMeta(string(rec.putMeta.key), rec.putMeta.value, dummyCtx_, lsn);
+			slaveNs->PutMeta(string(rec.putMeta.key), rec.putMeta.value, NsContext(dummyCtx_).Lsn(lsn));
 			stat.updatedMeta++;
 			break;
 		// Update query
 		case WalUpdateQuery: {
+			checkNoOpenedTransaction(nsName, slaveNs);
 			QueryResults result;
 			Query q;
 			q.FromSQL(rec.data);
+			const auto nsCtx = NsContext(dummyCtx_).Lsn(lsn);
 			switch (q.type_) {
 				case QueryDelete:
-					slaveNs->Delete(q, result, dummyCtx_, lsn);
+					slaveNs->Delete(q, result, nsCtx);
 					break;
 				case QueryUpdate:
-					slaveNs->Update(q, result, dummyCtx_, lsn);
+					slaveNs->Update(q, result, nsCtx);
 					break;
 				case QueryTruncate:
-					slaveNs->Truncate(dummyCtx_, lsn);
+					slaveNs->Truncate(nsCtx);
 					break;
 				default:
 					break;
@@ -396,36 +443,40 @@ Error Replicator::applyWALRecord(int64_t lsn, string_view nsName, std::shared_pt
 		case WalNamespaceDrop:
 			err = slave_->closeNamespace(nsName, dummyCtx_, true, true);
 			break;
+		// Rename namespace
+		case WalNamespaceRename:
+			err = slave_->RenameNamespace(nsName, string(rec.data));
+			break;
 		// Replication state
-		case WalReplState:
+		case WalReplState: {
 			stat.processed--;
 			stat.masterState.FromJSON(giftStr(rec.data));
-			if (stat.masterState.clusterID != config_.clusterID) {
-				terminate_ = true;
-				return Error(errLogic, "Wrong cluster ID expect %d, got %d from master. Terminating replicator.", config_.clusterID,
-							 stat.masterState.clusterID);
-			}
+			MasterState masterState;
+			masterState.dataCount = stat.masterState.dataCount;
+			masterState.dataHash = stat.masterState.dataHash;
+			masterState.lastLsn = stat.masterState.lastLsn;
+			masterState.updatedUnixNano = stat.masterState.updatedUnixNano;
+			slaveNs->SetSlaveReplMasterState(masterState, dummyCtx_);
 			break;
+		}
 		default:
-			break;
+			return Error(errLogic, "Unexpected WAL rec type %d\n", int(rec.type));
 	}
 	return err;
 }
 
-Error Replicator::applyItemCJson(int64_t lsn, std::shared_ptr<Namespace> slaveNs, string_view cjson, int modifyMode, const TagsMatcher &tm,
-								 SyncStat &stat) {
-	// break;
-	Item item = slaveNs->NewItem(dummyCtx_);
-
+Error Replicator::unpackItem(Item &item, int64_t lsn, string_view cjson, const TagsMatcher &tm) {
 	if (item.impl_->tagsMatcher().size() < tm.size()) {
-		bool res = item.impl_->tagsMatcher().try_merge(tm);
-		if (!res) {
-			return Error(errNotValid, "Can't merge tagsmatcher of item with lsn %ul", lsn);
-		}
+		const bool res = item.impl_->tagsMatcher().try_merge(tm);
+		if (!res) return Error(errNotValid, "Can't merge tagsmatcher of item with lsn %ld", lsn);
 	}
-
 	item.setLSN(lsn);
-	Error err = item.FromCJSON(cjson);
+	return item.FromCJSON(cjson);
+}
+
+Error Replicator::modifyItem(int64_t lsn, NSCloner::Ptr slaveNs, string_view cjson, int modifyMode, const TagsMatcher &tm, SyncStat &stat) {
+	Item item = slaveNs->NewItem(dummyCtx_);
+	Error err = unpackItem(item, lsn, cjson, tm);
 	if (err.ok()) {
 		switch (modifyMode) {
 			case ModeDelete:
@@ -457,13 +508,13 @@ WrSerializer &Replicator::SyncStat::Dump(WrSerializer &ser) {
 	if (updatedIndexes) ser << updatedIndexes << " indexes updated; ";
 	if (deletedIndexes) ser << deletedIndexes << " indexes deleted; ";
 	if (updatedMeta) ser << updatedMeta << " meta updated; ";
-	if (errors) ser << errors << " errors (" << lastError.what() << ") ";
+	if (errors || !lastError.ok()) ser << errors << " errors (" << lastError.what() << ") ";
 	if (!ser.Len()) ser << "Up to date; ";
 	if (processed) ser << "processed " << processed << " WAL records ";
 	return ser;
 }
 
-Error Replicator::syncIndexesForced(Namespace::Ptr slaveNs, const NamespaceDef &masterNsDef) {
+Error Replicator::syncIndexesForced(NSCloner::Ptr slaveNs, const NamespaceDef &masterNsDef) {
 	const string &nsName = masterNsDef.name;
 
 	Error err = errOK;
@@ -480,9 +531,8 @@ Error Replicator::syncIndexesForced(Namespace::Ptr slaveNs, const NamespaceDef &
 	return err;
 }
 
-Error Replicator::syncMetaForced(Namespace::Ptr slaveNs) {
+Error Replicator::syncMetaForced(NSCloner::Ptr slaveNs, string_view nsName) {
 	vector<string> keys;
-	const string &nsName = slaveNs->GetName();
 	auto err = master_->EnumMeta(nsName, keys);
 
 	for (auto &key : keys) {
@@ -493,9 +543,9 @@ Error Replicator::syncMetaForced(Namespace::Ptr slaveNs) {
 			continue;
 		}
 		try {
-			slaveNs->PutMeta(key, data, dummyCtx_, 1);
+			slaveNs->PutMeta(key, data, NsContext(dummyCtx_).Lsn(1));
 		} catch (const Error &e) {
-			logPrintf(LogError, "[repl:%s] Error set meta '%s': %s", nsName, key, e.what());
+			logPrintf(LogError, "[repl:%s] Error set meta '%s': %s", slaveNs->GetName(), key, e.what());
 		}
 	}
 	return errOK;
@@ -505,13 +555,8 @@ Error Replicator::syncMetaForced(Namespace::Ptr slaveNs) {
 void Replicator::OnWALUpdate(int64_t lsn, string_view nsName, const WALRecord &wrec) {
 	if (!canApplyUpdate(lsn, nsName)) return;
 
-	std::shared_ptr<Namespace> slaveNs;
-
 	Error err;
-	try {
-		slaveNs = slave_->getNamespace(nsName, dummyCtx_);
-	} catch (const Error &) {
-	}
+	auto slaveNs = slave_->getNamespaceNoThrow(nsName, dummyCtx_);
 
 	SyncStat stat;
 
@@ -523,7 +568,13 @@ void Replicator::OnWALUpdate(int64_t lsn, string_view nsName, const WALRecord &w
 	if (err.ok() && slaveNs && wrec.type != WalNamespaceDrop) {
 		slaveNs->SetSlaveLSN(lsn, dummyCtx_);
 	} else if (!err.ok()) {
+		if (slaveNs) {
+			slaveNs->SetSlaveReplStatus(ReplicationState::Status::Fatal, err, dummyCtx_);
+		}
 		logPrintf(LogError, "[repl:%s] Error apply WAL update: %s", nsName, err.what());
+		if (config_.forceSyncOnLogicError) {
+			resync_.send();
+		}
 	}
 }
 

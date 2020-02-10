@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/cjson"
 )
 
 const defCgoLimit = 2000
@@ -322,6 +322,17 @@ func (binding *Builtin) TruncateNamespace(ctx context.Context, namespace string)
 	return err2go(C.reindexer_truncate_namespace(binding.rx, str2c(namespace), ctxInfo.cCtx))
 }
 
+func (binding *Builtin) RenameNamespace(ctx context.Context, srcNs string, dstNs string) error {
+	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	if err != nil {
+		return err
+	}
+	defer binding.ctxWatcher.StopWatchOnCtx(ctxInfo)
+
+	return err2go(C.reindexer_rename_namespace(binding.rx, str2c(srcNs), str2c(dstNs), ctxInfo.cCtx))
+}
+
+
 func (binding *Builtin) EnableStorage(ctx context.Context, path string) error {
 	l := len(path)
 	if l > 0 && path[l-1] != '/' {
@@ -535,7 +546,7 @@ func (binding *Builtin) Finalize() error {
 	return binding.ctxWatcher.Finalize()
 }
 
-func (binding *Builtin) Status() (status bindings.Status) {
+func (binding *Builtin) Status(ctx context.Context) (status bindings.Status) {
 	status = bindings.Status{
 		Builtin: bindings.StatusBuiltin{
 			CGOLimit: cap(binding.cgoLimiter),

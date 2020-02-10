@@ -4,7 +4,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 
 	"fmt"
 )

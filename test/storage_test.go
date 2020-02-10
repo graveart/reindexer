@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/restream/reindexer"
+	"github.com/graveart/reindexer"
 )
 
 type SubStruct struct {

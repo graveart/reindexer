@@ -5,8 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/cjson"
 )
 
 const maxAsyncRequests = 500
@@ -14,39 +14,27 @@ const asyncResponseQueueSize = 2 * maxAsyncRequests
 const retriesOnInvalidStateCnt = 1
 
 type Tx struct {
-	namespace        string
-	started          bool
-	forceCommitCount uint32
-	db               *reindexerImpl
-	ns               *reindexerNamespace
-	counter          uint32
-	asyncRspCnt      uint32
-	ctx              bindings.TxCtx
-	cmplCh           chan modifyInfo
-	cmplCond         *sync.Cond
-	lock             sync.Mutex
-	asyncErr         error
-	asyncErrLock     sync.RWMutex
+	namespace    string
+	started      bool
+	db           *reindexerImpl
+	ns           *reindexerNamespace
+	asyncRspCnt  uint32
+	ctx          bindings.TxCtx
+	cmplCh       chan modifyInfo
+	cmplCond     *sync.Cond
+	lock         sync.Mutex
+	asyncErr     error
+	asyncErrLock sync.RWMutex
 }
 
-func newTx(db *reindexerImpl, namespace string, ctx context.Context) (*Tx, error) {
-	tx := &Tx{db: db, namespace: namespace, forceCommitCount: 0}
-	err := tx.startTxCtx(ctx)
-	if err != nil {
+func newTx(db *reindexerImpl, namespace string, ctx context.Context) (tx *Tx, err error) {
+	tx = &Tx{db: db, namespace: namespace}
+	if tx.ns, err = tx.db.getNS(tx.namespace); err != nil {
 		return nil, err
 	}
-	tx.ns, _ = tx.db.getNS(tx.namespace)
-
-	return tx, nil
-}
-
-func newTxAutocommit(db *reindexerImpl, namespace string, forceCommitCount uint32) (*Tx, error) {
-	tx := &Tx{db: db, namespace: namespace, forceCommitCount: forceCommitCount}
-	err := tx.startTx()
-	if err != nil {
+	if err = tx.startTxCtx(ctx); err != nil {
 		return nil, err
 	}
-	tx.ns, _ = tx.db.getNS(tx.namespace)
 
 	return tx, nil
 }
@@ -59,7 +47,6 @@ func (tx *Tx) startTxCtx(ctx context.Context) (err error) {
 	if tx.started {
 		return nil
 	}
-	tx.counter = 0
 	tx.asyncRspCnt = 0
 	tx.started = true
 	tx.ctx, err = tx.db.binding.BeginTx(ctx, tx.namespace)
@@ -243,16 +230,11 @@ func (tx *Tx) modifyInternal(item interface{}, json []byte, mode int, precepts .
 		if err != nil {
 			rerr, ok := err.(bindings.Error)
 			if ok && rerr.Code() == bindings.ErrStateInvalidated {
-				tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+				it := tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+				it.Close()
 				err = rerr
 				continue
 			}
-			return err
-		}
-		tx.counter++
-		if tx.counter > tx.forceCommitCount && tx.forceCommitCount != 0 {
-			tx.counter = 0
-			_, err := tx.commitInternal()
 			return err
 		}
 		return nil
@@ -287,7 +269,9 @@ func (tx *Tx) cmplHandlingRoutine(cmplCh chan modifyInfo) {
 			if err != nil {
 				rerr, ok := err.(bindings.Error)
 				if ok && rerr.Code() == bindings.ErrStateInvalidated && modifyRes.retries > 0 {
-					err = tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx).Error()
+					it := tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+					err = it.Error()
+					it.Close()
 				}
 			}
 			if err == nil && modifyRes.retries > 0 {

@@ -54,6 +54,7 @@ protected:
 	std::chrono::microseconds minTime = defaultMinTime();
 	std::chrono::microseconds maxTime = std::chrono::microseconds(std::numeric_limits<size_t>::min());
 	std::vector<size_t> lastValuesUs;
+	size_t posInValuesUs = 0;
 	Mutex mtx_;
 };
 
@@ -63,20 +64,21 @@ using PerfStatCounterST = PerfStatCounter<dummy_mutex>;
 template <typename Mutex>
 class PerfStatCalculator {
 public:
-	PerfStatCalculator(PerfStatCounter<Mutex> &counter, bool enable) : counter_(counter), enable_(enable) {
+	PerfStatCalculator(PerfStatCounter<Mutex> &counter, bool enable) : counter_(&counter), enable_(enable) {
 		if (enable_) tmStart = std::chrono::high_resolution_clock::now();
 	}
 	~PerfStatCalculator() {
 		if (enable_)
-			counter_.Hit(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tmStart));
+			counter_->Hit(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tmStart));
 	}
+	void SetCounter(PerfStatCounter<Mutex> &counter) { counter_ = &counter; }
 	void LockHit() {
 		if (enable_)
-			counter_.LockHit(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tmStart));
+			counter_->LockHit(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - tmStart));
 	}
 
 	std::chrono::time_point<std::chrono::high_resolution_clock> tmStart;
-	PerfStatCounter<Mutex> &counter_;
+	PerfStatCounter<Mutex> *counter_;
 	bool enable_;
 };
 using PerfStatCalculatorMT = PerfStatCalculator<std::mutex>;
