@@ -361,6 +361,7 @@ TEST_F(ReplicationSlaveSlaveApi, TransactionTest) {
 	const int port = 9999;
 	std::string dbPathMaster("/tmp/test_slave4/test_");
 	reindexer::fs::RmDirAll("/tmp/test_slave4/");
+	std::string nsName("ns1_debug");
 	const int serverId = 5;
 	/*
 			m
@@ -382,15 +383,14 @@ TEST_F(ReplicationSlaveSlaveApi, TransactionTest) {
 	size_t kRows = 100;
 
 	ServerControl& master = nodes[0];
-	TestNamespace1 ns1(master);
+	TestNamespace1 ns1(master, nsName);
 
 	ns1.AddRows(master, 0, kRows);
 
 	for (size_t i = 1; i < nodes.size(); i++) {
-		WaitSync(nodes[0], nodes[i], "ns1");
+		WaitSync(nodes[0], nodes[i], nsName);
 	}
 
-	string nsName = "ns1";
 	reindexer::client::Transaction tr = master.Get()->api.reindexer->NewTransaction(nsName);
 	for (unsigned int i = 0; i < kRows; i++) {
 		reindexer::client::Item item = tr.NewItem();
@@ -400,7 +400,7 @@ TEST_F(ReplicationSlaveSlaveApi, TransactionTest) {
 	master.Get()->api.reindexer->CommitTransaction(tr);
 
 	for (size_t i = 1; i < nodes.size(); i++) {
-		WaitSync(nodes[0], nodes[i], "ns1");
+		WaitSync(nodes[0], nodes[i], nsName);
 	}
 
 	std::vector<std::vector<int>> results;

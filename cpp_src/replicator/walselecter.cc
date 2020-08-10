@@ -5,6 +5,8 @@
 #include "core/nsselecter/nsselecter.h"
 #include "tools/semversion.h"
 
+#include <thread>
+
 namespace reindexer {
 
 const SemVersion kMinUnknownReplSupportRxVersion("2.6.0");
@@ -112,7 +114,10 @@ void WALSelecter::operator()(QueryResults &result, SelectCtx &params) {
 		throw Error(errLogic, "Query to WAL should contain condition '#lsn > number' or '#lsn is not null'");
 	}
 	putReplState(result);
-	printf("%s: WAL select size: %lu\n", ns_->name_.c_str(), result.Count());
+	if (ns_->name_.find("debug") != std::string::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, %s: WAL select size: %lu\n", hash(std::this_thread::get_id()), ns_->name_.c_str(), result.Count());
+	}
 }
 
 void WALSelecter::putReplState(QueryResults &result) {

@@ -3,6 +3,8 @@
 #include "tools/logger.h"
 #include "tools/serializer.h"
 
+#include <thread>
+
 #define kStorageWALPrefix "W"
 
 namespace reindexer {
@@ -57,7 +59,11 @@ bool WALTracker::Resize(int64_t sz) {
 		maxLSN = lsnCounter_ - 1;
 		minLSN = maxLSN - ((sz > filledSize ? filledSize : sz) - 1);
 	}
-	printf("%s: Resizing to %ld from %ld; Min LSN %ld, max LSN %ld; filled %ld\n", nsName_.c_str(), sz, oldSz, maxLSN, minLSN, filledSize);
+	if (nsName_.find("debug") != std::string::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld: %s: Resizing to %ld from %ld; Min LSN %ld, max LSN %ld; filled %ld\n", hash(std::this_thread::get_id()),
+			   nsName_.c_str(), sz, oldSz, maxLSN, minLSN, filledSize);
+	}
 
 	std::vector<PackedWALRecord> oldRecords;
 	std::swap(records_, oldRecords);
@@ -88,7 +94,11 @@ void WALTracker::put(int64_t lsn, const WALRecord &rec) {
 		records_.resize(uint64_t(pos + 1));
 	}
 
-	printf("%s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld\n", nsName_.c_str(), lsn, pos, walBegin_, walEnd_, lsnCounter_);
+	if (nsName_.find("debug") != std::string::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, %s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld\n", hash(std::this_thread::get_id()), nsName_.c_str(),
+			   lsn, pos, walBegin_, walEnd_, lsnCounter_);
+	}
 
 	heapSize_ -= records_[pos].heap_size();
 	records_[pos].Pack(rec);
@@ -150,7 +160,12 @@ void WALTracker::initPositions(int64_t sz, int64_t minLSN, int64_t maxLSN) {
 			walBegin_ = minLSN % walSize_;
 		}
 	}
-	printf("%s: Init done. Begin: %ld, end: %ld, lsnCounter: %ld\n", nsName_.c_str(), walBegin_, walEnd_, lsnCounter_);
+
+	if (nsName_.find("debug") != std::string::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, %s: Init done. Begin: %ld, end: %ld, lsnCounter: %ld\n", hash(std::this_thread::get_id()), nsName_.c_str(), walBegin_,
+			   walEnd_, lsnCounter_);
+	}
 }
 
 }  // namespace reindexer
