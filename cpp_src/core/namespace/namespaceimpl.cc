@@ -60,7 +60,12 @@ void NamespaceImpl::IndexesStorage::MoveBase(IndexesStorage &&src) { Base::opera
 // private implementation and NOT THREADSAFE of copy CTOR
 // use 'NamespaceImpl::Clone(NamespaceImpl& ns)'
 NamespaceImpl::NamespaceImpl(const NamespaceImpl &src)
-	: indexes_(*this), wal_(config_.walSize), observers_(src.observers_), lastSelectTime_(0), cancelCommit_(false), nsIsLoading_(false) {
+	: indexes_(*this),
+	  wal_(config_.walSize, src.name_),
+	  observers_(src.observers_),
+	  lastSelectTime_(0),
+	  cancelCommit_(false),
+	  nsIsLoading_(false) {
 	copyContentsFrom(src);
 }
 
@@ -74,7 +79,7 @@ NamespaceImpl::NamespaceImpl(const string &name, UpdatesObservers &observers)
 	  queryCache_(make_shared<QueryCache>()),
 	  joinCache_(make_shared<JoinCache>()),
 	  enablePerfCounters_(false),
-	  wal_(config_.walSize),
+	  wal_(config_.walSize, name),
 	  observers_(&observers),
 	  lastSelectTime_(0),
 	  cancelCommit_(false),

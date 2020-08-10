@@ -7,7 +7,9 @@
 
 namespace reindexer {
 
-WALTracker::WALTracker(int64_t sz) : walSize_(sz) { logPrintf(LogTrace, "[WALTracker] Create LSN=%ld", lsnCounter_); }
+WALTracker::WALTracker(int64_t sz, const std::string &name) : nsName_(name), walSize_(sz) {
+	logPrintf(LogTrace, "[WALTracker] Create LSN=%ld", lsnCounter_);
+}
 
 int64_t WALTracker::Add(const WALRecord &rec, lsn_t oldLsn) {
 	int64_t lsn = lsnCounter_++;
@@ -55,6 +57,7 @@ bool WALTracker::Resize(int64_t sz) {
 		maxLSN = lsnCounter_ - 1;
 		minLSN = maxLSN - ((sz > filledSize ? filledSize : sz) - 1);
 	}
+	printf("%s: Resizing to %ld from %ld; Min LSN %ld, max LSN %ld; filled %ld\n", nsName_.c_str(), sz, oldSz, maxLSN, minLSN, filledSize);
 
 	std::vector<PackedWALRecord> oldRecords;
 	std::swap(records_, oldRecords);
@@ -84,6 +87,8 @@ void WALTracker::put(int64_t lsn, const WALRecord &rec) {
 	if (pos >= int64_t(records_.size())) {
 		records_.resize(uint64_t(pos + 1));
 	}
+
+	printf("%s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld\n", nsName_.c_str(), lsn, pos, walBegin_, walEnd_, lsnCounter_);
 
 	heapSize_ -= records_[pos].heap_size();
 	records_[pos].Pack(rec);
@@ -145,6 +150,7 @@ void WALTracker::initPositions(int64_t sz, int64_t minLSN, int64_t maxLSN) {
 			walBegin_ = minLSN % walSize_;
 		}
 	}
+	printf("%s: Init done. Begin: %ld, end: %ld, lsnCounter: %ld\n", nsName_.c_str(), walBegin_, walEnd_, lsnCounter_);
 }
 
 }  // namespace reindexer

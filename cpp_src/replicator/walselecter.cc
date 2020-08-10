@@ -112,6 +112,7 @@ void WALSelecter::operator()(QueryResults &result, SelectCtx &params) {
 		throw Error(errLogic, "Query to WAL should contain condition '#lsn > number' or '#lsn is not null'");
 	}
 	putReplState(result);
+	printf("%s: WAL select size: %lu\n", ns_->name_.c_str(), result.Count());
 }
 
 void WALSelecter::putReplState(QueryResults &result) {

@@ -12,7 +12,7 @@ namespace reindexer {
 /// WAL trakcer
 class WALTracker {
 public:
-	WALTracker(int64_t sz);
+	WALTracker(int64_t sz, const std::string &);
 	/// Initialize WAL tracker.
 	/// @param sz - Max WAL size
 	/// @param maxLSN - Current LSN counter value
@@ -83,6 +83,8 @@ public:
 	/// Get WAL heap size
 	/// @return WAL memory consumption
 	size_t heap_size() const { return heapSize_ + records_.capacity() * sizeof(PackedWALRecord); }
+
+	std::string nsName_;
 
 protected:
 	/// put WAL record into lsn position, grow ring buffer, if neccessary
