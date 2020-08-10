@@ -131,13 +131,13 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/graveart/reindexer"
+	"github.com/restream/reindexer"
 	// choose how the Reindexer binds to the app (in this case "builtin," which means link Reindexer as a static library)
-	_ "github.com/graveart/reindexer/bindings/builtin"
+	_ "github.com/restream/reindexer/bindings/builtin"
 
 	// OR link Reindexer as static library with bundled server.
-	// _ "github.com/graveart/reindexer/bindings/builtinserver"
-	// "github.com/graveart/reindexer/bindings/builtinserver/config"
+	// _ "github.com/restream/reindexer/bindings/builtinserver"
+	// "github.com/restream/reindexer/bindings/builtinserver/config"
 
 )
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/graveart/reindexer"
+	"github.com/restream/reindexer"
 )
 
 var dsn = flag.String("dsn", "builtin://", "reindex db dsn")

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/graveart/reindexer/bindings"
+	"github.com/restream/reindexer/bindings"
 )
 
 // ExplainResults presents query plan

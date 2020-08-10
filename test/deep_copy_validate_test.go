@@ -3,7 +3,7 @@ package reindexer
 import (
 	"testing"
 
-	"github.com/graveart/reindexer"
+	"github.com/restream/reindexer"
 )
 
 var testNsName = "test_deep_copy_type_equality"

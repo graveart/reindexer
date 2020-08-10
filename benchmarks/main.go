@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/graveart/reindexer/benchmarks/repo"
+	"github.com/restream/reindexer/benchmarks/repo"
 )
 
 const itemsInDataSet = 100000

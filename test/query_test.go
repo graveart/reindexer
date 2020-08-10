@@ -17,8 +17,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/graveart/reindexer"
-	"github.com/graveart/reindexer/bindings"
+	"github.com/restream/reindexer"
+	"github.com/restream/reindexer/bindings"
 	"github.com/stretchr/testify/require"
 )
 

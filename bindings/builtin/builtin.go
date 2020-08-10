@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/graveart/reindexer/bindings"
-	"github.com/graveart/reindexer/cjson"
+	"github.com/restream/reindexer/bindings"
+	"github.com/restream/reindexer/cjson"
 )
 
 const defCgoLimit = 2000

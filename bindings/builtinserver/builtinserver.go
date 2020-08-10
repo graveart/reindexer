@@ -12,9 +12,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/graveart/reindexer/bindings"
-	"github.com/graveart/reindexer/bindings/builtin"
-	"github.com/graveart/reindexer/bindings/builtinserver/config"
+	"github.com/restream/reindexer/bindings"
+	"github.com/restream/reindexer/bindings/builtin"
+	"github.com/restream/reindexer/bindings/builtinserver/config"
 )
 
 var defaultStartupTimeout time.Duration = time.Minute * 3

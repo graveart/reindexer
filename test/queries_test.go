@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graveart/reindexer"
-	"github.com/graveart/reindexer/dsl"
+	"github.com/restream/reindexer"
+	"github.com/restream/reindexer/dsl"
 	"github.com/stretchr/testify/assert"
 )
 

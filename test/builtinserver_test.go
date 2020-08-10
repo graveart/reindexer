@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graveart/reindexer"
-	_ "github.com/graveart/reindexer/bindings/builtinserver"
-	"github.com/graveart/reindexer/bindings/builtinserver/config"
+	"github.com/restream/reindexer"
+	_ "github.com/restream/reindexer/bindings/builtinserver"
+	"github.com/restream/reindexer/bindings/builtinserver/config"
 	"github.com/stretchr/testify/assert"
 )
 

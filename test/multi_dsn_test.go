@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/graveart/reindexer"
-	"github.com/graveart/reindexer/test/helpers"
+	"github.com/restream/reindexer"
+	"github.com/restream/reindexer/test/helpers"
 )
 
 func TestMultipleDSN(t *testing.T) {

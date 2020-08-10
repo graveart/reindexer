@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graveart/reindexer"
-	"github.com/graveart/reindexer/bindings/builtinserver/config"
+	"github.com/restream/reindexer"
+	"github.com/restream/reindexer/bindings/builtinserver/config"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -3,10 +3,10 @@ package reindexer
 import (
 	"context"
 
-	"github.com/graveart/reindexer/bindings"
-	_ "github.com/graveart/reindexer/bindings/cproto"
-	"github.com/graveart/reindexer/dsl"
-	// _ "github.com/graveart/reindexer/bindings/builtinserver"
+	"github.com/restream/reindexer/bindings"
+	_ "github.com/restream/reindexer/bindings/cproto"
+	"github.com/restream/reindexer/dsl"
+	// _ "github.com/restream/reindexer/bindings/builtinserver"
 )
 
 // Condition types

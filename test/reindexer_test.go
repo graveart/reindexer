@@ -8,10 +8,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/graveart/reindexer"
-	_ "github.com/graveart/reindexer/bindings/builtin"
-	_ "github.com/graveart/reindexer/bindings/cproto"
-	// _ "github.com/graveart/reindexer/pprof"
+	"github.com/restream/reindexer"
+	_ "github.com/restream/reindexer/bindings/builtin"
+	_ "github.com/restream/reindexer/bindings/cproto"
+	// _ "github.com/restream/reindexer/pprof"
 )
 
 var DB *ReindexerWrapper

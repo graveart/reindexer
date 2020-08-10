@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graveart/reindexer"
-	"github.com/graveart/reindexer/cjson"
+	"github.com/restream/reindexer"
+	"github.com/restream/reindexer/cjson"
 )
 
 type TestItemBench struct {

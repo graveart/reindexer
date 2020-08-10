@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/graveart/reindexer"
-	_ "github.com/graveart/reindexer/bindings/cproto"
-	// _ "github.com/graveart/reindexer/bindings/builtinserver"
+	"github.com/restream/reindexer"
+	_ "github.com/restream/reindexer/bindings/cproto"
+	// _ "github.com/restream/reindexer/bindings/builtinserver"
 )
 
 type ReindexerWrapper struct {

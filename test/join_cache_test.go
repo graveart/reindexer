@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/graveart/reindexer"
+	"github.com/restream/reindexer"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/graveart/reindexer/bindings/builtinserver/config"
-	"github.com/graveart/reindexer/jsonschema"
+	"github.com/restream/reindexer/bindings/builtinserver/config"
+	"github.com/restream/reindexer/jsonschema"
 )
 
 type IndexDef struct {

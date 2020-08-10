@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/graveart/reindexer/bindings"
-	"github.com/graveart/reindexer/bindings/builtinserver/config"
-	"github.com/graveart/reindexer/cjson"
+	"github.com/restream/reindexer/bindings"
+	"github.com/restream/reindexer/bindings/builtinserver/config"
+	"github.com/restream/reindexer/cjson"
 )
 
 const (
