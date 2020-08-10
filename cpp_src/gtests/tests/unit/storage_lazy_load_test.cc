@@ -6,7 +6,7 @@
 
 void waitFor(int millisec) { std::this_thread::sleep_for(std::chrono::milliseconds(millisec)); }
 
-TEST_F(StorageLazyLoadApi, BasicTest) {
+TEST_F(DISABLED_StorageLazyLoadApi, BasicTest) {
 	bool storageLoaded = false;
 	int64_t totalItemsCount = getItemsCount(storageLoaded);
 
@@ -17,7 +17,7 @@ TEST_F(StorageLazyLoadApi, BasicTest) {
 
 	SelectAll();
 	itemsNow = getItemsCount(storageLoaded);
-	totalItemsCount += 100;  // inserted 100 + 100 from storage (inserted before close of NS)
+	totalItemsCount += 100;	 // inserted 100 + 100 from storage (inserted before close of NS)
 	EXPECT_TRUE(itemsNow == totalItemsCount) << "Expected " << totalItemsCount << " items, not " << itemsNow;
 	EXPECT_TRUE(storageLoaded);
 
@@ -35,10 +35,10 @@ TEST_F(StorageLazyLoadApi, BasicTest) {
 	EXPECT_TRUE(!storageLoaded);
 }
 
-TEST_F(StorageLazyLoadApi, ReadWriteTest) {
+TEST_F(DISABLED_StorageLazyLoadApi, ReadWriteTest) {
 	bool storageLoaded = false;
 	int totalItemsCount(getItemsCount(storageLoaded));
-	totalItemsCount += 100;  // 100 is not loaded from storage yet
+	totalItemsCount += 100;	 // 100 is not loaded from storage yet
 
 	enum LastOperation : int { Select, Insert };
 	int lastOperation;
@@ -78,10 +78,10 @@ TEST_F(StorageLazyLoadApi, ReadWriteTest) {
 	}
 }
 
-TEST_F(StorageLazyLoadApi, DISABLED_AttemptToReadWriteInParallelTest) {
+TEST_F(DISABLED_StorageLazyLoadApi, DISABLED_AttemptToReadWriteInParallelTest) {
 	bool storageLoaded = false;
 	std::atomic<int> totalItemsCount(getItemsCount(storageLoaded));
-	totalItemsCount += 100;  // 100 is not loaded from storage yet
+	totalItemsCount += 100;	 // 100 is not loaded from storage yet
 
 	reindexer::shared_timed_mutex mtx;
 
@@ -134,7 +134,7 @@ TEST_F(StorageLazyLoadApi, DISABLED_AttemptToReadWriteInParallelTest) {
 	EXPECT_TRUE(totalItemsCount == inserted_);
 }
 
-TEST_F(StorageLazyLoadApi, TestForTSAN) {
+TEST_F(DISABLED_StorageLazyLoadApi, TestForTSAN) {
 	auto writeFn = [&]() { fillNs(200); };
 	auto readFn = [&]() {
 		SelectAll();
@@ -147,24 +147,24 @@ TEST_F(StorageLazyLoadApi, TestForTSAN) {
 	waitFor(2500);
 
 	std::vector<std::thread> selectThreads;
-	for (size_t i = 0; i < 30; ++i) {
+	for (size_t i = 0; i < 3; ++i) {
 		selectThreads.push_back(std::thread(readFn));
 	}
 
 	std::vector<std::thread> insertThreads;
-	for (size_t i = 0; i < 150; ++i) {
+	for (size_t i = 0; i < 15; ++i) {
 		insertThreads.push_back(std::thread(writeFn));
 	}
 
-	for (size_t i = 0; i < 15; ++i) {
+	for (size_t i = 0; i < 2; ++i) {
 		selectThreads.push_back(std::thread(readFn));
 	}
 
-	for (size_t i = 0; i < 50; ++i) {
+	for (size_t i = 0; i < 5; ++i) {
 		insertThreads.push_back(std::thread(writeFn));
 	}
 
-	for (size_t i = 0; i < 50; ++i) {
+	for (size_t i = 0; i < 5; ++i) {
 		selectThreads.push_back(std::thread(readFn));
 	}
 

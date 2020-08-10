@@ -1,6 +1,7 @@
 #pragma once
 
 #include "activity_context.h"
+#include "lsn.h"
 #include "tools/errors.h"
 
 namespace reindexer {
@@ -70,14 +71,21 @@ class RdxContext {
 public:
 	using Completion = std::function<void(const Error&)>;
 
-	RdxContext() : holdStatus_(kEmpty), activityPtr_(nullptr), cancelCtx_(nullptr), cmpl_(nullptr) {}
+	RdxContext() : fromReplication_(false), holdStatus_(kEmpty), activityPtr_(nullptr), cancelCtx_(nullptr), cmpl_(nullptr) {}
+	RdxContext(bool fromReplication, const LSNPair& LSNs)
+		: fromReplication_(fromReplication), LSNs_(LSNs), holdStatus_(kEmpty), activityPtr_(nullptr), cancelCtx_(nullptr), cmpl_(nullptr) {}
+
 	RdxContext(const IRdxCancelContext* cancelCtx, Completion cmpl)
-		: holdStatus_(kEmpty), activityPtr_(nullptr), cancelCtx_(cancelCtx), cmpl_(cmpl) {}
-	RdxContext(string_view activityTracer, string_view user, string_view query, ActivityContainer& container,
+		: fromReplication_(false), holdStatus_(kEmpty), activityPtr_(nullptr), cancelCtx_(cancelCtx), cmpl_(cmpl) {}
+	RdxContext(string_view activityTracer, string_view user, string_view query, ActivityContainer& container, int connectionId,
 			   const IRdxCancelContext* cancelCtx, Completion cmpl)
-		: holdStatus_(kHold), activityCtx_(activityTracer, user, query, container), cancelCtx_(cancelCtx), cmpl_(cmpl) {}
+		: fromReplication_(false),
+		  holdStatus_(kHold),
+		  activityCtx_(activityTracer, user, query, container, connectionId),
+		  cancelCtx_(cancelCtx),
+		  cmpl_(cmpl) {}
 	RdxContext(RdxActivityContext* ptr, const IRdxCancelContext* cancelCtx = nullptr, Completion cmpl = nullptr)
-		: holdStatus_(ptr ? kPtr : kEmpty), activityPtr_(ptr), cancelCtx_(cancelCtx), cmpl_(cmpl) {
+		: fromReplication_(false), holdStatus_(ptr ? kPtr : kEmpty), activityPtr_(ptr), cancelCtx_(cancelCtx), cmpl_(cmpl) {
 #ifndef NDEBUG
 		if (holdStatus_ == kPtr) activityPtr_->refCount_.fetch_add(1u, std::memory_order_relaxed);
 #endif
@@ -105,6 +113,9 @@ public:
 	RdxActivityContext* Activity() const;
 	Completion Compl() const { return cmpl_; }
 
+	const bool fromReplication_;
+	LSNPair LSNs_;
+
 private:
 	enum { kHold, kPtr, kEmpty } const holdStatus_;
 	union {
@@ -120,27 +131,29 @@ class QueryResults;
 class InternalRdxContext {
 public:
 	InternalRdxContext() noexcept : cmpl_(nullptr) {}
-	InternalRdxContext(RdxContext::Completion cmpl, const RdxDeadlineContext ctx, string_view activityTracer, string_view user) noexcept
-		: cmpl_(cmpl), deadlineCtx_(std::move(ctx)), activityTracer_(activityTracer), user_(user) {}
+	InternalRdxContext(RdxContext::Completion cmpl, const RdxDeadlineContext ctx, string_view activityTracer, string_view user,
+					   int connectionId) noexcept
+		: cmpl_(cmpl), deadlineCtx_(std::move(ctx)), activityTracer_(activityTracer), user_(user), connectionId_(connectionId) {}
 
 	InternalRdxContext WithCompletion(RdxContext::Completion cmpl) const noexcept {
-		return InternalRdxContext(cmpl, deadlineCtx_, activityTracer_, user_);
+		return InternalRdxContext(cmpl, deadlineCtx_, activityTracer_, user_, connectionId_);
 	}
 	InternalRdxContext WithTimeout(milliseconds timeout) const noexcept {
-		return InternalRdxContext(cmpl_, RdxDeadlineContext(timeout, deadlineCtx_.parent()), activityTracer_, user_);
+		return InternalRdxContext(cmpl_, RdxDeadlineContext(timeout, deadlineCtx_.parent()), activityTracer_, user_, connectionId_);
 	}
 	InternalRdxContext WithCancelParent(const IRdxCancelContext* parent) const noexcept {
-		return InternalRdxContext(cmpl_, RdxDeadlineContext(deadlineCtx_.deadline(), parent), activityTracer_, user_);
+		return InternalRdxContext(cmpl_, RdxDeadlineContext(deadlineCtx_.deadline(), parent), activityTracer_, user_, connectionId_);
 	}
-	InternalRdxContext WithActivityTracer(string_view activityTracer, string_view user) const {
-		return activityTracer.empty()
-				   ? *this
-				   : InternalRdxContext(cmpl_, deadlineCtx_,
-										(activityTracer_.empty() ? "" : activityTracer_ + "/") + string(activityTracer), user);
+	InternalRdxContext WithActivityTracer(string_view activityTracer, string_view user, int connectionId = kNoConnectionId) const {
+		return activityTracer.empty() ? *this
+									  : InternalRdxContext(cmpl_, deadlineCtx_,
+														   (activityTracer_.empty() ? "" : activityTracer_ + "/") + std::string(activityTracer),
+														   user, connectionId);
 	}
-	void SetActivityTracer(string_view activityTracer, string_view user) {
-		activityTracer_ = string(activityTracer);
-		user_ = string(user);
+	void SetActivityTracer(string_view activityTracer, string_view user, int connectionId = kNoConnectionId) {
+		activityTracer_ = std::string(activityTracer);
+		user_ = std::string(user);
+		connectionId_ = connectionId;
 	}
 
 	RdxContext CreateRdxContext(string_view query, ActivityContainer&) const;
@@ -148,11 +161,14 @@ public:
 	RdxContext::Completion Compl() const { return cmpl_; }
 	bool NeedTraceActivity() const { return !activityTracer_.empty(); }
 
+	static const int kNoConnectionId = -1;
+
 private:
 	RdxContext::Completion cmpl_;
 	RdxDeadlineContext deadlineCtx_;
-	string activityTracer_;
-	string user_;
+	std::string activityTracer_;
+	std::string user_;
+	int connectionId_ = kNoConnectionId;
 };
 
 }  // namespace reindexer

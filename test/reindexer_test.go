@@ -8,10 +8,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/restream/reindexer"
-	_ "github.com/restream/reindexer/bindings/builtin"
-	_ "github.com/restream/reindexer/bindings/cproto"
-	// _ "github.com/restream/reindexer/pprof"
+	"github.com/graveart/reindexer"
+	_ "github.com/graveart/reindexer/bindings/builtin"
+	_ "github.com/graveart/reindexer/bindings/cproto"
+	// _ "github.com/graveart/reindexer/pprof"
 )
 
 var DB *ReindexerWrapper
@@ -38,14 +38,14 @@ func TestMain(m *testing.M) {
 	if udsn.Scheme == "builtin" {
 		os.RemoveAll("/tmp/reindex_test/")
 	}
-	DB = NewReindexWrapper(*dsn)
+	DB = NewReindexWrapper(*dsn, reindexer.WithCreateDBIfMissing(), reindexer.WithNetCompression(), reindexer.WithAppName("RxTestInstance"))
 	DBD = &DB.Reindexer
 	if err = DB.Status().Err; err != nil {
 		panic(err)
 	}
 
 	if *dsnSlave != "" {
-		DB.AddSlave(*dsnSlave, *slaveCount)
+		DB.AddSlave(*dsnSlave, *slaveCount, reindexer.WithCreateDBIfMissing())
 	}
 
 	if testing.Verbose() {

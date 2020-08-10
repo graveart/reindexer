@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "args/args.hpp"
+#include "clientsstats.h"
 #include "dbmanager.h"
 #include "debug/allocdebug.h"
 #include "debug/backtrace.h"
@@ -24,7 +25,7 @@
 #endif
 #ifdef LINK_RESOURCES
 #include <cmrc/cmrc.hpp>
-void init_resources() { CMRC_INIT(resources); }
+void init_resources() { CMRC_INIT(reindexer_server_resources); }
 #else
 void init_resources() {}
 #endif
@@ -95,7 +96,7 @@ Error ServerImpl::init() {
 		GetDirPath(config_.DaemonPidFile),
 #endif
 		GetDirPath(config_.CoreLog),	   GetDirPath(config_.HttpLog), GetDirPath(config_.RpcLog),
-		GetDirPath(config_.ServerLog),	 config_.StoragePath};
+		GetDirPath(config_.ServerLog),	   config_.StoragePath};
 
 	for (const string &dir : dirs) {
 		err = TryCreateDirectory(dir);
@@ -137,10 +138,10 @@ int ServerImpl::Start() {
 			run();
 			running = false;
 		},
-		[]() {  //
+		[]() {	//
 			raise(SIGTERM);
 		},
-		[&]() {  //
+		[&]() {	 //
 			return running;
 		});
 
@@ -171,6 +172,14 @@ void ServerImpl::Stop() {
 		running_ = false;
 		async_.send();
 	}
+}
+
+void ServerImpl::ReopenLogFiles() {
+#ifndef _WIN32
+	for (auto &sync : sinks_) {
+		sync.second->reopen();
+	}
+#endif
 }
 
 int ServerImpl::run() {
@@ -233,8 +242,10 @@ int ServerImpl::run() {
 	}
 
 	initCoreLogger();
+	std::unique_ptr<ClientsStats> clientsStats;
+	if (config_.EnableConnectionsStats) clientsStats.reset(new ClientsStats());
 	try {
-		dbMgr_.reset(new DBManager(config_.StoragePath, !config_.EnableSecurity));
+		dbMgr_.reset(new DBManager(config_.StoragePath, !config_.EnableSecurity, clientsStats.get()));
 
 		auto status = dbMgr_->Init(config_.StorageEngine, config_.StartWithErrors, config_.Autorepair);
 		if (!status.ok()) {
@@ -246,12 +257,6 @@ int ServerImpl::run() {
 		logger_.info("Starting reindexer_server ({0}) on {1} HTTP, {2} RPC, with db '{3}'", REINDEX_VERSION, config_.HTTPAddr,
 					 config_.RPCAddr, config_.StoragePath);
 
-#if LINK_RESOURCES
-		if (config_.WebRoot.length() != 0) {
-			logger_.warn("Reindexer server built with embeded web resources. Specified web root '{0}' will be ignored", config_.WebRoot);
-			config_.WebRoot.clear();
-		}
-#endif
 		LoggerWrapper httpLogger("http");
 
 		std::unique_ptr<Prometheus> prometheus;
@@ -269,8 +274,8 @@ int ServerImpl::run() {
 		}
 
 		LoggerWrapper rpcLogger("rpc");
-		RPCServer rpcServer(*dbMgr_, rpcLogger, config_.DebugAllocs, statsCollector.get());
-		if (!rpcServer.Start(config_.RPCAddr, loop_)) {
+		RPCServer rpcServer(*dbMgr_, rpcLogger, clientsStats.get(), config_.DebugAllocs, statsCollector.get());
+		if (!rpcServer.Start(config_.RPCAddr, loop_, config_.EnableConnectionsStats)) {
 			logger_.error("Can't listen RPC on '{0}'", config_.RPCAddr);
 			return EXIT_FAILURE;
 		}
@@ -294,7 +299,7 @@ int ServerImpl::run() {
 #ifndef _WIN32
 			auto sigHupCallback = [&](ev::sig &sig) {
 				(void)sig;
-				loggerReopen();
+				ReopenLogFiles();
 			};
 			shup.set(loop_);
 			shup.set(sigHupCallback);

@@ -13,6 +13,19 @@ using namespace reindexer::net;
 QueryResults::QueryResults(int fetchFlags)
 	: conn_(nullptr), queryID_(0), fetchOffset_(0), fetchFlags_(fetchFlags), fetchAmount_(0), requestTimeout_(0) {}
 
+QueryResults::QueryResults(QueryResults &&obj) noexcept
+	: conn_(std::move(obj.conn_)),
+	  nsArray_(std::move(obj.nsArray_)),
+	  rawResult_(std::move(obj.rawResult_)),
+	  queryID_(std::move(obj.queryID_)),
+	  fetchOffset_(std::move(obj.fetchOffset_)),
+	  fetchFlags_(std::move(obj.fetchFlags_)),
+	  fetchAmount_(std::move(obj.fetchAmount_)),
+	  requestTimeout_(obj.requestTimeout_),
+	  queryParams_(std::move(obj.queryParams_)),
+	  status_(std::move(obj.status_)),
+	  cmpl_(std::move(obj.cmpl_)) {}
+
 QueryResults &QueryResults::operator=(QueryResults &&obj) noexcept {
 	if (this != &obj) {
 		rawResult_ = std::move(obj.rawResult_);
@@ -107,22 +120,64 @@ h_vector<string_view, 1> QueryResults::GetNamespaces() const {
 	return ret;
 }
 
-const TagsMatcher &QueryResults::getTagsMatcher(int nsid) const { return nsArray_[nsid]->tagsMatcher_; };
+TagsMatcher QueryResults::getTagsMatcher(int nsid) const {
+	shared_lock<shared_timed_mutex> lck(nsArray_[nsid]->lck_);
+	return nsArray_[nsid]->tagsMatcher_;
+}
+
+class AdditionalRank : public IAdditionalDatasource<JsonBuilder> {
+public:
+	AdditionalRank(double r) : rank_(r) {}
+	void PutAdditionalFields(JsonBuilder &builder) const final { builder.Put("rank()", rank_); }
+	IEncoderDatasourceWithJoins *GetJoinsDatasource() final { return nullptr; }
+
+private:
+	double rank_;
+};
+
+void QueryResults::Iterator::getJSONFromCJSON(string_view cjson, WrSerializer &wrser, bool withHdrLen) {
+	auto tm = qr_->getTagsMatcher(itemParams_.nsid);
+	JsonEncoder enc(&tm);
+	JsonBuilder builder(wrser, ObjType::TypePlain);
+	if (qr_->NeedOutputRank()) {
+		AdditionalRank additionalRank(itemParams_.proc);
+		if (withHdrLen) {
+			auto slicePosSaver = wrser.StartSlice();
+			enc.Encode(cjson, builder, &additionalRank);
+		} else {
+			enc.Encode(cjson, builder, &additionalRank);
+		}
+	} else {
+		if (withHdrLen) {
+			auto slicePosSaver = wrser.StartSlice();
+			enc.Encode(cjson, builder, nullptr);
+		} else {
+			enc.Encode(cjson, builder, nullptr);
+		}
+	}
+}
+
+Error QueryResults::Iterator::GetMsgPack(WrSerializer &wrser, bool withHdrLen) {
+	readNext();
+	int type = qr_->queryParams_.flags & kResultsFormatMask;
+	if (type == kResultsMsgPack) {
+		if (withHdrLen) {
+			wrser.PutSlice(itemParams_.data);
+		} else {
+			wrser.Write(itemParams_.data);
+		}
+	} else {
+		return Error(errParseBin, "Impossible to get data in MsgPack because of a different format: %d", type);
+	}
+	return errOK;
+}
 
 Error QueryResults::Iterator::GetJSON(WrSerializer &wrser, bool withHdrLen) {
 	readNext();
 	try {
 		switch (qr_->queryParams_.flags & kResultsFormatMask) {
 			case kResultsCJson: {
-				JsonEncoder enc(&qr_->getTagsMatcher(itemParams_.nsid));
-				JsonBuilder builder(wrser, JsonBuilder::TypePlain);
-
-				if (withHdrLen) {
-					auto slicePosSaver = wrser.StartSlice();
-					enc.Encode(itemParams_.data, builder);
-				} else {
-					enc.Encode(itemParams_.data, builder);
-				}
+				getJSONFromCJSON(itemParams_.data, wrser, withHdrLen);
 				break;
 			}
 			case kResultsJson:
@@ -152,6 +207,7 @@ Error QueryResults::Iterator::GetCJSON(WrSerializer &wrser, bool withHdrLen) {
 					wrser.Write(itemParams_.data);
 				}
 				break;
+			case kResultsMsgPack:
 			case kResultsJson:
 				return Error(errParseBin, "Server returned data in json format, can't process");
 			default:
@@ -164,9 +220,38 @@ Error QueryResults::Iterator::GetCJSON(WrSerializer &wrser, bool withHdrLen) {
 }
 
 Item QueryResults::Iterator::GetItem() {
-	// TODO: implement
-	abort();
-	// return Item();
+	readNext();
+	try {
+		Error err;
+		Item item;
+		{
+			shared_lock<shared_timed_mutex> lck(qr_->nsArray_[itemParams_.nsid]->lck_);
+			item = qr_->nsArray_[itemParams_.nsid]->NewItem();
+		}
+		switch (qr_->queryParams_.flags & kResultsFormatMask) {
+			case kResultsMsgPack: {
+				size_t offset = 0;
+				err = item.FromMsgPack(itemParams_.data, offset);
+				break;
+			}
+			case kResultsCJson: {
+				err = item.FromCJSON(itemParams_.data);
+				break;
+			}
+			case kResultsJson: {
+				char *endp = nullptr;
+				err = item.FromJSON(itemParams_.data, &endp);
+				break;
+			}
+			default:
+				return Item();
+		}
+		if (err.ok()) {
+			return item;
+		}
+	} catch (const Error &) {
+	}
+	return Item();
 }
 
 int64_t QueryResults::Iterator::GetLSN() {

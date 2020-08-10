@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/restream/reindexer/benchmarks/repo"
+	"github.com/graveart/reindexer/benchmarks/repo"
 )
 
 func BenchmarkElasticGetByID(b *testing.B)            { repo.Get("elastic").QueryByID(b.N, false) }

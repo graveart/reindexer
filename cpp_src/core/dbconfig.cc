@@ -43,11 +43,17 @@ Error DBConfigProvider::FromJSON(const gason::JsonNode &root) {
 				data.lazyLoad = nsNode["lazyload"].As<bool>();
 				data.noQueryIdleThreshold = nsNode["unload_idle_threshold"].As<int>();
 				data.logLevel = logLevelFromString(nsNode["log_level"].As<string>("none"));
+				data.strictMode = strictModeFromString(nsNode["strict_mode"].As<string>("names"));
 				data.cacheMode = str2cacheMode(nsNode["join_cache_mode"].As<string>("off"));
-				data.startCopyPoliticsCount = nsNode["start_copy_politics_count"].As<int>(data.startCopyPoliticsCount);
-				data.mergeLimitCount = nsNode["merge_limit_count"].As<int>(data.mergeLimitCount);
+				data.startCopyPolicyTxSize = nsNode["start_copy_policy_tx_size"].As<int>(data.startCopyPolicyTxSize);
+				data.copyPolicyMultiplier = nsNode["copy_policy_multiplier"].As<int>(data.copyPolicyMultiplier);
+				data.txSizeToAlwaysCopy = nsNode["tx_size_to_always_copy"].As<int>(data.txSizeToAlwaysCopy);
 				data.optimizationTimeout = nsNode["optimization_timeout_ms"].As<int>(data.optimizationTimeout);
 				data.optimizationSortWorkers = nsNode["optimization_sort_workers"].As<int>(data.optimizationSortWorkers);
+				int64_t walSize = nsNode["wal_size"].As<int64_t>(0);
+				if (walSize > 0) {
+					data.walSize = walSize;
+				}
 				namespacesData_.emplace(nsNode["namespace"].As<string>(), std::move(data));
 			}
 			auto it = handlers_.find(NamespaceDataConf);
@@ -104,6 +110,7 @@ Error ReplicationConfigData::FromYML(const string &yaml) {
 	try {
 		Yaml::Parse(root, yaml);
 		masterDSN = root["master_dsn"].As<std::string>(masterDSN);
+		appName = root["app_name"].As<std::string>(appName);
 		connPoolSize = root["conn_pool_size"].As<int>(connPoolSize);
 		workerThreads = root["worker_threads"].As<int>(workerThreads);
 		timeoutSec = root["timeout_sec"].As<int>(timeoutSec);
@@ -111,7 +118,10 @@ Error ReplicationConfigData::FromYML(const string &yaml) {
 		role = str2role(root["role"].As<std::string>(role2str(role)));
 		forceSyncOnLogicError = root["force_sync_on_logic_error"].As<bool>(forceSyncOnLogicError);
 		forceSyncOnWrongDataHash = root["force_sync_on_wrong_data_hash"].As<bool>(forceSyncOnWrongDataHash);
-
+		retrySyncIntervalSec = root["retry_sync_interval_sec"].As<int>(retrySyncIntervalSec);
+		onlineReplErrorsThreshold = root["online_repl_errors_threshold"].As<int>(onlineReplErrorsThreshold);
+		enableCompression = root["enable_compression"].As<bool>(enableCompression);
+		serverId = root["server_id"].As<int>(serverId);
 		auto &node = root["namespaces"];
 		namespaces.clear();
 		for (unsigned i = 0; i < node.Size(); i++) {
@@ -128,14 +138,18 @@ Error ReplicationConfigData::FromYML(const string &yaml) {
 Error ReplicationConfigData::FromJSON(const gason::JsonNode &root) {
 	try {
 		masterDSN = root["master_dsn"].As<string>();
-		connPoolSize = root["conn_pool_size"].As<int>(1);
-		workerThreads = root["worker_threads"].As<int>(1);
-		timeoutSec = root["timeout_sec"].As<int>(30);
-		clusterID = root["cluster_id"].As<int>(1);
+		appName = root["app_name"].As<string>(std::move(appName));
+		connPoolSize = root["conn_pool_size"].As<int>(connPoolSize);
+		workerThreads = root["worker_threads"].As<int>(workerThreads);
+		timeoutSec = root["timeout_sec"].As<int>(timeoutSec);
+		clusterID = root["cluster_id"].As<int>(clusterID);
 		role = str2role(root["role"].As<string>("none"));
 		forceSyncOnLogicError = root["force_sync_on_logic_error"].As<bool>();
 		forceSyncOnWrongDataHash = root["force_sync_on_wrong_data_hash"].As<bool>();
-
+		retrySyncIntervalSec = root["retry_sync_interval_sec"].As<int>(retrySyncIntervalSec);
+		onlineReplErrorsThreshold = root["online_repl_errors_threshold"].As<int>(onlineReplErrorsThreshold);
+		enableCompression = root["enable_compression"].As<bool>(enableCompression);
+		serverId = root["server_id"].As<int>(serverId);
 		namespaces.clear();
 		for (auto &objNode : root["namespaces"]) {
 			namespaces.insert(objNode.As<string>());
@@ -172,10 +186,15 @@ std::string ReplicationConfigData::role2str(ReplicationRole role) noexcept {
 void ReplicationConfigData::GetJSON(JsonBuilder &jb) const {
 	jb.Put("role", role2str(role));
 	jb.Put("master_dsn", masterDSN);
+	jb.Put("app_name", appName);
 	jb.Put("cluster_id", clusterID);
 	jb.Put("timeout_sec", timeoutSec);
+	jb.Put("enable_compression", enableCompression);
 	jb.Put("force_sync_on_logic_error", forceSyncOnLogicError);
 	jb.Put("force_sync_on_wrong_data_hash", forceSyncOnWrongDataHash);
+	jb.Put("retry_sync_interval_sec", retrySyncIntervalSec);
+	jb.Put("online_repl_errors_threshold", onlineReplErrorsThreshold);
+	jb.Put("server_id", serverId);
 	{
 		auto arrNode = jb.Array("namespaces");
 		for (const auto &ns : namespaces) arrNode.Put(nullptr, ns);
@@ -197,25 +216,39 @@ void ReplicationConfigData::GetYAML(WrSerializer &ser) const {
 		Yaml::Serialize(nsYaml, namespacesStr);
 	}
 	// clang-format off
-	ser <<	"# Replication role. May be on of\n"
+	ser <<	"# Replication role. May be one of\n"
 			"# none - replication is disabled\n"
 			"# slave - replication as slave\n"
 			"# master - replication as master\n"
+			"# master_master - replication as master master\n"
 			"role: " + role2str(role) + "\n"
 			"\n"
 			"# DSN to master. Only cproto schema is supported\n"
 			"master_dsn: " + masterDSN + "\n"
 			"\n"
+			"# Application name used by replicator as login tag\n"
+			"app_name: " + appName + "\n"
+			"\n"
 			"# Cluser ID - must be same for client and for master\n"
 			"cluster_id: " + std::to_string(clusterID) + "\n"
-			"# force resync on logic error conditions\n"
+			"\n"
+			"# Server Id - must be unique for all nodes\n"
+			"server_id: " + std::to_string(serverId) + "\n"
+			"\n"
+			"# Force resync on logic error conditions\n"
 			"force_sync_on_logic_error: " + (forceSyncOnLogicError ? "true" : "false") + "\n"
 			"\n"
 			"# Master response timeout\n"
 			"timeout_sec: " + std::to_string(timeoutSec) + "\n"
 			"\n"
-			"# force resync on wrong data hash conditions\n"
+			"# Force resync on wrong data hash conditions\n"
 			"force_sync_on_wrong_data_hash: " + (forceSyncOnWrongDataHash ? "true" : "false") + "\n"
+			"\n"
+			"# Resync timeout on network errors"
+			"retry_sync_interval_sec: " + std::to_string(retrySyncIntervalSec) + "\n"
+			"\n"
+			"# Count of online replication erros, which will be merged in single error message"
+			"online_repl_errors_threshold: " + std::to_string(onlineReplErrorsThreshold) + "\n"
 			"\n"
 			"# List of namespaces for replication. If emply, all namespaces\n"
 			"# All replicated namespaces will become read only for slave\n"

@@ -2,6 +2,7 @@
 
 #include "serverconnection.h"
 #include <errno.h>
+#include <snappy.h>
 #include "tools/serializer.h"
 
 namespace reindexer {
@@ -10,9 +11,10 @@ namespace cproto {
 
 const auto kCProtoTimeoutSec = 300.;
 const auto kUpdatesResendTimeout = 0.1;
+const auto kMaxUpdatesBufSize = 1024 * 1024 * 8;
 
-ServerConnection::ServerConnection(int fd, ev::dynamic_loop &loop, Dispatcher &dispatcher)
-	: net::ConnectionST(fd, loop), dispatcher_(dispatcher) {
+ServerConnection::ServerConnection(int fd, ev::dynamic_loop &loop, Dispatcher &dispatcher, bool enableStat)
+	: net::ConnectionST(fd, loop, enableStat), dispatcher_(dispatcher) {
 	timeout_.start(kCProtoTimeoutSec);
 	updates_async_.set<ServerConnection, &ServerConnection::async_cb>(this);
 	updates_timeout_.set<ServerConnection, &ServerConnection::timeout_cb>(this);
@@ -24,6 +26,8 @@ ServerConnection::ServerConnection(int fd, ev::dynamic_loop &loop, Dispatcher &d
 
 	callback(io_, ev::READ);
 }
+
+ServerConnection::~ServerConnection() { closeConn(); }
 
 bool ServerConnection::Restart(int fd) {
 	restart(fd);
@@ -37,7 +41,6 @@ void ServerConnection::Attach(ev::dynamic_loop &loop) {
 	async_.set<ServerConnection, &ServerConnection::async_cb>(this);
 	if (!attached_) {
 		attach(loop);
-
 		timeout_.start(kCProtoTimeoutSec);
 		updates_async_.set(loop);
 		updates_async_.start();
@@ -62,9 +65,8 @@ void ServerConnection::onClose() {
 		dispatcher_.onClose_(ctx, errOK);
 	}
 	clientData_.reset();
-	updates_mtx_.lock();
+	std::unique_lock<std::mutex> lck(updates_mtx_);
 	updates_.clear();
-	updates_mtx_.unlock();
 }
 
 void ServerConnection::handleRPC(Context &ctx) {
@@ -85,24 +87,35 @@ void ServerConnection::onRead() {
 		if (len < sizeof(hdr)) return;
 
 		if (hdr.magic != kCprotoMagic) {
-			responceRPC(ctx, Error(errParams, "Invalid cproto magic %08x", int(hdr.magic)), Args());
+			try {
+				responceRPC(ctx, Error(errParams, "Invalid cproto magic %08x", int(hdr.magic)), Args());
+			} catch (const Error &err) {
+				fprintf(stderr, "responceRPC unexpected error: %s", err.what().c_str());
+			}
 			closeConn_ = true;
 			return;
 		}
 
 		if (hdr.version < kCprotoMinCompatVersion) {
-			responceRPC(ctx,
-						Error(errParams, "Unsupported cproto version %04x. This server expects reindexer client v1.9.8+", int(hdr.version)),
-						Args());
+			try {
+				responceRPC(
+					ctx,
+					Error(errParams, "Unsupported cproto version %04x. This server expects reindexer client v1.9.8+", int(hdr.version)),
+					Args());
+			} catch (const Error &err) {
+				fprintf(stderr, "responceRPC unexpected error: %s", err.what().c_str());
+			}
 			closeConn_ = true;
 			return;
 		}
+		// Enable compression, only if clients sand compressed data to us
+		enableSnappy_ = (hdr.version >= kCprotoMinSnappyVersion) && hdr.compressed;
 
-		if (hdr.len + sizeof(hdr) > rdBuf_.capacity()) {
-			rdBuf_.reserve(hdr.len + sizeof(hdr) + 0x1000);
+		if (size_t(hdr.len) + sizeof(hdr) > rdBuf_.capacity()) {
+			rdBuf_.reserve(size_t(hdr.len) + sizeof(hdr) + 0x1000);
 		}
 
-		if (hdr.len + sizeof(hdr) > rdBuf_.size()) {
+		if (size_t(hdr.len) + sizeof(hdr) > rdBuf_.size()) {
 			if (!rdBuf_.size()) rdBuf_.clear();
 			return;
 		}
@@ -110,18 +123,26 @@ void ServerConnection::onRead() {
 		rdBuf_.erase(sizeof(hdr));
 
 		auto it = rdBuf_.tail();
-		if (it.size() < hdr.len) {
+		if (it.size() < size_t(hdr.len)) {
 			rdBuf_.unroll();
 			it = rdBuf_.tail();
 		}
-		assert(it.size() >= hdr.len);
+		assert(it.size() >= size_t(hdr.len));
 
 		ctx.call = &call_;
 		try {
-			ctx.stat.sizeStat.reqSizeBytes = hdr.len + sizeof(hdr);
+			ctx.stat.sizeStat.reqSizeBytes = size_t(hdr.len) + sizeof(hdr);
 			ctx.call->cmd = CmdCode(hdr.cmd);
 			ctx.call->seq = hdr.seq;
 			Serializer ser(it.data(), hdr.len);
+			std::string uncompressed;
+			if (hdr.compressed) {
+				if (!snappy::Uncompress(it.data(), hdr.len, &uncompressed)) {
+					throw Error(errParseBin, "Can't decompress data from peer");
+				}
+
+				ser = Serializer(uncompressed);
+			}
 			ctx.call->execTimeout_ = milliseconds(0);
 
 			ctx.call->args.Unpack(ser);
@@ -136,9 +157,13 @@ void ServerConnection::onRead() {
 
 			handleRPC(ctx);
 		} catch (const Error &err) {
-			// Execption occurs on unrecoverble error. Send responce, and drop connection
+			// Exception occurs on unrecoverable error. Send responce, and drop connection
 			fprintf(stderr, "drop connect, reason: %s\n", err.what().c_str());
-			responceRPC(ctx, err, Args());
+			try {
+				responceRPC(ctx, err, Args());
+			} catch (const Error &err) {
+				fprintf(stderr, "responceRPC unexpected error: %s", err.what().c_str());
+			}
 			closeConn_ = true;
 		}
 
@@ -146,14 +171,13 @@ void ServerConnection::onRead() {
 		timeout_.start(kCProtoTimeoutSec);
 	}
 }
-
-chunk ServerConnection::packRPC(chunk chunk, Context &ctx, const Error &status, const Args &args) {
-	WrSerializer ser(std::move(chunk));
-
+static void packRPC(WrSerializer &ser, Context &ctx, const Error &status, const Args &args, bool enableSnappy) {
 	CProtoHeader hdr;
 	hdr.len = 0;
 	hdr.magic = kCprotoMagic;
 	hdr.version = kCprotoVersion;
+	hdr.compressed = enableSnappy;
+
 	if (ctx.call != nullptr) {
 		hdr.cmd = ctx.call->cmd;
 		hdr.seq = ctx.call->seq;
@@ -162,17 +186,29 @@ chunk ServerConnection::packRPC(chunk chunk, Context &ctx, const Error &status, 
 		hdr.seq = 0;
 	}
 
+	size_t savePos = ser.Len();
 	ser.Write(string_view(reinterpret_cast<char *>(&hdr), sizeof(hdr)));
+
 	ser.PutVarUint(status.code());
 	ser.PutVString(status.what());
 	args.Pack(ser);
-	reinterpret_cast<CProtoHeader *>(ser.Buf())->len = ser.Len() - sizeof(hdr);
 
-	if (dispatcher_.onResponse_) {
-		ctx.stat.sizeStat.respSizeBytes = ser.Len();
-		dispatcher_.onResponse_(ctx);
+	if (hdr.compressed) {
+		auto data = ser.Slice().substr(sizeof(hdr) + savePos);
+		std::string compressed;
+		snappy::Compress(data.data(), data.length(), &compressed);
+		ser.Reset(sizeof(hdr) + savePos);
+		ser.Write(compressed);
 	}
+	if (ser.Len() - savePos >= size_t(std::numeric_limits<int32_t>::max())) {
+		throw Error(errNetwork, "Too large RPC message(%d), size: %d bytes", hdr.cmd, ser.Len());
+	}
+	reinterpret_cast<CProtoHeader *>(ser.Buf() + savePos)->len = ser.Len() - savePos - sizeof(hdr);
+}
 
+static chunk packRPC(chunk chunk, Context &ctx, const Error &status, const Args &args, bool enableSnappy) {
+	WrSerializer ser(std::move(chunk));
+	packRPC(ser, ctx, status, args, enableSnappy);
 	return ser.DetachChunk();
 }
 
@@ -182,7 +218,15 @@ void ServerConnection::responceRPC(Context &ctx, const Error &status, const Args
 		return;
 	}
 
-	wrBuf_.write(packRPC(wrBuf_.get_chunk(), ctx, status, args));
+	auto &&chunk = packRPC(wrBuf_.get_chunk(), ctx, status, args, enableSnappy_);
+	auto len = chunk.len_;
+	wrBuf_.write(std::move(chunk));
+
+	if (dispatcher_.onResponse_) {
+		ctx.stat.sizeStat.respSizeBytes = len;
+		dispatcher_.onResponse_(ctx);
+	}
+
 	ctx.respSent = true;
 	// if (canWrite_) {
 	// 	write_cb();
@@ -193,39 +237,44 @@ void ServerConnection::responceRPC(Context &ctx, const Error &status, const Args
 	}
 }
 
-void ServerConnection::CallRPC(CmdCode cmd, const Args &args) {
-	RPCCall call{cmd, 0, {}, milliseconds(0)};
-	cproto::Context ctx{"", &call, this, {{}, {}}, false};
-	auto packed = packRPC(chunk(), ctx, errOK, args);
-	updates_mtx_.lock();
-	updates_.emplace_back(std::move(packed));
-	updates_mtx_.unlock();
-	// async_.send();
+void ServerConnection::CallRPC(const IRPCCall &call) {
+	std::unique_lock<std::mutex> lck(updates_mtx_);
+	updates_.emplace_back(call);
 }
 
 void ServerConnection::sendUpdates() {
-	if (wrBuf_.size() + 10 > wrBuf_.capacity()) {
+	if (wrBuf_.size() + 10 > wrBuf_.capacity() || wrBuf_.data_size() > kMaxUpdatesBufSize / 2) {
 		return;
 	}
 
-	std::vector<chunk> updates;
+	std::vector<IRPCCall> updates;
 	updates_mtx_.lock();
 	updates.swap(updates_);
 	updates_mtx_.unlock();
-	cproto::Context ctx{"", nullptr, this, {{}, {}}, false};
+	RPCCall call{kCmdUpdates, 0, {}, milliseconds(0)};
+	cproto::Context ctx{"", &call, this, {{}, {}}, false};
 	size_t len = 0;
-	if (updates.size() > 2) {
-		WrSerializer ser(wrBuf_.get_chunk());
-		for (auto &ch : updates) {
-			ser.Write(string_view(reinterpret_cast<char *>(ch.data()), ch.size()));
-		}
-		len = ser.Len();
-		wrBuf_.write(ser.DetachChunk());
-	} else {
-		for (auto &ch : updates) {
-			len += ch.len_;
-			wrBuf_.write(std::move(ch));
-		}
+	Args args;
+	CmdCode cmd;
+
+	WrSerializer ser(wrBuf_.get_chunk());
+	size_t cnt = 0;
+	for (cnt = 0; cnt < updates.size() && ser.Len() < kMaxUpdatesBufSize; ++cnt) {
+		updates[cnt].Get(&updates[cnt], cmd, args);
+		packRPC(ser, ctx, Error(), args, enableSnappy_);
+	}
+
+	if (cnt != updates.size()) {
+		std::unique_lock<std::mutex> lck(updates_mtx_);
+		updates_.insert(updates_.begin(), updates.begin() + cnt, updates.end());
+	}
+
+	len = ser.Len();
+	wrBuf_.write(ser.DetachChunk());
+
+	if (dispatcher_.onResponse_) {
+		ctx.stat.sizeStat.respSizeBytes = len;
+		dispatcher_.onResponse_(ctx);
 	}
 
 	callback(io_, ev::WRITE);

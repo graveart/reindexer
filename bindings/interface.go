@@ -5,7 +5,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/restream/reindexer/bindings/builtinserver/config"
+	"github.com/graveart/reindexer/bindings/builtinserver/config"
+	"github.com/graveart/reindexer/jsonschema"
 )
 
 type IndexDef struct {
@@ -22,6 +23,14 @@ type IndexDef struct {
 	ExpireAfter int         `json:"expire_after"`
 	Config      interface{} `json:"config"`
 }
+
+type FieldDef struct {
+	JSONPath string `json:"json_path"`
+	Type     string `json:"type"`
+	IsArray  bool   `json:"is_array"`
+}
+
+type SchemaDef jsonschema.Schema
 
 type StorageOpts struct {
 	EnableStorage     bool `json:"enabled"`
@@ -156,14 +165,16 @@ type Stats struct {
 
 // Raw binding to reindexer
 type RawBinding interface {
-	Init(u *url.URL, options ...interface{}) error
+	Init(u []url.URL, options ...interface{}) error
 	Clone() RawBinding
 	OpenNamespace(ctx context.Context, namespace string, enableStorage, dropOnFileFormatError bool) error
 	CloseNamespace(ctx context.Context, namespace string) error
 	DropNamespace(ctx context.Context, namespace string) error
 	TruncateNamespace(ctx context.Context, namespace string) error
+	RenameNamespace(ctx context.Context, srcNs string, dstNs string) error
 	EnableStorage(ctx context.Context, namespace string) error
 	AddIndex(ctx context.Context, namespace string, indexDef IndexDef) error
+	SetSchema(ctx context.Context, namespace string, schema SchemaDef) error
 	UpdateIndex(ctx context.Context, namespace string, indexDef IndexDef) error
 	DropIndex(ctx context.Context, namespace, index string) error
 	BeginTx(ctx context.Context, namespace string) (TxCtx, error)
@@ -184,9 +195,10 @@ type RawBinding interface {
 	Commit(ctx context.Context, namespace string) error
 	EnableLogger(logger Logger)
 	DisableLogger()
+	ReopenLogFiles() error
 	Ping(ctx context.Context) error
 	Finalize() error
-	Status() Status
+	Status(ctx context.Context) Status
 }
 
 type RawBindingChanging interface {
@@ -245,6 +257,24 @@ type OptionBuiltinWithServer struct {
 	ServerConfig    *config.ServerConfig
 }
 
+// OptionConnect - DB connect options for server
+// CreateDBIfMissing - allow to create DB on connect if DB doesn't exist already
+// EnableCompression - request compress traffic by snappy library
+type OptionConnect struct {
+	CreateDBIfMissing bool
+}
+
+// OptionCompression - DB connect options for server
+// EnableCompression - request compress traffic by snappy library
+type OptionCompression struct {
+	EnableCompression bool
+}
+
+// AppName - Application name, which will be used in server connect info
+type OptionAppName struct {
+	AppName string
+}
+
 type Status struct {
 	Err     error
 	CProto  StatusCProto
@@ -256,6 +286,7 @@ type StatusCProto struct {
 	ConnPoolUsage  int
 	ConnQueueSize  int
 	ConnQueueUsage int
+	ConnAddr       string
 }
 
 type StatusBuiltin struct {

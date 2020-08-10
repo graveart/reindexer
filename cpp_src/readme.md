@@ -46,7 +46,7 @@ apt update
 apt install reindexer-server
 ````
 
-Available distros: `debian-buster`, `debian-stretch`, `ubuntu-bionic`, `ubuntu-xenial`
+Available distros: `debian-buster`, `debian-stretch`, `ubuntu-bionic`, `ubuntu-xenial`, `ubuntu-focal`
 
 
 ## Windows
@@ -74,10 +74,6 @@ cd reindexer
 mkdir -p build && cd build
 cmake ..
 make -j4
-# optional: step for build swagger documentation
-make swagger
-# optional: step for build web pages of Reindexer's face
-make face
 # install to system
 sudo make install
 ````

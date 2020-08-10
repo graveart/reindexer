@@ -13,9 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
+	"unicode"
+	"unicode/utf8"
 
-	"github.com/restream/reindexer"
-	"github.com/restream/reindexer/bindings"
+	"github.com/graveart/reindexer"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -33,7 +37,7 @@ var queryNames = map[int]string{
 	reindexer.GE:    ">=",
 	reindexer.LE:    "<=",
 	reindexer.SET:   "SET",
-	reindexer.RANGE: "in",
+	reindexer.RANGE: "RANGE",
 	reindexer.ANY:   "ANY",
 	reindexer.EMPTY: "EMPTY",
 	reindexer.LIKE:  "LIKE",
@@ -65,25 +69,25 @@ type queryTestEntry struct {
 
 // Test Query to DB object
 type queryTest struct {
-	q              *reindexer.Query
-	entries        queryTestEntryTree
-	distinctIndex  string
-	sortIndex      []string
-	sortDesc       bool
-	sortValues     map[string][]interface{}
-	limitItems     int
-	startOffset    int
-	reqTotalCount  bool
-	db             *ReindexerWrapper
-	namespace      string
-	nextOp         int
-	ns             *testNamespace
-	totalCount     int
-	equalPositions EqualPositions
-	readOnly       bool
-	deepReplEqual  bool
-	needVerify     bool
-	handClose      bool
+	q               *reindexer.Query
+	entries         queryTestEntryTree
+	distinctIndexes []string
+	sortIndex       []string
+	sortDesc        bool
+	sortValues      map[string][]interface{}
+	limitItems      int
+	startOffset     int
+	reqTotalCount   bool
+	db              *ReindexerWrapper
+	namespace       string
+	nextOp          int
+	ns              *testNamespace
+	totalCount      int
+	equalPositions  EqualPositions
+	readOnly        bool
+	deepReplEqual   bool
+	needVerify      bool
+	handClose       bool
 }
 type testNamespace struct {
 	items     map[string]interface{}
@@ -109,7 +113,7 @@ func newTestQuery(db *ReindexerWrapper, namespace string, needVerify ...bool) *q
 	if qt == nil {
 		qt = &queryTest{}
 	} else {
-		qt.distinctIndex = ""
+		qt.distinctIndexes = []string{}
 		qt.sortIndex = qt.sortIndex[:0]
 		qt.entries.data = qt.entries.data[:0]
 		qt.entries.activeChild = 0
@@ -154,6 +158,15 @@ func newTestNamespace(namespace string, item interface{}) {
 	}
 	testNamespaces[strings.ToLower(namespace)] = ns
 	prepareStruct(ns, reflect.TypeOf(item), []int{}, "")
+}
+
+func renameTestNamespace(namespace string, dstName string) {
+	ns, ok := testNamespaces[namespace]
+	if !ok {
+		return
+	}
+	testNamespaces[strings.ToLower(dstName)] = ns
+	delete(testNamespaces, namespace)
 }
 
 func newTestTx(db *ReindexerWrapper, namespace string) *txTest {
@@ -215,15 +228,20 @@ func (tx *txTest) UpsertAsnc(s interface{}, cmpl bindings.Completion) {
 }
 
 func (tx *txTest) Commit() (int, error) {
-	tx.db.SetSynced(false)
+	res, err := tx.tx.CommitWithCount()
+	tx.db.SetSyncRequired()
+	return res, err
+}
 
-	return tx.tx.CommitWithCount()
+func (tx *txTest) Rollback() error {
+	err := tx.tx.Rollback()
+	tx.db.SetSyncRequired()
+	return err
 }
 
 func (tx *txTest) MustCommit() int {
-	tx.db.SetSynced(false)
-
 	res := tx.tx.MustCommit()
+	tx.db.SetSyncRequired()
 	return res
 }
 
@@ -280,6 +298,7 @@ func (qt *queryTestEntryTree) toString() (ret string) {
 }
 
 func (qt *queryTest) toString() (ret string) {
+	ret += " FROM " + qt.q.Namespace
 	if len(qt.entries.data) > 0 {
 		ret += " WHERE " + qt.entries.toString()
 	}
@@ -309,8 +328,11 @@ func (qt *queryTest) toString() (ret string) {
 	if qt.startOffset != 0 {
 		ret += " OFFSET " + strconv.Itoa(qt.startOffset)
 	}
-	if len(qt.distinctIndex) > 0 {
-		ret += " DISTINCT " + qt.distinctIndex
+	for i, dIdx := range qt.distinctIndexes {
+		if i != 0 {
+			ret += ","
+		}
+		ret += " DISTINCT(" + dIdx + ")"
 	}
 
 	return ret
@@ -431,11 +453,11 @@ func (qt *queryTest) Not() *queryTest {
 }
 
 // Distinct - Return only items with uniq value of field
-func (qt *queryTest) Distinct(distinctIndex string) *queryTest {
-	if len(distinctIndex) > 0 {
-		qt.q.Distinct(distinctIndex)
-		qt.distinctIndex = distinctIndex
+func (qt *queryTest) Distinct(distinctIndexes []string) *queryTest {
+	for _, dIdx := range distinctIndexes {
+		qt.q.Distinct(dIdx)
 	}
+	qt.distinctIndexes = distinctIndexes
 	return qt
 }
 
@@ -452,16 +474,33 @@ func (qt *queryTest) Delete() (int, error) {
 }
 
 func (qt *queryTest) DeleteCtx(ctx context.Context) (int, error) {
-	qt.readOnly = false
-	qt.db.SetSynced(false)
+	res, err := qt.q.DeleteCtx(ctx)
 
-	return qt.q.DeleteCtx(ctx)
+	qt.db.SetSyncRequired()
+	qt.readOnly = false
+	return res, err
+}
+
+func (qt *queryTest) Drop(field string) *queryTest {
+	qt.q.Drop(field)
+
+	qt.db.SetSyncRequired()
+	qt.readOnly = false
+	return qt
 }
 
 func (qt *queryTest) Set(field string, values interface{}) *queryTest {
 	qt.q.Set(field, values)
-	qt.db.SetSynced(false)
 
+	qt.db.SetSyncRequired()
+	qt.readOnly = false
+	return qt
+}
+
+func (qt *queryTest) SetObject(field string, values interface{}) *queryTest {
+	qt.q.SetObject(field, values)
+
+	qt.db.SetSyncRequired()
 	qt.readOnly = false
 	return qt
 }
@@ -485,9 +524,11 @@ func (qt *queryTest) Update() *reindexer.Iterator {
 }
 
 func (qt *queryTest) UpdateCtx(ctx context.Context) *reindexer.Iterator {
+	it := qt.q.UpdateCtx(ctx)
+
+	qt.db.SetSyncRequired()
 	qt.readOnly = false
-	qt.db.SetSynced(false)
-	return qt.q.UpdateCtx(ctx)
+	return it
 }
 
 // Limit - Set limit (count) of returned items
@@ -510,6 +551,11 @@ func (qt *queryTest) Debug(level int) *queryTest {
 	return qt
 }
 
+func (qt *queryTest) Explain() *queryTest {
+	qt.q.Explain()
+	return qt
+}
+
 // SelectFilter
 func (qt *queryTest) Select(filters ...string) *queryTest {
 	qt.q.Select(filters...)
@@ -527,20 +573,21 @@ func (qt *queryTest) ExecCtx(ctx context.Context) *reindexer.Iterator {
 }
 
 // Exec query, and full scan check items returned items
-func (qt *queryTest) ExecAndVerify() *reindexer.Iterator {
-	return qt.ExecAndVerifyCtx(context.Background())
+func (qt *queryTest) ExecAndVerify(t *testing.T) *reindexer.Iterator {
+	return qt.ExecAndVerifyCtx(t, context.Background())
 }
 
 // Exec query with context, and full scan check items returned items
-func (qt *queryTest) ExecAndVerifyCtx(ctx context.Context) *reindexer.Iterator {
+func (qt *queryTest) ExecAndVerifyCtx(t *testing.T, ctx context.Context) *reindexer.Iterator {
 	defer qt.close()
 	it := qt.ManualClose().ExecCtx(ctx)
 	qt.totalCount = it.TotalCount()
+	aggregations := it.AggResults()
 	items, err := it.AllowUnsafe(true).FetchAll()
 	if err != nil {
 		panic(err)
 	}
-	qt.Verify(items, true)
+	qt.Verify(t, items, aggregations, true)
 	//	logger.Printf(reindexer.INFO, "%s -> %d\n", qt.toString(), len(items))
 	_ = items
 
@@ -633,11 +680,237 @@ func (qt *queryTest) ExecToJsonCtx(ctx context.Context, jsonRoots ...string) *re
 
 var testNamespaces = make(map[string]*testNamespace, 100)
 
-func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
+const (
+	containField = iota
+	containValue
+)
+
+type sortExprValue struct {
+	contain   int
+	field     [][]int
+	fieldName string
+	value     float64
+}
+
+func convertToDouble(v reflect.Value, sortStr string, fieldName string, item interface{}) float64 {
+	switch v.Type().Kind() {
+	case reflect.String:
+		if result, err := strconv.ParseFloat(v.String(), 64); err == nil {
+			return result
+		} else {
+			panic(err)
+		}
+	case reflect.Float32, reflect.Float64:
+		return v.Float()
+	case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int8,
+		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8:
+		return float64(v.Int())
+	case reflect.Bool:
+		if v.Bool() {
+			return 1.0
+		} else {
+			return 0.0
+		}
+	case reflect.Array, reflect.Slice:
+		if v.Len() != 1 {
+			panic(fmt.Errorf("Found len(values) != 1 on sort by '%s' index %s in item %+v", sortStr, fieldName, item))
+		}
+		return convertToDouble(v.Index(0), sortStr, fieldName, item)
+	}
+	panic(fmt.Errorf("Unknown field type on sort by '%s' index %s in item %+v", sortStr, fieldName, item))
+}
+
+func (value *sortExprValue) getValue(item interface{}, sortStr string) float64 {
+	if value.contain == containValue {
+		return value.value
+	}
+	vals := getValues(item, value.field)
+	if len(vals) != 1 {
+		panic(fmt.Errorf("Found len(values) != 1 on sort by '%s' index %s in item %+v", sortStr, value.fieldName, item))
+	}
+	return convertToDouble(vals[0], sortStr, value.fieldName, item)
+}
+
+const (
+	opPlus = iota
+	opMinus
+	opMult
+	opDiv
+)
+
+type sortExprEntry struct {
+	negative  bool
+	operation int
+	isSubExpr bool
+	value     *sortExprValue
+	subExpr   []*sortExprEntry
+}
+
+func justIndex(sortExpr []*sortExprEntry) bool {
+	return len(sortExpr) == 1 && !sortExpr[0].isSubExpr && sortExpr[0].value.contain == containField && sortExpr[0].operation == opPlus && !sortExpr[0].negative
+}
+
+func skipSpaces(sortStr string, pos int) int {
+	for pos < len(sortStr) {
+		if r, w := utf8.DecodeRuneInString(sortStr[pos:]); unicode.IsSpace(r) {
+			pos += w
+		} else {
+			break
+		}
+	}
+	return pos
+}
+
+func getSortValueOrIndex(sortStr string, pos int) (string, int) {
+	i := pos
+	for i < len(sortStr) {
+		if r, w := utf8.DecodeRuneInString(sortStr[i:]); !unicode.IsSpace(r) && r != ')' {
+			i += w
+		} else {
+			break
+		}
+	}
+	return sortStr[pos:i], i
+}
+
+func parseSortExpr(sortStr string, pos int, ns *testNamespace) ([]*sortExprEntry, int) {
+	result := make([]*sortExprEntry, 0)
+	expectValue := true
+	inSubExpression := false
+	lastOperationPlusOrMinus := false
+	op := opPlus
+	pos = skipSpaces(sortStr, pos)
+	for pos < len(sortStr) {
+		if expectValue {
+			negative := false
+			if sortStr[pos] == '-' {
+				negative = true
+				pos = skipSpaces(sortStr, pos+1)
+				if pos >= len(sortStr) {
+					panic(fmt.Errorf("Parse of sort expression '%s' failed", sortStr))
+				}
+			}
+			entry := new(sortExprEntry)
+			entry.operation = op
+			entry.negative = negative
+			if sortStr[pos] == '(' {
+				var subExpr []*sortExprEntry
+				subExpr, pos = parseSortExpr(sortStr, pos+1, ns)
+				if pos >= len(sortStr) || sortStr[pos] != ')' {
+					panic(fmt.Errorf("Parse of sort expression '%s' failed", sortStr))
+				}
+				pos++
+				entry.isSubExpr = true
+				entry.subExpr = subExpr
+			} else {
+				exprValue := new(sortExprValue)
+				var valueStr string
+				valueStr, pos = getSortValueOrIndex(sortStr, pos)
+				if value, err := strconv.ParseFloat(valueStr, 64); err == nil {
+					exprValue.contain = containValue
+					exprValue.value = value
+				} else {
+					exprValue.contain = containField
+					exprValue.fieldName = valueStr
+					exprValue.field, _ = ns.getField(valueStr)
+				}
+				entry.isSubExpr = false
+				entry.value = exprValue
+			}
+			if inSubExpression {
+				result[len(result)-1].subExpr = append(result[len(result)-1].subExpr, entry)
+			} else {
+				result = append(result, entry)
+			}
+			expectValue = false
+		} else {
+			switch sortStr[pos] {
+			case ')':
+				return result, pos
+			case '+':
+				op = opPlus
+				lastOperationPlusOrMinus = true
+				inSubExpression = false
+			case '-':
+				op = opMinus
+				lastOperationPlusOrMinus = true
+				inSubExpression = false
+			case '*', '/':
+				if op = opMult; sortStr[pos] == '/' {
+					op = opDiv
+				}
+				if lastOperationPlusOrMinus {
+					lastEntry := result[len(result)-1]
+					newSubExpr := new(sortExprEntry)
+					newSubExpr.negative = false
+					newSubExpr.operation = lastEntry.operation
+					newSubExpr.isSubExpr = true
+					newSubExpr.subExpr = make([]*sortExprEntry, 1)
+					newSubExpr.subExpr[0] = lastEntry
+					lastEntry.operation = opPlus
+					result[len(result)-1] = newSubExpr
+					lastOperationPlusOrMinus = false
+					inSubExpression = true
+				}
+			default:
+				panic(fmt.Errorf("Parse of sort expression '%s' failed, char '%c'", sortStr, sortStr[pos]))
+			}
+			pos++
+			expectValue = true
+		}
+		pos = skipSpaces(sortStr, pos)
+	}
+	if expectValue {
+		panic(fmt.Errorf("Parse of sort expression '%s' failed", sortStr))
+	}
+	return result, pos
+}
+
+func calculate(sortExpr []*sortExprEntry, item interface{}, sortStr string) float64 {
+	var result float64 = 0.0
+	for _, sortEntry := range sortExpr {
+		var value float64
+		if sortEntry.isSubExpr {
+			value = calculate(sortEntry.subExpr, item, sortStr)
+		} else {
+			value = sortEntry.value.getValue(item, sortStr)
+		}
+		if sortEntry.negative {
+			value = -value
+		}
+		switch sortEntry.operation {
+		case opPlus:
+			result += value
+		case opMinus:
+			result -= value
+		case opMult:
+			result *= value
+		case opDiv:
+			if value == 0.0 {
+				panic(fmt.Errorf("Division by zero on sort by '%s' in item %+v", sortStr, item))
+			}
+			result /= value
+		}
+	}
+	return result
+}
+
+func (qt *queryTest) Verify(t *testing.T, items []interface{}, aggResults []reindexer.AggregationResult, checkEq bool) {
+	if len(qt.distinctIndexes) > 1 {
+		require.Equal(t, len(items), 0, "Returned items with several distincts")
+	}
 	// map of found ids
 	foundIds := make(map[string]int, len(items))
-	distincts := make(map[interface{}]int, 100)
-	distIdx, _ := qt.ns.getField(qt.distinctIndex)
+	var distIndexes [][][]int
+	for _, dIdx := range qt.distinctIndexes {
+		distIdx, _ := qt.ns.getField(dIdx)
+		distIndexes = append(distIndexes, distIdx)
+	}
+	distinctsByItems := make(map[string]int, 1000)
+	distinctsByAggRes := make([]map[string]int, len(distIndexes))
+	for i := 0; i < len(distinctsByAggRes); i++ {
+		distinctsByAggRes[i] = make(map[string]int, 1000)
+	}
 	totalItems := 0
 
 	// Check returned items for match query conditions
@@ -674,30 +947,49 @@ func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
 		}
 
 		// Check distinct
-		if len(qt.distinctIndex) > 0 {
-			vals := getValues(item, distIdx)
-			if len(vals) != 1 {
-				log.Fatalf("Found len(values) != 1 on distinct %s in item %+v", qt.distinctIndex, item)
-			}
-			intf := vals[0].Interface()
-			if _, ok := distincts[intf]; ok {
-				log.Fatalf("Duplicate distinct value %+v in item %+v", intf, item)
-			}
-			distincts[intf] = 0
+		if len(qt.distinctIndexes) == 1 {
+			vals := getValues(item, distIndexes[0])
+			require.Equalf(t, len(vals), 1, "Found len(values) != 1 on distinct '%s' in item %#v", qt.distinctIndexes[0], item)
+			valStr := fmt.Sprint(vals[0])
+			_, ok := distinctsByItems[valStr]
+			require.Falsef(t, ok, "Duplicate distinct value '%s' in item %#v", valStr, item)
+			distinctsByItems[valStr] = 0
+		}
+	}
+	require.Equal(t, len(aggResults), len(qt.distinctIndexes))
+	for i, agg := range aggResults {
+		require.Equal(t, agg.Type, "distinct")
+		require.Equal(t, len(agg.Fields), 1)
+		require.Equal(t, agg.Fields[0], qt.distinctIndexes[i])
+		for _, v := range agg.Distincts {
+			_, ok := distinctsByAggRes[i][v]
+			require.Falsef(t, ok, "Duplicate distinct value '%s' by index '%s'", v, agg.Fields[0])
+			distinctsByAggRes[i][v] = 0
 		}
 	}
 
 	// Check sorting
 	sortIdxCount := len(qt.sortIndex)
 	var sortIdxs map[int][][]int
-	var prevVals map[int][]reflect.Value
+	var prevVals map[int]reflect.Value
+	var byExpr map[int]bool
+	var exprs map[int][]*sortExprEntry
 	var res []int
 	if sortIdxCount > 0 {
 		sortIdxs = make(map[int][][]int)
+		byExpr = make(map[int]bool)
+		exprs = make(map[int][]*sortExprEntry)
 		for k := 0; k < sortIdxCount; k++ {
-			sortIdxs[k], _ = qt.ns.getField(qt.sortIndex[k])
+			sortExpr, _ := parseSortExpr(qt.sortIndex[k], 0, qt.ns)
+			if justIndex(sortExpr) {
+				sortIdxs[k], _ = qt.ns.getField(qt.sortIndex[k])
+				byExpr[k] = false
+			} else {
+				exprs[k] = sortExpr
+				byExpr[k] = true
+			}
 		}
-		prevVals = make(map[int][]reflect.Value)
+		prevVals = make(map[int]reflect.Value)
 		res = make([]int, sortIdxCount)
 	}
 	for i := 0; i < len(items); i++ {
@@ -705,9 +997,15 @@ func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
 			res[j] = -1
 		}
 		for k := 0; k < sortIdxCount; k++ {
-			vals := getValues(items[i], sortIdxs[k])
-			if len(vals) != 1 {
-				log.Fatalf("Found len(values) != 1 on sort index %s in item %+v", qt.sortIndex[k], items[i])
+			var val reflect.Value
+			if byExpr[k] {
+				val = reflect.ValueOf(calculate(exprs[k], items[i], qt.sortIndex[k]))
+			} else {
+				vals := getValues(items[i], sortIdxs[k])
+				if len(vals) != 1 {
+					log.Fatalf("Found len(values) != 1 on sort index %s in item %+v", qt.sortIndex[k], items[i])
+				}
+				val = vals[0]
 			}
 
 			if i > 0 {
@@ -720,14 +1018,14 @@ func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
 						}
 					}
 					if needToVerify {
-						res[k] = compareValues(prevVals[k][0], vals[0])
+						res[k] = compareValues(prevVals[k], val)
 						if (res[k] > 0 && !qt.sortDesc) || (res[k] < 0 && qt.sortDesc) {
-							log.Fatalf("Sort error on index %s,desc=%v ... %v ... %v .... ", qt.sortIndex[k], qt.sortDesc, prevVals[0], vals[0])
+							log.Fatalf("Sort error by '%s',desc=%v ... %v ... %v .... ", qt.sortIndex[k], qt.sortDesc, prevVals, val)
 						}
 					}
 				}
 			}
-			prevVals[k] = vals
+			prevVals[k] = val
 		}
 	}
 
@@ -736,20 +1034,19 @@ func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
 		if _, ok := foundIds[pk]; !ok {
 			if qt.entries.verifyConditions(qt.ns, item) {
 				// If request with limit or offset - do not check not found items
-				if qt.startOffset == 0 && (qt.limitItems == 0 || len(items) < qt.limitItems) {
-					if len(qt.distinctIndex) > 0 {
+				if qt.startOffset == 0 && (qt.limitItems == 0 || len(qt.distinctIndexes) <= 1 && len(items) < qt.limitItems) {
+					itemJson, _ := json.Marshal(item)
+					require.Greaterf(t, len(qt.distinctIndexes), 0, "Not found item pkey=%s, match condition '%s', expected total items=%d, found=%d\n%s", pk, qt.toString(), len(qt.ns.items), len(items), string(itemJson))
+					for i, distIdx := range distIndexes {
 						vals := getValues(item, distIdx)
-						if len(vals) != 1 {
-							log.Fatalf("Found len(values) != 1 on distinct %s in item %+v", qt.distinctIndex, item)
+						require.Equalf(t, len(vals), 1, "Found len(values) != 1 on distinct %#v in item %s", qt.distinctIndexes, string(itemJson))
+						valStr := fmt.Sprint(vals[0])
+						_, ok := distinctsByAggRes[i][valStr]
+						require.Truef(t, ok, "In query '%s'\nNot present distinct value '%s' by index '%s' of item %s in aggregation results", qt.toString(), valStr, qt.distinctIndexes[i], string(itemJson))
+						if len(qt.distinctIndexes) == 1 {
+							_, ok := distinctsByItems[valStr]
+							require.Truef(t, ok, "In query '%s'\nNot present distinct value '%s' by index '%s' of item %s in aggregation results", qt.toString(), valStr, qt.distinctIndexes[0], string(itemJson))
 						}
-						intf := vals[0].Interface()
-						if _, ok := distincts[intf]; !ok {
-							log.Fatalf("Not present distinct value %+v in item %+v", intf, item)
-						}
-					} else {
-						json1, _ := json.Marshal(item)
-						log.Fatalf("Not found item pkey=%s, match condition '%s',expected total items=%d,found=%d\n%s",
-							pk, qt.toString(), len(qt.ns.items), len(items), string(json1))
 					}
 				}
 				totalItems++
@@ -758,7 +1055,7 @@ func (qt *queryTest) Verify(items []interface{}, checkEq bool) {
 	}
 
 	// Check total count
-	if qt.reqTotalCount && totalItems != qt.totalCount && len(qt.distinctIndex) == 0 {
+	if qt.reqTotalCount && totalItems != qt.totalCount && len(qt.distinctIndexes) == 0 {
 		panic(fmt.Errorf("Total mismatch: %d != %d (%d)", totalItems, qt.totalCount, len(items)))
 	}
 }

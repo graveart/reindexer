@@ -1,7 +1,5 @@
-
-
 #include "core/query/sql/sqlencoder.h"
-#include "core/query/query.h"
+#include "core/nsselecter/sortexpression.h"
 #include "core/queryresults/aggregationresult.h"
 #include "tools/serializer.h"
 
@@ -65,18 +63,17 @@ void SQLEncoder::dumpMerged(WrSerializer &ser, bool stripArgs) const {
 
 void SQLEncoder::dumpOrderBy(WrSerializer &ser, bool stripArgs) const {
 	if (query_.sortingEntries_.empty()) return;
-
 	ser << " ORDER BY ";
 	for (size_t i = 0; i < query_.sortingEntries_.size(); ++i) {
 		const SortingEntry &sortingEntry(query_.sortingEntries_[i]);
-		if (query_.forcedSortOrder.empty()) {
-			ser << sortingEntry.column;
+		if (query_.forcedSortOrder_.empty()) {
+			ser << '\'' << sortingEntry.expression << '\'';
 		} else {
-			ser << "FIELD(" << sortingEntry.column;
+			ser << "FIELD(" << sortingEntry.expression;
 			if (stripArgs) {
 				ser << '?';
 			} else {
-				for (auto &v : query_.forcedSortOrder) {
+				for (auto &v : query_.forcedSortOrder_) {
 					ser << ", '" << v.As<string>() << "'";
 				}
 			}
@@ -87,60 +84,119 @@ void SQLEncoder::dumpOrderBy(WrSerializer &ser, bool stripArgs) const {
 	}
 }
 
+void SQLEncoder::dumpEqualPositions(WrSerializer &ser, int parenthesisIndex) const {
+	if (query_.equalPositions_.empty()) return;
+	auto range = query_.equalPositions_.equal_range(parenthesisIndex);
+	if (range.first == query_.equalPositions_.end()) return;
+	for (auto it = range.first; it != range.second; ++it) {
+		assert(it->second.size() > 0);
+		ser << " equal_position(";
+		for (size_t i = 0; i < it->second.size(); ++i) {
+			if (i != 0) ser << ",";
+			assert(query_.entries.IsValue(it->second[i]));
+			ser << query_.entries[it->second[i]].index;
+		}
+		ser << ")";
+	}
+}
+
 WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 	switch (query_.type_) {
-		case QuerySelect:
+		case QuerySelect: {
 			ser << "SELECT ";
-			if (query_.aggregations_.size()) {
-				for (const auto &a : query_.aggregations_) {
-					if (&a != &*query_.aggregations_.begin()) ser << ',';
-					ser << AggregationResult::aggTypeToStr(a.type_) << "(";
-					for (const auto &f : a.fields_) {
-						if (&f != &*a.fields_.begin()) ser << ',';
-						ser << f;
-					}
-					for (const auto &se : a.sortingEntries_) {
-						ser << " ORDER BY " << se.column << (se.desc ? " DESC" : " ASC");
-					}
-
-					if (a.offset_ != 0 && !stripArgs) ser << " OFFSET " << a.offset_;
-					if (a.limit_ != UINT_MAX && !stripArgs) ser << " LIMIT " << a.limit_;
-					ser << ')';
+			bool needComma = false;
+			if (query_.IsWithRank()) {
+				ser << "RANK()";
+				needComma = true;
+			}
+			for (const auto &a : query_.aggregations_) {
+				if (needComma) {
+					ser << ", ";
+				} else {
+					needComma = true;
 				}
-			} else if (query_.selectFilter_.size()) {
-				for (auto &f : query_.selectFilter_) {
-					if (&f != &*query_.selectFilter_.begin()) ser << ',';
+				ser << AggregationResult::aggTypeToStr(a.type_) << "(";
+				for (const auto &f : a.fields_) {
+					if (&f != &*a.fields_.begin()) ser << ", ";
 					ser << f;
 				}
-			} else
-				ser << '*';
-			if (query_.calcTotal != ModeNoTotal) ser << ", COUNT(*)";
+				for (const auto &se : a.sortingEntries_) {
+					ser << " ORDER BY " << '\'' << se.expression << '\'' << (se.desc ? " DESC" : " ASC");
+				}
+
+				if (a.offset_ != 0 && !stripArgs) ser << " OFFSET " << a.offset_;
+				if (a.limit_ != UINT_MAX && !stripArgs) ser << " LIMIT " << a.limit_;
+				ser << ')';
+			}
+			if (query_.aggregations_.empty() || (query_.aggregations_.size() == 1 && query_.aggregations_[0].type_ == AggDistinct)) {
+				string distinctIndex;
+				if (!query_.aggregations_.empty()) {
+					assert(query_.aggregations_[0].fields_.size() == 1);
+					distinctIndex = query_.aggregations_[0].fields_[0];
+				}
+				if (query_.selectFilter_.empty()) {
+					if (query_.count != 0) {
+						if (needComma) ser << ", ";
+						ser << '*';
+						if (query_.calcTotal != ModeNoTotal) {
+							needComma = true;
+						}
+					}
+				} else {
+					for (const auto &filter : query_.selectFilter_) {
+						if (filter == distinctIndex) continue;
+						if (needComma) {
+							ser << ", ";
+						} else {
+							needComma = true;
+						}
+						ser << filter;
+					}
+				}
+			}
+			if (query_.calcTotal != ModeNoTotal) {
+				if (needComma) ser << ", ";
+				if (query_.calcTotal == ModeAccurateTotal) ser << "COUNT(*)";
+				if (query_.calcTotal == ModeCachedTotal) ser << "COUNT_CACHED(*)";
+			}
 			ser << " FROM " << query_._namespace;
-			break;
+		} break;
 		case QueryDelete:
 			ser << "DELETE FROM " << query_._namespace;
 			break;
-		case QueryUpdate:
-			ser << "UPDATE " << query_._namespace << " SET ";
-			for (const UpdateEntry &field : query_.updateFields_) {
-				if (&field != &*query_.updateFields_.begin()) ser << ',';
-				if (field.column.find('.') == string::npos)
-					ser << field.column << " = ";
-				else
-					ser << "'" << field.column << "' = ";
-
-				if (field.values.size() != 1) ser << '[';
-				for (const Variant &v : field.values) {
-					if (&v != &*field.values.begin()) ser << ',';
-					if (v.Type() == KeyValueString && !field.isExpression) {
-						ser << '\'' << v.As<string>() << '\'';
-					} else {
-						ser << v.As<string>();
-					}
+		case QueryUpdate: {
+			if (query_.UpdateFields().empty()) break;
+			ser << "UPDATE " << query_._namespace;
+			FieldModifyMode mode = query_.UpdateFields().front().mode;
+			bool isUpdate = (mode == FieldModeSet || mode == FieldModeSetJson);
+			if (isUpdate) {
+				ser << " SET ";
+			} else {
+				ser << " DROP ";
+			}
+			for (const UpdateEntry &field : query_.UpdateFields()) {
+				if (&field != &*query_.UpdateFields().begin()) ser << ',';
+				if (field.column.find('.') == string::npos) {
+					ser << field.column;
+				} else {
+					ser << "'" << field.column << "'";
 				}
-				ser << ((field.values.size() != 1) ? "]" : "");
+				if (isUpdate) {
+					ser << " = ";
+					if (field.values.size() != 1) ser << '[';
+					for (const Variant &v : field.values) {
+						if (&v != &*field.values.begin()) ser << ',';
+						if ((v.Type() == KeyValueString) && !field.isExpression && (mode != FieldModeSetJson)) {
+							ser << '\'' << v.As<string>() << '\'';
+						} else {
+							ser << v.As<string>();
+						}
+					}
+					ser << ((field.values.size() != 1) ? "]" : "");
+				}
 			}
 			break;
+		}
 		case QueryTruncate:
 			ser << "TRUNCATE " << query_._namespace;
 			break;
@@ -161,29 +217,32 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 extern const char *condNames[];
 const char *opNames[] = {"-", "OR", "AND", "AND NOT"};
 
-static void writeSQL(const Query &parentQuery, QueryEntries::const_iterator from, QueryEntries::const_iterator to, WrSerializer &ser,
-					 bool stripArgs) {
+void SQLEncoder::dumpWhereEntries(QueryEntries::const_iterator from, QueryEntries::const_iterator to, WrSerializer &ser,
+								  bool stripArgs) const {
+	int encodedEntries = 0;
 	for (auto it = from; it != to; ++it) {
-		if (it != from) {
+		bool isLeaf = it->IsLeaf();
+		if (isLeaf && it->Value().distinct) continue;
+		if (encodedEntries++) {
 			bool orInnerJoin = false;
 			if (it->IsLeaf() && (it->Value().joinIndex != QueryEntry::kNoJoins)) {
-				if (parentQuery.joinQueries_[it->Value().joinIndex].joinType == JoinType::OrInnerJoin) {
+				if (query_.joinQueries_[it->Value().joinIndex].joinType == JoinType::OrInnerJoin) {
 					orInnerJoin = true;
 				}
 			}
 			ser << ' ';
-			if (!orInnerJoin) ser << opNames[it->Op] << ' ';  // -V547}
-		} else if (it->Op == OpNot) {
+			if (!orInnerJoin) ser << opNames[it->operation] << ' ';	 // -V547}
+		} else if (it->operation == OpNot) {
 			ser << "NOT ";
 		}
-		if (!it->IsLeaf()) {
+		if (!isLeaf) {
 			ser << '(';
-			writeSQL(parentQuery, it->cbegin(it), it->cend(it), ser, stripArgs);
+			dumpWhereEntries(it.cbegin(), it.cend(), ser, stripArgs);
 			ser << ')';
 		} else {
 			const QueryEntry &entry = it->Value();
 			if (entry.joinIndex == QueryEntry::kNoJoins) {
-				if (entry.index.find('.') == string::npos)
+				if (entry.index.find('.') == string::npos && entry.index.find('+') == string::npos)
 					ser << entry.index << ' ';
 				else
 					ser << '\'' << entry.index << "\' ";
@@ -205,16 +264,18 @@ static void writeSQL(const Query &parentQuery, QueryEntries::const_iterator from
 					ser << ((entry.values.size() != 1) ? ")" : "");
 				}
 			} else {
-				SQLEncoder(parentQuery).DumpSingleJoinQuery(entry.joinIndex, ser, stripArgs);
+				SQLEncoder(query_).DumpSingleJoinQuery(entry.joinIndex, ser, stripArgs);
 			}
 		}
 	}
+	int parenthesisIndex = (from.PlainIterator() - query_.entries.begin().PlainIterator());
+	dumpEqualPositions(ser, parenthesisIndex);
 }
 
 void SQLEncoder::dumpSQLWhere(WrSerializer &ser, bool stripArgs) const {
 	if (query_.entries.Empty()) return;
 	ser << " WHERE ";
-	writeSQL(query_, query_.entries.cbegin(), query_.entries.cend(), ser, stripArgs);
+	dumpWhereEntries(query_.entries.cbegin(), query_.entries.cend(), ser, stripArgs);
 }
 
 }  // namespace reindexer

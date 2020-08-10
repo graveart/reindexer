@@ -2,6 +2,7 @@ package reindexer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -9,14 +10,23 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/restream/reindexer/bindings"
-	"github.com/restream/reindexer/cjson"
+	"github.com/graveart/reindexer/bindings"
+	"github.com/graveart/reindexer/cjson"
+)
+
+// Srict modes for queries
+type QueryStrictMode int
+
+const (
+	queryStrictModeNotSet  QueryStrictMode = bindings.QueryStrictModeNotSet
+	QueryStrictModeNone                    = bindings.QueryStrictModeNone    // Allows any fields in coditions, but doesn't check actual values for non-existing names
+	QueryStrictModeNames                   = bindings.QueryStrictModeNames   // Allows only valid fields and indexes in conditions. Otherwise query will return error
+	QueryStrictModeIndexes                 = bindings.QueryStrictModeIndexes // Allows only indexes in conditions. Otherwise query will return error
 )
 
 // Constants for query serialization
 const (
 	queryCondition         = bindings.QueryCondition
-	queryDistinct          = bindings.QueryDistinct
 	querySortIndex         = bindings.QuerySortIndex
 	queryJoinOn            = bindings.QueryJoinOn
 	queryLimit             = bindings.QueryLimit
@@ -36,6 +46,10 @@ const (
 	queryOpenBracket       = bindings.QueryOpenBracket
 	queryCloseBracket      = bindings.QueryCloseBracket
 	queryJoinCondition     = bindings.QueryJoinCondition
+	queryDropField         = bindings.QueryDropField
+	queryUpdateObject      = bindings.QueryUpdateObject
+	queryWithRank          = bindings.QueryWithRank
+	queryStrictMode        = bindings.QueryStrictMode
 )
 
 // Constants for calc total
@@ -510,8 +524,7 @@ func (q *Query) Not() *Query {
 
 // Distinct - Return only items with uniq value of field
 func (q *Query) Distinct(distinctIndex string) *Query {
-	q.ser.PutVarCUInt(queryDistinct)
-	q.ser.PutVString(distinctIndex)
+	q.ser.PutVarCUInt(queryAggregation).PutVarCUInt(AggDistinct).PutVarCUInt(1).PutVString(distinctIndex)
 	return q
 }
 
@@ -559,9 +572,22 @@ func (q *Query) Debug(level int) *Query {
 	return q
 }
 
+// Strict - Set query strict mode
+func (q *Query) Strict(mode QueryStrictMode) *Query {
+	q.ser.PutVarCUInt(queryStrictMode).PutVarCUInt(int(mode))
+	return q
+}
+
 // Explain - Request explain for query
 func (q *Query) Explain() *Query {
 	q.ser.PutVarCUInt(queryExplain)
+	return q
+}
+
+// Output fulltext rank
+// Allowed only with fulltext query
+func (q *Query) WithRank() *Query {
+	q.ser.PutVarCUInt(queryWithRank)
 	return q
 }
 
@@ -591,9 +617,9 @@ func (q *Query) ExecCtx(ctx context.Context) *Iterator {
 	if q.executed {
 		panic(errors.New("Exec call on already executed query. You shoud create new Query"))
 	}
-	if q.tx != nil {
-		panic(errors.New("For tx query only Update or Delete operations are supported"))
-	}
+	// if q.tx != nil {
+	// 	panic(errors.New("For tx query only Update or Delete operations are supported"))
+	// }
 
 	q.executed = true
 
@@ -616,9 +642,9 @@ func (q *Query) ExecToJsonCtx(ctx context.Context, jsonRoots ...string) *JSONIte
 	if q.executed {
 		panic(errors.New("Exec call on already executed query. You shoud create new Query"))
 	}
-	if q.tx != nil {
-		panic(errors.New("For tx query only Update or Delete operations are supported"))
-	}
+	// if q.tx != nil {
+	// 	panic(errors.New("For tx query only Update or Delete operations are supported"))
+	// }
 	q.executed = true
 
 	jsonRoot := q.Namespace
@@ -681,11 +707,71 @@ func (q *Query) DeleteCtx(ctx context.Context) (int, error) {
 	return q.db.deleteQuery(ctx, q)
 }
 
-// Set will add update field request for update query
-func (q *Query) Set(field string, values interface{}) *Query {
+func getValueJSON(value interface{}) string {
+	ok := false
+	var err error
+	var objectJSON []byte
+	t := reflect.TypeOf(value)
+	if value == nil {
+		objectJSON = []byte("{}")
+	} else if t.Kind() == reflect.Struct || t.Kind() == reflect.Map {
+		objectJSON, err = json.Marshal(value)
+		if err != nil {
+			panic(err)
+		}
+	} else if objectJSON, ok = value.([]byte); !ok {
+		panic(errors.New("SetObject doesn't support this type of objects: " + t.Kind().String()))
+	}
+	return string(objectJSON)
+}
+
+// SetObject adds update of object field request for update query
+func (q *Query) SetObject(field string, values interface{}) *Query {
+	size := 1
+	isArray := false
 	t := reflect.TypeOf(values)
 	v := reflect.ValueOf(values)
+	if t != reflect.TypeOf([]byte{}) && (t.Kind() == reflect.Array || t.Kind() == reflect.Slice) {
+		size = v.Len()
+		isArray = true
+	}
+	jsonValues := make([]string, size)
+	if isArray {
+		for i := 0; i < size; i++ {
+			jsonValues[i] = getValueJSON(v.Index(i).Interface())
+		}
+	} else if size > 0 {
+		jsonValues[0] = getValueJSON(values)
+	}
 
+	q.ser.PutVarCUInt(queryUpdateObject)
+	q.ser.PutVString(field)
+
+	// values count
+	q.ser.PutVarCUInt(size)
+	// is array flag
+	if isArray {
+		q.ser.PutVarCUInt(1)
+	} else {
+		q.ser.PutVarCUInt(0)
+	}
+	for i := 0; i < size; i++ {
+		// function/value flag
+		q.ser.PutVarUInt(0)
+		q.ser.PutVarCUInt(valueString)
+		q.ser.PutVString(jsonValues[i])
+	}
+
+	return q
+}
+
+// Set adds update field request for update query
+func (q *Query) Set(field string, values interface{}) *Query {
+	t := reflect.TypeOf(values)
+	if t.Kind() == reflect.Struct {
+		return q.SetObject(field, values)
+	}
+	v := reflect.ValueOf(values)
 	q.ser.PutVarCUInt(queryUpdateField)
 	q.ser.PutVString(field)
 
@@ -704,7 +790,13 @@ func (q *Query) Set(field string, values interface{}) *Query {
 		q.ser.PutVarUInt(0)
 		q.putValue(v)
 	}
+	return q
+}
 
+// Drop removes field from item within Update statement
+func (q *Query) Drop(field string) *Query {
+	q.ser.PutVarCUInt(queryDropField)
+	q.ser.PutVString(field)
 	return q
 }
 

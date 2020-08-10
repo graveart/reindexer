@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/restream/reindexer/benchmarks/repo"
+	"github.com/graveart/reindexer/benchmarks/repo"
 )
 
 func TestMain(t *testing.T) {

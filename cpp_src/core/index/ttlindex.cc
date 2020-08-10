@@ -7,6 +7,9 @@ TtlIndex<T>::TtlIndex(const IndexDef &idef, const PayloadType payloadType, const
 	: IndexOrdered<T>(idef, payloadType, fields), expireAfter_(idef.expireAfter_) {}
 
 template <typename T>
+TtlIndex<T>::TtlIndex(const TtlIndex<T> &other) : IndexOrdered<T>(other), expireAfter_(other.expireAfter_) {}
+
+template <typename T>
 int64_t TtlIndex<T>::GetTTLValue() const {
 	return expireAfter_;
 }

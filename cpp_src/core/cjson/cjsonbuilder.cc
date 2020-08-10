@@ -4,15 +4,16 @@ namespace reindexer {
 
 CJsonBuilder::CJsonBuilder(WrSerializer &ser, ObjType type, TagsMatcher *tm, int tagName) : tm_(tm), ser_(&ser), type_(type) {
 	switch (type_) {
-		case TypeArray:
+		case ObjType::TypeArray:
+		case ObjType::TypeObjectArray:
 			ser_->PutVarUint(static_cast<int>(ctag(TAG_ARRAY, tagName)));
 			savePos_ = ser_->Len();
 			ser_->PutUInt32(0);
 			break;
-		case TypeObject:
+		case ObjType::TypeObject:
 			ser_->PutVarUint(static_cast<int>(ctag(TAG_OBJECT, tagName)));
 			break;
-		case TypePlain:
+		case ObjType::TypePlain:
 			break;
 	}
 }
@@ -20,16 +21,19 @@ CJsonBuilder::CJsonBuilder(WrSerializer &ser, ObjType type, TagsMatcher *tm, int
 CJsonBuilder::~CJsonBuilder() { End(); }
 CJsonBuilder &CJsonBuilder::End() {
 	switch (type_) {
-		case TypeArray:
+		case ObjType::TypeArray:
+			*(reinterpret_cast<int *>(ser_->Buf() + savePos_)) = static_cast<int>(carraytag(count_, itemType_));
+			break;
+		case ObjType::TypeObjectArray:
 			*(reinterpret_cast<int *>(ser_->Buf() + savePos_)) = static_cast<int>(carraytag(count_, TAG_OBJECT));
 			break;
-		case TypeObject:
+		case ObjType::TypeObject:
 			ser_->PutVarUint(static_cast<int>(ctag(TAG_END)));
 			break;
-		case TypePlain:
+		case ObjType::TypePlain:
 			break;
 	}
-	type_ = TypePlain;
+	type_ = ObjType::TypePlain;
 	return *this;
 }
 
@@ -37,51 +41,78 @@ void CJsonBuilder::SetTagsMatcher(const TagsMatcher *tm) { tm_ = const_cast<Tags
 
 CJsonBuilder CJsonBuilder::Object(int tagName) {
 	count_++;
-	return CJsonBuilder(*ser_, TypeObject, tm_, tagName);
+	return CJsonBuilder(*ser_, ObjType::TypeObject, tm_, tagName);
 }
 
-CJsonBuilder CJsonBuilder::Array(int tagName) {
-	assert(type_ != TypeArray);
-	count_++;
-	return CJsonBuilder(*ser_, TypeArray, tm_, tagName);
+CJsonBuilder CJsonBuilder::Array(int tagName, ObjType type) {
+	assert((type_ != ObjType::TypeArray) && (type_ != ObjType::TypeObjectArray));
+	++count_;
+	return CJsonBuilder(*ser_, type, tm_, tagName);
 }
 
-inline void CJsonBuilder::putTag(int tagName, int tagType) {
-	ser_->PutVarUint(static_cast<int>(ctag(tagType, tagName)));
-	count_++;
-}
+inline void CJsonBuilder::putTag(int tagName, int tagType) { ser_->PutVarUint(static_cast<int>(ctag(tagType, tagName))); }
 
 CJsonBuilder &CJsonBuilder::Put(int tagName, bool arg) {
-	putTag(tagName, TAG_BOOL);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_BOOL;
+	} else {
+		putTag(tagName, TAG_BOOL);
+	}
 	ser_->PutBool(arg);
+	++count_;
 	return *this;
 }
 
 CJsonBuilder &CJsonBuilder::Put(int tagName, int64_t arg) {
-	putTag(tagName, TAG_VARINT);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_VARINT;
+	} else {
+		putTag(tagName, TAG_VARINT);
+	}
 	ser_->PutVarint(arg);
+	++count_;
 	return *this;
 }
 
 CJsonBuilder &CJsonBuilder::Put(int tagName, int arg) {
-	putTag(tagName, TAG_VARINT);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_VARINT;
+	} else {
+		putTag(tagName, TAG_VARINT);
+	}
 	ser_->PutVarint(arg);
+	++count_;
 	return *this;
 }
 
 CJsonBuilder &CJsonBuilder::Put(int tagName, double arg) {
-	putTag(tagName, TAG_DOUBLE);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_DOUBLE;
+	} else {
+		putTag(tagName, TAG_DOUBLE);
+	}
 	ser_->PutDouble(arg);
+	++count_;
 	return *this;
 }
 CJsonBuilder &CJsonBuilder::Put(int tagName, const string_view &arg) {
-	putTag(tagName, TAG_STRING);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_STRING;
+	} else {
+		putTag(tagName, TAG_STRING);
+	}
 	ser_->PutVString(arg);
+	++count_;
 	return *this;
 }
 
 CJsonBuilder &CJsonBuilder::Null(int tagName) {
-	putTag(tagName, TAG_NULL);
+	if (type_ == ObjType::TypeArray) {
+		itemType_ = TAG_NULL;
+	} else {
+		putTag(tagName, TAG_NULL);
+	}
+	++count_;
 	return *this;
 }
 

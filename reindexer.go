@@ -3,10 +3,10 @@ package reindexer
 import (
 	"context"
 
-	"github.com/restream/reindexer/bindings"
-	_ "github.com/restream/reindexer/bindings/cproto"
-	"github.com/restream/reindexer/dsl"
-	// _ "github.com/restream/reindexer/bindings/builtinserver"
+	"github.com/graveart/reindexer/bindings"
+	_ "github.com/graveart/reindexer/bindings/cproto"
+	"github.com/graveart/reindexer/dsl"
+	// _ "github.com/graveart/reindexer/bindings/builtinserver"
 )
 
 // Condition types
@@ -48,11 +48,12 @@ const (
 
 // Aggregation funcs
 const (
-	AggAvg   = bindings.AggAvg
-	AggSum   = bindings.AggSum
-	AggFacet = bindings.AggFacet
-	AggMin   = bindings.AggMin
-	AggMax   = bindings.AggMax
+	AggAvg      = bindings.AggAvg
+	AggSum      = bindings.AggSum
+	AggFacet    = bindings.AggFacet
+	AggMin      = bindings.AggMin
+	AggMax      = bindings.AggMax
+	AggDistinct = bindings.AggDistinct
 )
 
 // Reindexer error codes
@@ -130,8 +131,10 @@ var (
 	errJoinUnexpectedField = bindings.NewError("rq: Unexpected join field", ErrCodeParams)
 	ErrEmptyNamespace      = bindings.NewError("rq: empty namespace name", ErrCodeParams)
 	ErrEmptyFieldName      = bindings.NewError("rq: empty field name in filter", ErrCodeParams)
+	ErrEmptyAggFieldName   = bindings.NewError("rq: empty field name in aggregation", ErrCodeParams)
 	ErrCondType            = bindings.NewError("rq: cond type not found", ErrCodeParams)
 	ErrOpInvalid           = bindings.NewError("rq: op is invalid", ErrCodeParams)
+	ErrAggInvalid          = bindings.NewError("rq: agg is invalid", ErrCodeParams)
 	ErrNoPK                = bindings.NewError("rq: No pk field in struct", ErrCodeParams)
 	ErrWrongType           = bindings.NewError("rq: Wrong type of item", ErrCodeParams)
 	ErrMustBePointer       = bindings.NewError("rq: Argument must be a pointer to element, not element", ErrCodeParams)
@@ -142,16 +145,17 @@ var (
 type AggregationResult struct {
 	Fields []string `json:"fields"`
 	Type   string   `json:"type"`
-	Value  float64  `json:"value"`
+	Value  float64  `json:"value,omitempty"`
 	Facets []struct {
 		Values []string `json:"values"`
 		Count  int      `json:"count"`
-	} `json:"facets"`
+	} `json:"facets,omitempty"`
+	Distincts []string `json:"distincts,omitempty"`
 }
 
 // NewReindex Create new instanse of Reindexer DB
 // Returns pointer to created instance
-func NewReindex(dsn string, options ...interface{}) *Reindexer {
+func NewReindex(dsn interface{}, options ...interface{}) *Reindexer {
 	rx := &Reindexer{
 		impl: newReindexImpl(dsn, options...),
 		ctx:  context.TODO(),
@@ -161,12 +165,17 @@ func NewReindex(dsn string, options ...interface{}) *Reindexer {
 
 // Status will return current db status
 func (db *Reindexer) Status() bindings.Status {
-	return db.impl.getStatus()
+	return db.impl.getStatus(db.ctx)
 }
 
 // SetLogger sets logger interface for output reindexer logs
 func (db *Reindexer) SetLogger(log Logger) {
 	db.impl.setLogger(log)
+}
+
+// ReopenLogFiles reopens log files
+func (db *Reindexer) ReopenLogFiles() error {
+	return db.impl.reopenLogFiles()
 }
 
 // Ping checks connection with reindexer
@@ -176,6 +185,19 @@ func (db *Reindexer) Ping() error {
 
 func (db *Reindexer) Close() {
 	db.impl.close()
+}
+
+func (db *Reindexer) RenameNs(srcNsName string, dstNsName string) {
+	db.impl.lock.Lock()
+	defer db.impl.lock.Unlock()
+	srcNs, ok := (db.impl).ns[srcNsName]
+	if ok {
+		delete(db.impl.ns, srcNsName)
+		db.impl.ns[dstNsName] = srcNs
+	} else {
+		delete(db.impl.ns, dstNsName)
+	}
+
 }
 
 // NamespaceOptions is options for namespace
@@ -234,6 +256,11 @@ func (db *Reindexer) DropNamespace(namespace string) error {
 // TruncateNamespace - delete all items from namespace
 func (db *Reindexer) TruncateNamespace(namespace string) error {
 	return db.impl.truncateNamespace(db.ctx, namespace)
+}
+
+// RenameNamespace - Rename namespace. If namespace with dstNsName exists, then it is replaced.
+func (db *Reindexer) RenameNamespace(srcNsName string, dstNsName string) error {
+	return db.impl.renameNamespace(db.ctx, srcNsName, dstNsName)
 }
 
 // CloseNamespace - close namespace, but keep storage
@@ -315,7 +342,11 @@ func (db *Reindexer) ExecSQLToJSON(query string) *JSONIterator {
 	return db.impl.execSQLToJSON(db.ctx, query)
 }
 
-// BeginTx - start update transaction
+// BeginTx - start update transaction. Please not:
+// 1. Returned transaction object is not thread safe and can't be used from different goroutines.
+// 2. Transaction object holds Reindexer's resources, therefore application should explicitly
+//    call Rollback or Commit, otherwise resources will leak
+
 func (db *Reindexer) BeginTx(namespace string) (*Tx, error) {
 	return db.impl.beginTx(db.ctx, namespace)
 }

@@ -13,6 +13,7 @@
 #include <iostream>
 #include "core/cjson/jsonbuilder.h"
 #include "core/queryresults/tableviewbuilder.h"
+#include "tableviewscroller.h"
 #include "tools/fsops.h"
 #include "tools/jsontools.h"
 #include "tools/stringstools.h"
@@ -51,7 +52,8 @@ void sigint_handler(int signal) {
 }
 
 template <typename DBInterface>
-Error CommandsProcessor<DBInterface>::Connect(const string& dsn) {
+template <typename... Args>
+Error CommandsProcessor<DBInterface>::Connect(const string& dsn, Args... args) {
 	string outputMode;
 	if (reindexer::fs::ReadFile(reindexer::fs::JoinPath(reindexer::fs::GetHomeDir(), kConfigFile), outputMode) > 0) {
 		gason::JsonParser jsonParser;
@@ -68,7 +70,7 @@ Error CommandsProcessor<DBInterface>::Connect(const string& dsn) {
 	if (!uri_.parse(dsn)) {
 		return Error(errNotValid, "Cannot connect to DB: Not a valid uri");
 	}
-	Error err = db_.Connect(dsn);
+	Error err = db_.Connect(dsn, args...);
 	if (err.ok()) {
 		sigIntHandler = std::bind(&CommandsProcessor::onSigInt, this, std::placeholders::_1);
 		signal(SIGINT, sigint_handler);
@@ -111,7 +113,6 @@ Error CommandsProcessor<DBInterface>::commandSelect(const string& command) {
 	} catch (const Error& err) {
 		return err;
 	}
-	bool isWALQuery = q.entries.Size() == 1 && q.entries.IsEntry(0) && q.entries[0].index == "#lsn";
 
 	auto err = db_.Select(q, results);
 
@@ -121,10 +122,16 @@ Error CommandsProcessor<DBInterface>::commandSelect(const string& command) {
 			if (outputType == kOutputModeTable) {
 				auto isCanceled = [this]() -> bool { return cancelCtx_.IsCancelled(); };
 				reindexer::TableViewBuilder<typename DBInterface::QueryResultsT> tableResultsBuilder(results);
-				tableResultsBuilder.Build(output_(), isCanceled);
+				if (outFileName_.empty() && !reindexer::isStdoutRedirected()) {
+					TableViewScroller<typename DBInterface::QueryResultsT> resultsScroller(results, tableResultsBuilder,
+																						   reindexer::getTerminalSize().height - 1);
+					resultsScroller.Scroll(output_, isCanceled);
+				} else {
+					tableResultsBuilder.Build(output_(), isCanceled);
+				}
 			} else {
 				output_() << "[" << std::endl;
-				err = queryResultsToJson(output_(), results, isWALQuery);
+				err = queryResultsToJson(output_(), results, q.IsWALQuery());
 				output_() << "]" << std::endl;
 			}
 		}
@@ -148,40 +155,50 @@ Error CommandsProcessor<DBInterface>::commandSelect(const string& command) {
 		if (aggResults.size() && !cancelCtx_.IsCancelled()) {
 			output_() << "Aggregations: " << std::endl;
 			for (auto& agg : aggResults) {
-				if (!agg.facets.empty()) {
-					assert(!agg.fields.empty());
-					reindexer::h_vector<int, 1> maxW;
-					maxW.reserve(agg.fields.size());
-					for (const auto& field : agg.fields) {
-						maxW.push_back(field.length());
-					}
-					for (auto& row : agg.facets) {
-						assert(row.values.size() == agg.fields.size());
-						for (size_t i = 0; i < row.values.size(); ++i) {
-							maxW.at(i) = std::max(maxW.at(i), int(row.values[i].length()));
+				switch (agg.type) {
+					case AggFacet: {
+						assert(!agg.fields.empty());
+						reindexer::h_vector<int, 1> maxW;
+						maxW.reserve(agg.fields.size());
+						for (const auto& field : agg.fields) {
+							maxW.push_back(field.length());
 						}
-					}
-					int rowWidth = 8 + (maxW.size() - 1) * 2;
-					for (auto& mW : maxW) {
-						mW += 3;
-						rowWidth += mW;
-					}
-					for (size_t i = 0; i < agg.fields.size(); ++i) {
-						if (i != 0) output_() << "| ";
-						output_() << std::left << std::setw(maxW.at(i)) << agg.fields[i];
-					}
-					output_() << "| count" << std::endl;
-					output_() << std::left << std::setw(rowWidth) << std::setfill('-') << "" << std::endl << std::setfill(' ');
-					for (auto& row : agg.facets) {
-						for (size_t i = 0; i < row.values.size(); ++i) {
+						for (auto& row : agg.facets) {
+							assert(row.values.size() == agg.fields.size());
+							for (size_t i = 0; i < row.values.size(); ++i) {
+								maxW.at(i) = std::max(maxW.at(i), int(row.values[i].length()));
+							}
+						}
+						int rowWidth = 8 + (maxW.size() - 1) * 2;
+						for (auto& mW : maxW) {
+							mW += 3;
+							rowWidth += mW;
+						}
+						for (size_t i = 0; i < agg.fields.size(); ++i) {
 							if (i != 0) output_() << "| ";
-							output_() << std::left << std::setw(maxW.at(i)) << row.values[i];
+							output_() << std::left << std::setw(maxW.at(i)) << agg.fields[i];
 						}
-						output_() << "| " << row.count << std::endl;
-					}
-				} else {
-					assert(agg.fields.size() == 1);
-					output_() << agg.aggTypeToStr(agg.type) << "(" << agg.fields.front() << ") = " << agg.value << std::endl;
+						output_() << "| count" << std::endl;
+						output_() << std::left << std::setw(rowWidth) << std::setfill('-') << "" << std::endl << std::setfill(' ');
+						for (auto& row : agg.facets) {
+							for (size_t i = 0; i < row.values.size(); ++i) {
+								if (i != 0) output_() << "| ";
+								output_() << std::left << std::setw(maxW.at(i)) << row.values[i];
+							}
+							output_() << "| " << row.count << std::endl;
+						}
+					} break;
+					case AggDistinct:
+						assert(agg.fields.size() == 1);
+						output_() << "Distinct (" << agg.fields.front() << ")" << std::endl;
+						for (auto& v : agg.distincts) {
+							output_() << v << std::endl;
+						}
+						output_() << "Returned " << agg.distincts.size() << " values" << std::endl;
+						break;
+					default:
+						assert(agg.fields.size() == 1);
+						output_() << agg.aggTypeToStr(agg.type) << "(" << agg.fields.front() << ") = " << agg.value << std::endl;
 				}
 			}
 		}
@@ -271,7 +288,7 @@ Error CommandsProcessor<DBInterface>::commandDump(const string& command) {
 
 	vector<NamespaceDef> allNsDefs, doNsDefs;
 
-	auto err = db_.EnumNamespaces(allNsDefs, false);
+	auto err = db_.EnumNamespaces(allNsDefs, reindexer::EnumNamespacesOpts());
 	if (err) return err;
 
 	if (!parser.End()) {
@@ -296,8 +313,8 @@ Error CommandsProcessor<DBInterface>::commandDump(const string& command) {
 	wrser << "-- VERSION 1.0" << '\n';
 
 	for (auto& nsDef : doNsDefs) {
-		// skip system namespaces
-		if (nsDef.name.length() > 0 && nsDef.name[0] == '#') continue;
+		// skip system namespaces, except #config
+		if (nsDef.name.length() > 0 && nsDef.name[0] == '#' && nsDef.name != "#config") continue;
 
 		wrser << "-- Dumping namespace '" << nsDef.name << "' ..." << '\n';
 
@@ -358,11 +375,26 @@ Error CommandsProcessor<DBInterface>::commandNamespaces(const string& command) {
 		def.storage.DropOnFileFormatError(true);
 		def.storage.CreateIfMissing(true);
 
-		return db_.AddNamespace(def);
+		err = db_.OpenNamespace(def.name);
+		if (!err.ok()) {
+			return err;
+		}
+		for (auto& idx : def.indexes) {
+			err = db_.AddIndex(def.name, idx);
+			if (!err.ok()) {
+				return err;
+			}
+		}
+		err = db_.SetSchema(def.name, def.schemaJson);
+		if (!err.ok()) {
+			return err;
+		}
+		return errOK;
+
 	} else if (iequals(subCommand, "list")) {
 		vector<NamespaceDef> allNsDefs;
 
-		auto err = db_.EnumNamespaces(allNsDefs, true);
+		auto err = db_.EnumNamespaces(allNsDefs, reindexer::EnumNamespacesOpts().WithClosed());
 		for (auto& ns : allNsDefs) {
 			std::cout << ns.name << std::endl;
 		}
@@ -374,6 +406,10 @@ Error CommandsProcessor<DBInterface>::commandNamespaces(const string& command) {
 	} else if (iequals(subCommand, "truncate")) {
 		auto nsName = reindexer::unescapeString(parser.NextToken());
 		return db_.TruncateNamespace(nsName);
+	} else if (iequals(subCommand, "rename")) {
+		auto nsName = reindexer::unescapeString(parser.NextToken());
+		auto nsNewName = reindexer::unescapeString(parser.NextToken());
+		return db_.RenameNamespace(nsName, nsNewName);
 	}
 	return Error(errParams, "Unknown sub command '%s' of namespaces command", subCommand);
 }
@@ -525,9 +561,9 @@ Error CommandsProcessor<DBInterface>::commandSubscribe(const string& command) {
 }
 
 template <typename DBInterface>
-void CommandsProcessor<DBInterface>::OnWALUpdate(int64_t lsn, string_view nsName, const reindexer::WALRecord& wrec) {
+void CommandsProcessor<DBInterface>::OnWALUpdate(reindexer::LSNPair LSNs, string_view nsName, const reindexer::WALRecord& wrec) {
 	WrSerializer ser;
-	ser << "#" << lsn << " " << nsName << " ";
+	ser << "# LSN " << int64_t(LSNs.upstreamLSN_) << " originLSN " << int64_t(LSNs.originLSN_) << nsName << " ";
 	wrec.Dump(ser, [this, nsName](string_view cjson) {
 		auto item = db_.NewItem(nsName);
 		item.FromCJSON(cjson);
@@ -549,12 +585,16 @@ Error CommandsProcessor<DBInterface>::queryResultsToJson(ostream& o, const typen
 	if (cancelCtx_.IsCancelled()) return errOK;
 	WrSerializer ser;
 	size_t i = 0;
+	bool scrollable = outFileName_.empty() && !reindexer::isStdoutRedirected();
+	reindexer::TerminalSize terminalSize;
+	if (scrollable) {
+		terminalSize = reindexer::getTerminalSize();
+		scrollable = (int(r.Count()) > terminalSize.height);
+	}
 	bool prettyPrint = variables_[kVariableOutput] == kOutputModePretty;
 	for (auto it : r) {
 		if (cancelCtx_.IsCancelled()) break;
-
 		if (isWALQuery) ser << '#' << it.GetLSN() << ' ';
-
 		if (it.IsRaw()) {
 			reindexer::WALRecord rec(it.GetRaw());
 			rec.Dump(ser, [this, &r](string_view cjson) {
@@ -575,19 +615,24 @@ Error CommandsProcessor<DBInterface>::queryResultsToJson(ostream& o, const typen
 		}
 		if ((++i != r.Count()) && !isWALQuery) ser << ',';
 		ser << '\n';
-		if (ser.Len() > 0x100000 || prettyPrint) {
+		if ((ser.Len() > 0x100000) || prettyPrint || scrollable) {
+			if (scrollable && (i % (terminalSize.height - 1) == 0)) {
+				WaitEnterToContinue(o, terminalSize.width, [this]() -> bool { return cancelCtx_.IsCancelled(); });
+			}
 			o << ser.Slice();
 			ser.Reset();
 		}
 	}
-	o << ser.Slice();
+	if (!cancelCtx_.IsCancelled()) {
+		o << ser.Slice();
+	}
 	return errOK;
 }
 
 template <typename DBInterface>
 void CommandsProcessor<DBInterface>::checkForNsNameMatch(string_view str, std::vector<string>& suggestions) {
 	vector<NamespaceDef> allNsDefs;
-	Error err = db_.EnumNamespaces(allNsDefs, true);
+	Error err = db_.EnumNamespaces(allNsDefs, reindexer::EnumNamespacesOpts().WithClosed());
 	if (!err.ok()) return;
 	for (auto& ns : allNsDefs) {
 		if (str.empty() || reindexer::isBlank(str) || ((str.length() < ns.name.length()) && reindexer::checkIfStartsWith(str, ns.name))) {
@@ -659,7 +704,7 @@ void CommandsProcessor<DBInterface>::addCommandsSuggestions(std::string const& c
 		for (const commandDefinition& cmdDef : cmds_) {
 			if (token.empty() || reindexer::isBlank(token) ||
 				((token.length() < cmdDef.command.length()) && reindexer::checkIfStartsWith(token, cmdDef.command))) {
-				suggestions.emplace_back(cmdDef.command);
+				suggestions.emplace_back(cmdDef.command[0] == '\\' ? cmdDef.command.substr(1) : cmdDef.command);
 			}
 		}
 	}
@@ -670,7 +715,7 @@ template <typename T>
 void CommandsProcessor<DBInterface>::setCompletionCallback(T& rx, void (T::*set_completion_callback)(new_v_callback_t const&)) {
 	(rx.*set_completion_callback)([this](std::string const& input, int) -> replxx::Replxx::completions_t {
 		std::vector<string> completions;
-		db_.GetSqlSuggestions(input, input.empty() ? 0 : input.length() - 1, completions);
+		if (!input.empty() && input[0] != '\\') db_.GetSqlSuggestions(input, input.length() - 1, completions);
 		if (completions.empty()) {
 			addCommandsSuggestions(input, completions);
 		}
@@ -686,7 +731,7 @@ void CommandsProcessor<DBInterface>::setCompletionCallback(T& rx, void (T::*set_
 	(rx.*set_completion_callback)(
 		[this](std::string const& input, int, void*) -> replxx::Replxx::completions_t {
 			std::vector<string> completions;
-			db_.GetSqlSuggestions(input, input.empty() ? 0 : input.length() - 1, completions);
+			if (!input.empty() && input[0] != '\\') db_.GetSqlSuggestions(input, input.length() - 1, completions);
 			if (completions.empty()) {
 				addCommandsSuggestions(input, completions);
 			}
@@ -695,6 +740,27 @@ void CommandsProcessor<DBInterface>::setCompletionCallback(T& rx, void (T::*set_
 		nullptr);
 }
 
+template <typename T>
+class HasSetMaxLineSize {
+private:
+	typedef char YesType[1], NoType[2];
+
+	template <typename C>
+	static YesType& test(decltype(&C::set_max_line_size));
+	template <typename C>
+	static NoType& test(...);
+
+public:
+	enum { value = sizeof(test<T>(0)) == sizeof(YesType) };
+};
+
+template <class T>
+void setMaxLineSize(T* rx, int arg, typename std::enable_if<HasSetMaxLineSize<T>::value>::type* = 0) {
+	return rx->set_max_line_size(arg);
+}
+
+void setMaxLineSize(...) {}
+
 template <typename DBInterface>
 bool CommandsProcessor<DBInterface>::Interactive() {
 	bool wasError = false;
@@ -702,7 +768,7 @@ bool CommandsProcessor<DBInterface>::Interactive() {
 	replxx::Replxx rx;
 	std::string history_file = reindexer::fs::JoinPath(reindexer::fs::GetHomeDir(), ".reindexer_history.txt");
 
-	// rx.set_max_line_size(16384);
+	setMaxLineSize(&rx, 0x10000);
 	rx.history_load(history_file);
 	rx.set_max_history_size(1000);
 	rx.set_max_hint_rows(8);
@@ -748,11 +814,10 @@ bool CommandsProcessor<DBInterface>::Interactive() {
 }
 
 template <typename DBInterface>
-bool CommandsProcessor<DBInterface>::FromFile() {
+bool CommandsProcessor<DBInterface>::FromFile(std::istream& infile) {
 	bool wasError = false;
-	std::ifstream infile(fileName_);
 	if (!infile) {
-		std::cerr << "ERROR: Can't open " << fileName_ << std::endl;
+		std::cerr << "ERROR: Can't open " << inFileName_ << std::endl;
 		return false;
 	}
 
@@ -761,6 +826,9 @@ bool CommandsProcessor<DBInterface>::FromFile() {
 		Error err = Process(line);
 		if (!err.ok()) {
 			std::cerr << "ERROR: " << err.what() << std::endl;
+			if (!wasError && !db_.Status().ok()) {
+				return false;
+			}
 			wasError = true;
 		}
 	}
@@ -783,8 +851,12 @@ bool CommandsProcessor<DBInterface>::Run() {
 		}
 		return true;
 	}
-	if (!fileName_.empty()) {
-		return FromFile();
+
+	if (!inFileName_.empty()) {
+		std::ifstream infile(inFileName_);
+		return FromFile(infile);
+	} else if (reindexer::isStdinRedirected()) {
+		return FromFile(std::cin);
 	} else {
 		return Interactive();
 	}
@@ -810,36 +882,6 @@ Error CommandsProcessor<reindexer::Reindexer>::stop() {
 	return Error();
 }
 
-template <typename DBInterface>
-Error CommandsProcessor<DBInterface>::commandProcessDatabases(const string& command) {
-	LineParser parser(command);
-	parser.NextToken();
-	string_view subCommand = parser.NextToken();
-	if (subCommand == "list") {
-		if (uri_.scheme() == "cproto") {
-			vector<string> dbList;
-			Error err = getAvailableDatabases(dbList);
-			if (!err.ok()) return err;
-			for (const string& dbName : dbList) std::cout << dbName << std::endl;
-		} else {
-			std::cout << uri_.path() << std::endl;
-		}
-		return Error();
-	} else if (subCommand == "use") {
-		if (uri_.scheme() == "cproto") {
-			string currentDsn = getCurrentDsn() + std::string(parser.NextToken());
-			Error err = stop();
-			if (!err.ok()) return err;
-			err = db_.Connect(currentDsn);
-			if (err.ok()) std::cout << "Succesfully connected to " << currentDsn << std::endl;
-			return err;
-		} else {
-			return Error(errLogic, "Switching between databases is only possible with 'cproto' connection");
-		}
-	}
-	return Error(errNotValid, "Invalid command");
-}
-
 template <>
 Error CommandsProcessor<reindexer::client::Reindexer>::getAvailableDatabases(vector<string>& dbList) {
 	return db_.EnumDatabases(dbList);
@@ -850,7 +892,59 @@ Error CommandsProcessor<reindexer::Reindexer>::getAvailableDatabases(vector<stri
 	return Error();
 }
 
+template <>
+Error CommandsProcessor<reindexer::client::Reindexer>::commandProcessDatabases(const string& command) {
+	LineParser parser(command);
+	parser.NextToken();
+	string_view subCommand = parser.NextToken();
+	assert(uri_.scheme() == "cproto");
+	if (subCommand == "list") {
+		vector<string> dbList;
+		Error err = getAvailableDatabases(dbList);
+		if (!err.ok()) return err;
+		for (const string& dbName : dbList) std::cout << dbName << std::endl;
+		return Error();
+	} else if (subCommand == "use") {
+		string currentDsn = getCurrentDsn() + std::string(parser.NextToken());
+		Error err = stop();
+		if (!err.ok()) return err;
+		err = db_.Connect(currentDsn);
+		if (err.ok()) err = db_.Status();
+		if (err.ok()) std::cout << "Succesfully connected to " << currentDsn << std::endl;
+		return err;
+	} else if (subCommand == "create") {
+		auto dbName = parser.NextToken();
+		string currentDsn = getCurrentDsn() + std::string(dbName);
+		Error err = stop();
+		if (!err.ok()) return err;
+		std::cout << "Creating database '" << dbName << "'" << std::endl;
+		err = db_.Connect(currentDsn, reindexer::client::ConnectOpts().CreateDBIfMissing());
+		if (!err.ok()) {
+			std::cout << "Error on database '" << dbName << "' creation" << std::endl;
+			return err;
+		}
+		std::vector<std::string> dbNames;
+		err = db_.EnumDatabases(dbNames);
+		if (std::find(dbNames.begin(), dbNames.end(), std::string(dbName)) != dbNames.end()) {
+			std::cout << "Succesfully created database '" << dbName << "'" << std::endl;
+		} else {
+			std::cout << "Error on database '" << dbName << "' creation" << std::endl;
+		}
+		return err;
+	}
+	return Error(errNotValid, "Invalid command");
+}
+
+template <>
+Error CommandsProcessor<reindexer::Reindexer>::commandProcessDatabases(const string& command) {
+	(void)command;
+	return Error(errNotValid, "Database processing commands are not supported in builtin mode");
+}
+
 template class CommandsProcessor<reindexer::client::Reindexer>;
 template class CommandsProcessor<reindexer::Reindexer>;
+template Error CommandsProcessor<reindexer::Reindexer>::Connect(const string& dsn);
+template Error CommandsProcessor<reindexer::client::Reindexer>::Connect(const string& dsn);
+template Error CommandsProcessor<reindexer::client::Reindexer>::Connect(const string& dsn, reindexer::client::ConnectOpts opts);
 
 }  // namespace reindexer_tool

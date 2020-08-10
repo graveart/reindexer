@@ -7,22 +7,20 @@ namespace reindexer {
 class CJsonModifier {
 public:
 	CJsonModifier(TagsMatcher &tagsMatcher, PayloadType pt);
-	Error SetFieldValue(const string_view &tuple, const TagsPath &fieldPath, const VariantArray &value, WrSerializer &wrser);
+	Error SetFieldValue(string_view tuple, TagsPath path, const VariantArray &v, WrSerializer &ser);
+	Error SetObject(string_view tuple, TagsPath path, const VariantArray &v, WrSerializer &ser, const Payload *pl);
+	Error RemoveField(string_view tuple, TagsPath fieldPath, WrSerializer &wrser);
 
 protected:
-	struct Context {
-		Context(const VariantArray &v, WrSerializer &ser, const string_view &tuple);
-		const VariantArray &value;
-		WrSerializer &wrser;
-		Serializer rdser;
-		TagsPath currObjPath;
-		bool fieldUpdated = false;
-	};
-
+	struct Context;
 	bool buildTuple(Context &ctx);
-	void putNewTags(Context &ctx);
-	void replaceField(int tagType, Context &ctx, size_t idx);
+	bool buildCJSON(Context &ctx);
+	void putNewField(Context &ctx);
+	void updateObject(Context &ctx, int tagName);
+	void updateField(Context &ctx, size_t idx);
+	void copyValue(int type, int field, Context &ctx, size_t idx);
 	bool checkIfPathCorrect(Context &ctx);
+	int determineUpdateTagType(const Context &ctx, int field = -1);
 
 	PayloadType pt_;
 	TagsPath fieldPath_, tagsPath_;

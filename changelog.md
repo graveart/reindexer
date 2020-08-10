@@ -1,3 +1,307 @@
+# Version 2.11.0 (29.07.2020)
+
+# Core
+- [fix] Crash with SEGV or assert on ordered queries after copying tx
+- [fix] Correct normalization of SELECT COUNT(*) SQL queries
+- [fea] More efficient replication startup on active master updates
+- [fix] Namespace indexes optimization after load was not started
+- [fix] Centos 7 build fixed
+
+# Version 2.10.0 (05.07.2020)
+
+# Core
+- [fea] Cascade replication
+- [fea] MsgPack format support for query and updates
+- [fea] Initial JsonSchema v4 support. 
+- [fea] Query strict mode support - Check indexes or fields names before query execution
+
+# Reindexer server
+- [fea] MsgPack format support for http and cproto
+
+# Python connector
+- [fea] Moved to separate repository
+
+
+# Version 2.9.2 (24.06.2020)
+- [fix] Optimize indexes after ns load
+- [fix] Correct Drop fields by json path 
+- [opt] Execution plan with wide IN condition to low selectivity indexes
+
+# Version 2.9.1 (10.06.2020)
+
+# Core 
+- [fix] Fulltext search kb layout filter with symbols like ',' ']'
+- [fix] Segfault with distinct on field with different types
+
+# Reindexer tool 
+- [fix] Behavior of --help command line argument
+- [fix] Do not report error on restore exiting namespaces with compatible indexes
+
+# Reindexer server
+- [fix] Backtrace behavior with musl builds
+
+# Go connector
+- [fix] Turn cgo backtrace symbolizer off by default (fixes random crashes on go 1.14)
+- [fix] Alpine linux build
+
+# Version 2.9.0 (15.05.2020)
+
+# Core
+- [fea] Output relevancy rank information to json format
+- [fea] Optimized query to #memstats. Now it's O(1) 
+- [fea] Added app_name field #clientsstats
+- [fix] Fixed SQL suggestion behavior on concatenated tokens
+
+# Go connector
+- [fix] Fixed and enabled multiple dsn support in cproto
+
+# Version 2.8.1 (12.05.2020)
+
+- [fix] unexpected "terminate called" 
+
+# Version 2.8.0 (24.04.2020)
+
+# Core
+
+- [fea] Fulltext - rank by word position
+- [fea] Explain information improved
+- [fix] Memory corruption on copying tx-es
+
+# Reindexer tool
+- [fix] Fixed crash on query with joins
+
+# Reindexer server
+- [del] Removed useless "storage_enabled" flag from GET db/namespaces method response
+
+# Face
+
+- [fea] Query builder refactored
+- [fea] New document page now modal
+
+# Misc
+
+- [ci] Ubuntu 20.04 build added
+
+# Version 2.7.1 (14.04.2020)
+
+# Go connector
+- [rev] Disabled multiple dsn support in cproto
+
+# Version 2.7.0 (10.04.2020)
+
+# Core
+- [fix] Requests with general sort and offset without limit can produce wrong sort
+- [fix] Full text synonyms can not work after transactions
+- [fea] More efficient arrays packing from json source
+- [fix] NOT operator in full text queries
+- [fix] Tuple memory leak on Update by condition
+- [fea] Multi-word synonyms support 
+- [fix] Potential large memory allocation on DISTINCT queries
+- [fix] Potential crash with aggregation on object fields
+
+# Reindexer server
+- [fea] Optional snappy network traffic compression
+- [fea] OnWALUpdates now used shared buffers - can seriously decrease memory usage with many slave
+- [fix] Replication fixes on bad network connections
+- [fix] Connection ID overflow, and bad connID error fixed
+
+# Reindexer tool
+- [fea] Added --createdb flag.
+- [fea] Improved behavior while input is redirected
+
+# Go connector
+- [fix] Enable to create multiple instances of builtinserver
+- [fea] Multiple dsn support in cproto
+
+# Face
+- [fix] Fixed precepts of new item
+- [fea] Rename namespace feature
+- [fea] Namespace config moved to dedicated page
+
+# Version 2.6.4 (31.03.2020)
+
+# Reindexer server
+- [fix] Wrong conn id full fix 
+
+# Version 2.6.3 (27.03.2020)
+
+# Core
+- [fix] Full text search ranking with synonyms
+- [fea] Distinct execution plan optimization
+- [fix] Crash on incorrect json in config (array, when object expected)
+- [fix] Crash on concurrent full text updates/selects
+- [fix] Search by second field in full text, while term present in first field
+- [fea] Multiple dsn support in cproto client
+
+# Reindexer server
+- [fix] Do not create users.yml in in-memory only mode
+- [fix] Wrong conn id fix
+
+# Reindexer tool
+- [fix] Hang on error in batch mode
+- [fix] db name begins with cproto or builtin correct handling 
+
+ # go connector
+- [fix] Hang on parsing recursive types references in struct
+
+# Version 2.6.2 (13.03.2020)
+
+# Core
+- [fea] Multiple distinct in single query using indexes
+- [fix] Unload by idle timeout feature is disabled
+- [fea] Update Query now can update object or array of objects
+
+# Reindexer server
+- [fea] Enable tx.Rollback after tx.Commit
+- [fix] Crash on Upsert to tables with composite pk with non indexed fields as part of PK
+- [fea] Stronger txID & queryID validation and isolation between clients
+- [fix] Correct lsn & id invalidation after UpdateQuery
+- [fea] Clients connection statistics added
+
+
+# go connector
+- [fea] Enable tx.Rollback after tx.Commit, 
+- [fea] Added read tx.Query support
+- [fea] Log warning about reindexer library and client mismatch
+- [fix] Unmarshall []bool indexed fields
+- [fix] Unsafe Query flag reset after recycle from sync.Pool
+- [fea] DB.SetDefaultQueryDebug now copies default ns settings
+
+
+# Version 2.6.1 (02.03.2020)
+
+# Core
+- [fea] Synonyms feature in fulltext search
+- [fea] New full_match_boost parameter in fulltext search
+- [fix] last_updated_time of ns will not change on restart
+
+# Reindexer server
+- [fea] Enable server startup without storage
+- [fea] Backward compatibility of tx replication with old reindexer versions
+
+## go connector
+- [fix] Windows build
+
+# Version 2.6.0 (21.02.2020)
+
+## Core
+- [fea] Atomic applying transaction with namespace copy & replace
+- [fea] Transaction performance statistics
+- [fix] Equal position behavior fixed
+- [fea] Sort queries by right namespace field 
+- [fix] UPDATE statement fixes 
+- [fix] Transaction replication fixes 
+- [fix] Select fields filter fix for right namespace
+
+# Reindexer server
+- [fea] web static resources are embeded to server binary by default
+
+# Version 2.5.5 (07.02.2020)
+
+# Reindexer server
+- [fix] Fixed backward compat of RPC with 2.5.2-
+
+# Version 2.5.3 (06.02.2020)
+## Core
+
+- [fea] Added rename namespace API
+- [fea] Improved -dev package behavior
+- [fix] Transactions memory consumption are seriously decreased
+
+# Reindexer tool
+- [fea] Added `\namespace rename` command
+
+# Reindexer server
+- [add] Added HTTP API method /namespaces/rename
+- [fix] Fixed docker image
+
+## go connector
+- [fea] Auto pass list of detected C/C++ dependencies libraries to go 
+- [fea] Added RenameNamespace function
+
+# Version 2.4.6 (24.01.2020)
+## Core
+- [fea] Replication of transactions
+- [fea] EqualPosition support in sql in dsl
+- [fix] Forced sort fixes
+- [fix] Distinct keyword fixes in sql-dsl parsers/encoders 
+- [fix] Sql auto-complete fixes
+- [fix] Replication lsn mismatch fix
+- [fix] Merge queries with joins fix 
+
+## Reindexer tool
+- [fix] Mac OS X table-view paging fix
+
+# Version 2.4.5 (30.12.2019)
+
+## Core
+- [fix] Fix: forced replication can lead to infinite loop
+- [fea] Add .pkg file and autotest in -dev package
+- [fix] Replication of meta in forcedSync
+
+## go connector
+- [fea] Canceling of connecting to server if the deadline is expired
+
+## Reindexer tool
+- [fix] Fix of incorrect paging when output to file or stdout redirection
+- [fix] Fix of suggest of '\<key word>'
+
+# Version 2.4.4 (17.12.2019)
+
+## Core
+- [fix] Do not lock preResult values if from cache fixed potential assert on queries with join with used join cache
+- [fix] Fix assert in sort by composite indexes
+- [fea] Add composite values parsing for SQL select
+- [fix] Make circular accumulator for stddev performance statistic
+- [fix] Fix unhandled exception while caclulating perf stat
+
+## go connector
+- [fix] RawBuffer leak due to unclosed iterators in transactions
+
+# Version 2.4.3 (06.12.2019)
+
+## Core
+- [fea] Add '\' as a special escaping symbol to FtDSL
+- [fix] Merge-join queries fixes and optimizations
+- [fix] Fix hit_count_to_cache overflow for idset cache
+
+## Reindexer server
+- [fea] Add master's config check on slave connect
+- [fea] Disable automatic database creation on RPC-connect
+- [fix] Add force-resync after online replication errors
+- [fix] Fix lsn overflow after convertion to int
+
+## go connector
+- [fea] Add replication status to memstats
+
+# Version 2.4.2 (21.11.2019)
+
+## Core
+- [fix] Joins optimizations
+
+## go connector
+- [fix] cjson lock + deep copy performance fixes
+
+# Version 2.4.1 (15.11.2019)
+
+## Core
+- [fea] Sort by expressions
+- [fea] Optimized lock time for joins with small preresult set
+- [fea] Added more info about replication state to #memstat namespace
+- [fix] LSN on row-based query replication (possible assert on server startup)
+- [fix] Replication clusterID for namespaces without storage
+- [fix] PK precepts replication
+
+## Reindexer server
+- [fix] Query results row calculation for http queries with limit
+
+## Reindexer tool
+- [fea] Table pagination
+- [fea] Queries cancellation
+
+## go connector
+- [fix] Tags race on concurrent transactions
+
 # Version 2.3.4 (29.10.2019)
 
 ## go connector
@@ -205,7 +509,7 @@
 
 ## Core
 
-- [fea] Bracets in DSL & SQL queries    
+- [fea] Bracets in DSL & SQL queries
 - [fix] Crash on LRUCache fast invalidation
 - [fix] Relaxed JSON validation. Symbols with codes < 0x20 now are valid
 - [fix] '\0' symbol in JSON will not broke parser
@@ -363,7 +667,7 @@
 ## Core
 
 - [fea] Incremental fulltext search index rebuild 
-- [fea] Async C++ RPC client  
+- [fea] Async C++ RPC client
 - [fix] Fixed incorrect behaviour with non indexed field conditions
 - [fix] Extra non indexed fields tests added
 - [fix] Json parser memleak fixed
