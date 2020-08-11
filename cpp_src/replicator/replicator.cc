@@ -120,7 +120,10 @@ void Replicator::run() {
 	stop_.stop();
 	resyncTimer_.stop();
 	walForcesyncAsync_.stop();
-	master_->UnsubscribeUpdates(this);
+
+	auto terr = master_->UnsubscribeUpdates(this);
+	std::hash<std::thread::id> hash;
+	printf("%ld, Unsubscribe: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
 
 	logPrintf(LogInfo, "[repl] Replicator with %s stopped", config_.masterDSN);
 }
@@ -237,7 +240,11 @@ Error Replicator::syncDatabase() {
 	logPrintf(LogInfo, "[repl:%s]:%d Starting sync from '%s' state=%d", slave_->storagePath_, config_.serverId, config_.masterDSN,
 			  state_.load());
 
-	master_->UnsubscribeUpdates(this);
+	auto terr = master_->UnsubscribeUpdates(this);
+
+	std::hash<std::thread::id> hash;
+	printf("%ld, Unsubscribe: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
+
 	Error err = master_->EnumNamespaces(nses, EnumNamespacesOpts());
 	if (!err.ok()) {
 		logPrintf(LogError, "[repl:%s] EnumNamespaces error: %s%s", slave_->storagePath_, err.what(),
@@ -263,13 +270,15 @@ Error Replicator::syncDatabase() {
 	resyncTimer_.stop();
 	// Loop for all master namespaces
 	if (config_.namespaces.empty()) {
-		master_->SubscribeUpdates(this, UpdatesFilters());
+		terr = master_->SubscribeUpdates(this, UpdatesFilters());
+		printf("%ld, Subscribe all: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
 	}
 	for (auto &ns : nses) {
 		if (config_.namespaces.find(ns.name) != config_.namespaces.end()) {
 			UpdatesFilters filters;
 			filters.AddFilter(ns.name, UpdatesFilters::Filter());
-			master_->SubscribeUpdates(this, filters, SubscriptionOpts().IncrementSubscription());
+			terr = master_->SubscribeUpdates(this, filters, SubscriptionOpts().IncrementSubscription());
+			printf("%ld, Subscribe %s: %s\n", hash(std::this_thread::get_id()), ns.name.c_str(), terr.what().c_str());
 		}
 
 		logPrintf(LogTrace, "[repl:%s:%s]:%d Loop for all master namespaces state=%d", ns.name, slave_->storagePath_, config_.serverId,
@@ -743,6 +752,11 @@ Error Replicator::syncMetaForced(Namespace::Ptr slaveNs, string_view nsName) {
 
 // Callback from WAL updates pusher
 void Replicator::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &wrec) {
+	if (nsName.find("debug"_sv) != string_view::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, OnWalUpdate; lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), LSNs.originLSN_.Counter(), wrec.type);
+	}
+
 	auto sId = LSNs.originLSN_.Server();
 	if (sId != 0) {	 // sId = 0 for configurations without specifying a server id
 		if (sId == config_.serverId) {

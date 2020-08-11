@@ -5,6 +5,8 @@
 #include "core/itemimpl.h"
 #include "core/keyvalue/p_string.h"
 
+#include <thread>
+
 namespace reindexer {
 
 void UpdatesFilters::Merge(const UpdatesFilters &rhs) {
@@ -169,11 +171,27 @@ void UpdatesObservers::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRe
 	if (!skipFilters) {
 		for (auto observer : observers_) {
 			if (observer.filters.Check(nsName)) {
+				if (nsName.find("debug"_sv) != string_view::npos) {
+					std::hash<std::thread::id> hash;
+					printf("%ld, Sending update %s; lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), string(nsName).c_str(),
+						   LSNs.originLSN_.Counter(), walRec.type);
+				}
 				observer.ptr->OnWALUpdate(LSNs, nsName, walRec);
+			} else {
+				if (nsName.find("debug"_sv) != string_view::npos) {
+					std::hash<std::thread::id> hash;
+					printf("%ld, Skipping update %s; lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), string(nsName).c_str(),
+						   LSNs.originLSN_.Counter(), walRec.type);
+				}
 			}
 		}
 	} else {
 		for (auto observer : observers_) {
+			if (nsName.find("debug"_sv) != string_view::npos) {
+				std::hash<std::thread::id> hash;
+				printf("%ld, Sending without filter %s; lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), string(nsName).c_str(),
+					   LSNs.originLSN_.Counter(), walRec.type);
+			}
 			observer.ptr->OnWALUpdate(LSNs, nsName, walRec);
 		}
 	}
