@@ -123,7 +123,7 @@ void Replicator::run() {
 
 	auto terr = master_->UnsubscribeUpdates(this);
 	std::hash<std::thread::id> hash;
-	printf("%ld, Unsubscribe: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
+	printf("%ld, Unsubscribe (repl stop): %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
 
 	logPrintf(LogInfo, "[repl] Replicator with %s stopped", config_.masterDSN);
 }
@@ -243,7 +243,7 @@ Error Replicator::syncDatabase() {
 	auto terr = master_->UnsubscribeUpdates(this);
 
 	std::hash<std::thread::id> hash;
-	printf("%ld, Unsubscribe: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
+	printf("%ld, Unsubscribe (repl start): %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
 
 	Error err = master_->EnumNamespaces(nses, EnumNamespacesOpts());
 	if (!err.ok()) {
@@ -343,13 +343,17 @@ Error Replicator::syncNamespaceByWAL(const NamespaceDef &nsDef) {
 	logPrintf(LogTrace, "[repl:%s:%s]:%d Start sync items, Query lsn = %s", nsDef.name, slave_->storagePath_, config_.serverId, lsn);
 	//  Make query to master's WAL
 	client::QueryResults qr(kResultsWithPayloadTypes | kResultsCJson | kResultsWithItemID | kResultsWithRaw);
+	std::hash<std::thread::id> hash;
+
 	Error err = master_->Select(Query(nsDef.name).Where("#lsn", CondGt, int64_t(lsn)), qr);
+	printf("%ld, %s Sync from %ld: %s\n", hash(std::this_thread::get_id()), nsDef.name.c_str(), int64_t(lsn), err.what().c_str());
 
 	switch (err.code()) {
 		case errOutdatedWAL:
 			// Check if WAL has been outdated, if yes, then force resync
 			return syncNamespaceForced(nsDef, err.what());
 		case errOK:
+			printf("%ld, result: %lu\n", hash(std::this_thread::get_id()), qr.Count());
 			return applyWAL(slaveNs, qr);
 		case errNoWAL:
 			terminate_ = true;

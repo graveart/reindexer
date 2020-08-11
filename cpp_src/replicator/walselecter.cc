@@ -39,7 +39,7 @@ void WALSelecter::operator()(QueryResults &result, SelectCtx &params) {
 		lsn_t fromLSN = lsn_t(std::min(lsnEntry.values[0].As<int64_t>(), std::numeric_limits<int64_t>::max() - 1));
 		if (fromLSN.Server() != ns_->serverId_)
 			throw Error(errOutdatedWAL, "Query to WAL with incorrect LSN %ld, LSN counter %ld", int64_t(fromLSN), ns_->wal_.LSNCounter());
-		if (ns_->wal_.is_outdated(fromLSN.Counter() + 1) && count)
+		if ((fromLSN.Counter() + 1) != ns_->wal_.LSNCounter() && ns_->wal_.is_outdated(fromLSN.Counter() + 1) && count)
 			throw Error(errOutdatedWAL, "Query to WAL with outdated LSN %ld, LSN counter %ld", int64_t(fromLSN), ns_->wal_.LSNCounter());
 
 		auto slaveVersion = versionIdx < 0 ? SemVersion() : SemVersion(q.entries[versionIdx].values[0].As<string>());
@@ -111,6 +111,8 @@ void WALSelecter::operator()(QueryResults &result, SelectCtx &params) {
 	} else {
 		throw Error(errLogic, "Query to WAL should contain condition '#lsn > number' or '#lsn is not null'");
 	}
+	printf("WAL select cnt: %lu from %ld\n", result.Count(),
+		   lsnEntry.values.empty() ? -1 : std::min(lsnEntry.values[0].As<int64_t>(), std::numeric_limits<int64_t>::max() - 1));
 	putReplState(result);
 }
 

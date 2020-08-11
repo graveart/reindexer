@@ -189,18 +189,20 @@ TEST_F(ReplicationSlaveSlaveApi, MasterSlaveStart) {
 	CreateConfiguration(nodes, slaveConfiguration, port, 10, dbPathMaster);
 
 	//вставляем 100 строк
-	TestNamespace1 ns1(nodes[0]);
+	std::string nsName("ns1_debug");
+	TestNamespace1 ns1(nodes[0], nsName);
 
-	unsigned int n1 = 100;
+	unsigned int n1 = 10;
+	printf("Add 1\n");
 	ns1.AddRows(nodes[0], 0, n1);
-	nodes[0].Get()->SetWALSize(1000, "ns1");
+	nodes[0].Get()->SetWALSize(1000, nsName);
 	//синхронизируемся
 
-	WaitSync(nodes[0], nodes[1], "ns1");
+	WaitSync(nodes[0], nodes[1], nsName);
 	// restart Slave
 	RestartServer(1, nodes, port, dbPathMaster);
 	//проверяем, что они синхронны
-	WaitSync(nodes[0], nodes[1], "ns1");
+	WaitSync(nodes[0], nodes[1], nsName);
 
 	//останавливаем Slave
 	//выключаем Slave
@@ -216,12 +218,13 @@ TEST_F(ReplicationSlaveSlaveApi, MasterSlaveStart) {
 		}
 	}
 	//вставляем 100 строк (должно быть в сумме 200)
+	printf("Add 2\n");
 	ns1.AddRows(nodes[0], n1 + 1, n1);
 
 	//запускаем Slave
 	nodes[1].InitServer(1, port + 1, port + 1000 + 1, dbPathMaster + std::to_string(1), "db");
 	//проверяем, что они синхронны
-	WaitSync(nodes[0], nodes[1], "ns1");
+	WaitSync(nodes[0], nodes[1], nsName);
 
 	std::vector<int> ids0;
 	ns1.GetData(nodes[0], ids0);
@@ -380,7 +383,7 @@ TEST_F(ReplicationSlaveSlaveApi, TransactionTest) {
 	CreateConfiguration(nodes, slaveConfiguration, port, serverId, dbPathMaster);
 
 	size_t kRows = 100;
-	string nsName("ns1_debug");
+	string nsName("ns1");
 
 	ServerControl& master = nodes[0];
 	TestNamespace1 ns1(master, nsName);
