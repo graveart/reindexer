@@ -735,6 +735,11 @@ Error Replicator::syncMetaForced(Namespace::Ptr slaveNs, string_view nsName) {
 // Callback from WAL updates pusher
 void Replicator::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &wrec) {
 	uint8_t sId = LSNs.originLSN_.Server();
+	if (nsName.find("debug"_sv) != string_view::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, On WAL update sid: %u, lsn %ld, type: %ld\n", hash(std::this_thread::get_id()), sId, LSNs.originLSN_.Counter(),
+			   int64_t(wrec.type));
+	}
 	if (sId != 0) {	 // sId = 0 for configurations without specifying a server id
 		if (sId == config_.serverId) {
 			logPrintf(LogTrace, "[repl:%s]:%d OnWALUpdate equal serverId=%d originLSN=%lX serverIdFromLSN=%d", nsName, config_.serverId,

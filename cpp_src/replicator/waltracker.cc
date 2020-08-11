@@ -96,8 +96,8 @@ void WALTracker::put(int64_t lsn, const WALRecord &rec) {
 
 	if (nsName_.find("debug") != std::string::npos) {
 		std::hash<std::thread::id> hash;
-		printf("%ld, %s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld\n", hash(std::this_thread::get_id()), nsName_.c_str(),
-			   lsn, pos, walBegin_, walEnd_, lsnCounter_);
+		printf("%ld, %s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld, type: %ld\n", hash(std::this_thread::get_id()),
+			   nsName_.c_str(), lsn, pos, walBegin_, walEnd_, lsnCounter_, int64_t(rec.type));
 	}
 
 	heapSize_ -= records_[pos].heap_size();
