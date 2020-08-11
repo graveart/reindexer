@@ -17,6 +17,12 @@ using std::string;
 
 class BaseFTConfig {
 public:
+	struct Synonym {
+		vector<string> tokens;
+		vector<string> alternatives;
+		bool operator==(const Synonym& other) const { return tokens == other.tokens && alternatives == other.alternatives; }
+		bool operator!=(const Synonym& other) const { return !(*this == other); }
+	};
 	BaseFTConfig();
 	virtual ~BaseFTConfig() = default;
 
@@ -28,11 +34,12 @@ public:
 	bool enableKbLayout = true;
 	bool enableNumbersSearch = false;
 	fast_hash_set<string, hash_str, equal_str> stopWords;
+	vector<Synonym> synonyms;
 	int logLevel = 0;
 	string extraWordSymbols = "-/+";
 
 protected:
-	void parseBase(const gason::JsonNode &root);
+	void parseBase(const gason::JsonNode& root);
 };
 
 }  // namespace reindexer

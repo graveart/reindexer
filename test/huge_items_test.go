@@ -31,11 +31,12 @@ func FillTestItemHuge(start int, count int) {
 }
 
 func TestItemsHuge(t *testing.T) {
+	t.Parallel()
 
 	// Fill items by cjson encoder
 	FillTestItemHuge(0, 50)
 
 	// get and decode all items by cjson decoder
-	newTestQuery(DB, "test_items_huge").ExecAndVerify()
+	newTestQuery(DB, "test_items_huge").ExecAndVerify(t)
 
 }

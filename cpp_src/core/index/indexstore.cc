@@ -6,6 +6,10 @@
 
 namespace reindexer {
 
+struct StrDeepClean {
+	void operator()(unordered_str_map<int>::value_type &v) const { v.first = key_string(); }
+};
+
 template <>
 void IndexStore<key_string>::Delete(const Variant &key, IdType id) {
 	if (key.Type() == KeyValueNull) return;
@@ -15,8 +19,7 @@ void IndexStore<key_string>::Delete(const Variant &key, IdType id) {
 	if (keyIt->second) keyIt->second--;
 	if (!keyIt->second) {
 		memStat_.dataSize -= sizeof(unordered_str_map<int>::value_type) + sizeof(*keyIt->first.get()) + keyIt->first->heap_size();
-		keyIt->first = key_string();
-		str_map.erase(keyIt);
+		str_map.template erase<StrDeepClean>(keyIt);
 	}
 
 	(void)id;
@@ -70,7 +73,7 @@ SelectKeyResults IndexStore<T>::SelectKey(const VariantArray &keys, CondType con
 
 	res.comparators_.push_back(Comparator(condition, KeyType(), keys, opts_.IsArray(), sopts.distinct, payloadType_, fields_,
 										  idx_data.size() ? idx_data.data() : nullptr, opts_.collateOpts_));
-	return SelectKeyResults(res);
+	return SelectKeyResults(std::move(res));
 }
 
 template <typename T>

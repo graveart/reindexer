@@ -7,6 +7,10 @@
 #include <regex>
 #include <unordered_map>
 #include <unordered_set>
+#include "core/cjson/jsonbuilder.h"
+#include "core/nsselecter/joinedselectormock.h"
+#include "core/nsselecter/sortexpression.h"
+#include "core/queryresults/joinresults.h"
 #include "reindexer_api.h"
 #include "tools/string_regexp_functions.h"
 #include "tools/stringstools.h"
@@ -71,8 +75,16 @@ public:
 								   IndexDeclaration{string(kFieldNameAge + compositePlus + kFieldNameGenre).c_str(), "hash", "composite",
 													indexesOptions[kFieldNameAge + compositePlus + kFieldNameGenre], 0},
 							   });
+
 		defaultNsPks.push_back(kFieldNameId);
 		defaultNsPks.push_back(kFieldNameTemp);
+
+		err = rt.reindexer->OpenNamespace(joinNs);
+		ASSERT_TRUE(err.ok()) << err.what();
+		DefineNamespaceDataset(joinNs, {IndexDeclaration{kFieldNameId, "hash", "int", IndexOpts().PK(), 0},
+										IndexDeclaration{kFieldNameYear, "tree", "int", IndexOpts(), 0},
+										IndexDeclaration{kFieldNameName, "tree", "string", IndexOpts(), 0}});
+		joinNsPks.push_back(kFieldNameId);
 
 		err = rt.reindexer->OpenNamespace(testSimpleNs);
 		ASSERT_TRUE(err.ok()) << err.what();
@@ -113,9 +125,17 @@ public:
 			 IndexDeclaration{kFieldNameColumnFullText, "text", "string", IndexOpts().SetConfig(R"xxx({"stemmers":[]})xxx"), 0},
 			 IndexDeclaration{kFieldNameColumnStringNumeric, "-", "string", IndexOpts().SetCollateMode(CollateNumeric), 0}});
 		comparatorsNsPks.push_back(kFieldNameColumnInt64);
+
+		err = rt.reindexer->OpenNamespace(forcedSortOffsetNs);
+		ASSERT_TRUE(err.ok()) << err.what();
+		DefineNamespaceDataset(forcedSortOffsetNs, {IndexDeclaration{kFieldNameId, "hash", "int", IndexOpts().PK(), 0},
+													IndexDeclaration{kFieldNameColumnHash, "hash", "int", IndexOpts(), 0},
+													IndexDeclaration{kFieldNameColumnTree, "tree", "int", IndexOpts(), 0}});
+		forcedSortOffsetNsPks.push_back(kFieldNameId);
 	}
 
-	void ExecuteAndVerify(const string& ns, const Query& query) {
+	template <typename... T>
+	bool ExecuteAndVerify(const string& ns, const Query& query, T... args) {
 		reindexer::QueryResults qr;
 		const_cast<Query&>(query).Explain();
 		Error err = rt.reindexer->Select(query, qr);
@@ -123,6 +143,103 @@ public:
 		if (err.ok()) {
 			Verify(ns, qr, query);
 		}
+		Verify(qr, args...);
+		return err.ok();
+	}
+
+	bool ExecuteAndVerifyWithSql(const string& ns, const Query& query) {
+		if (ExecuteAndVerify(ns, query)) {
+			Query queryFromSql;
+			queryFromSql.FromSQL(query.GetSQL());
+			return ExecuteAndVerify(ns, queryFromSql);
+		}
+		return false;
+	}
+
+	static double CalculateSortExpression(reindexer::SortExpression::const_iterator begin, reindexer::SortExpression::const_iterator end,
+										  Item& item, const QueryResults& qr) {
+		double result = 0.0;
+		assert(begin != end);
+		assert(begin->operation.op == OpPlus);
+		for (auto it = begin; it != end; ++it) {
+			double value = it->CalculateAppropriate<double>(
+				[&it, &item, &qr](const reindexer::SortExpressionBracket&) {
+					return CalculateSortExpression(it.cbegin(), it.cend(), item, qr);
+				},
+				[](const reindexer::SortExpressionValue& v) { return v.value; },
+				[&item](const reindexer::SortExpressionIndex& i) { return item[i.column].As<double>(); },
+				[&item, &qr](const reindexer::SortExpressionJoinedIndex& i) {
+					const reindexer::joins::ItemIterator itemIt{&qr.joined_[0], item.GetID()};
+					const auto joinedIt = itemIt.at(i.fieldIdx);
+					assert(joinedIt.ItemsCount() == 1);
+					auto joinedItem = joinedIt.GetItem(0, qr.getPayloadType(i.fieldIdx + 1), qr.getTagsMatcher(i.fieldIdx + 1));
+					Variant value;
+					if (i.index == IndexValueType::SetByJsonPath || i.index == IndexValueType::NotSet) {
+						const auto values = joinedItem.GetValueByJSONPath(i.column);
+						assert(values.size() == 1);
+						value = values[0];
+					} else {
+						value = joinedItem.GetField(i.index);
+					}
+					return value.As<double>();
+				},
+				[](const reindexer::SortExpressionFuncRank&) -> double { abort(); });
+			if (it->operation.negative) value = -value;
+			switch (it->operation.op) {
+				case OpPlus:
+					result += value;
+					break;
+				case OpMinus:
+					result -= value;
+					break;
+				case OpMult:
+					result *= value;
+					break;
+				case OpDiv:
+					assert(value != 0.0);
+					result /= value;
+					break;
+			}
+		}
+		return result;
+	}
+
+	void Verify(const QueryResults&) {}
+
+	template <typename... T>
+	void Verify(const QueryResults& qr, const char* fieldName, const vector<Variant> expectedValues, T... args) {
+		reindexer::WrSerializer ser;
+		if (qr.Count() != expectedValues.size()) {
+			ser << "Sizes different: expected size " << expectedValues.size() << ", obtained size " << qr.Count() << '\n';
+		} else {
+			for (size_t i = 0; i < expectedValues.size(); ++i) {
+				Item item(qr[i].GetItem());
+				const Variant fieldValue = item[fieldName];
+				if (fieldValue != expectedValues[i]) {
+					ser << "Field " << fieldName << " of item " << i << " different: expected ";
+					expectedValues[i].Dump(ser);
+					ser << " obtained ";
+					fieldValue.Dump(ser);
+					ser << '\n';
+				}
+			}
+		}
+		if (ser.Len()) {
+			ser << "\nExpected values:\n";
+			for (size_t i = 0; i < expectedValues.size(); ++i) {
+				if (i != 0) ser << ", ";
+				expectedValues[i].Dump(ser);
+			}
+			ser << "\nObtained values:\n";
+			for (size_t i = 0; i < qr.Count(); ++i) {
+				if (i != 0) ser << ", ";
+				Item item(qr[i].GetItem());
+				const Variant fieldValue = item[fieldName];
+				fieldValue.Dump(ser);
+			}
+			FAIL() << ser.Slice() << std::endl;
+		}
+		Verify(qr, args...);
 	}
 
 	void Verify(const string& ns, const QueryResults& qr, const Query& query) {
@@ -133,6 +250,7 @@ public:
 		lastSortedColumnValues.resize(query.sortingEntries_.size());
 
 		size_t itemsCount = 0;
+		const auto joinedSelectors = getJoinedSelectors(query);
 		for (size_t i = 0; i < qr.Count(); ++i) {
 			Item itemr(qr[i].GetItem());
 
@@ -167,25 +285,51 @@ public:
 			std::fill(cmpRes.begin(), cmpRes.end(), -1);
 
 			for (size_t j = 0; j < query.sortingEntries_.size(); ++j) {
-				if (!query.forcedSortOrder.empty()) break;
 				const reindexer::SortingEntry& sortingEntry(query.sortingEntries_[j]);
-				Variant sortedValue = itemr[sortingEntry.column];
+				const auto sortExpr = reindexer::SortExpression::Parse(sortingEntry.expression, joinedSelectors);
+
+				Variant sortedValue;
+				if (sortExpr.ByIndexField()) {
+					sortedValue = itemr[sortingEntry.expression];
+				} else if (sortExpr.ByJoinedIndexField()) {
+					auto jItemIt = (qr.begin() + i).GetJoined();
+					EXPECT_EQ(jItemIt.getJoinedFieldsCount(), 1);
+					EXPECT_EQ(jItemIt.getJoinedItemsCount(), 1);
+					reindexer::ItemImpl joinItem(jItemIt.begin().GetItem(0, qr.getPayloadType(1), qr.getTagsMatcher(1)));
+					auto fieldName = sortingEntry.expression.substr(sortingEntry.expression.find_first_of('.'));
+					sortedValue = joinItem.GetValueByJSONPath(fieldName)[0];
+				} else {
+					sortedValue = Variant{CalculateSortExpression(sortExpr.cbegin(), sortExpr.cend(), itemr, qr)};
+				}
 				if (lastSortedColumnValues[j].Type() != KeyValueNull) {
 					bool needToVerify = true;
-					if (j != 0) {
-						for (int k = j - 1; k >= 0; --k)
-							if (cmpRes[k] != 0) {
-								needToVerify = false;
-								break;
-							}
+					for (int k = j - 1; k >= 0; --k) {
+						if (cmpRes[k] != 0) {
+							needToVerify = false;
+							break;
+						}
 					}
-					needToVerify = (j == 0) || needToVerify;
 					if (needToVerify) {
-						cmpRes[j] = lastSortedColumnValues[j].Compare(sortedValue);
+						if (j == 0 && !query.forcedSortOrder_.empty()) {
+							const auto currValIt = std::find(query.forcedSortOrder_.cbegin(), query.forcedSortOrder_.cend(), sortedValue);
+							const auto lastValIt =
+								std::find(query.forcedSortOrder_.cbegin(), query.forcedSortOrder_.cend(), lastSortedColumnValues[0]);
+							if (lastValIt < currValIt) {
+								cmpRes[0] = -1;
+							} else if (lastValIt > currValIt) {
+								cmpRes[0] = 1;
+							} else if (lastValIt == query.forcedSortOrder_.cend()) {
+								cmpRes[0] = lastSortedColumnValues[0].Compare(sortedValue);
+							} else {
+								cmpRes[0] = 0;
+							}
+						} else {
+							cmpRes[j] = lastSortedColumnValues[j].Compare(sortedValue);
+						}
 						bool sortOrderSatisfied =
 							(sortingEntry.desc && cmpRes[j] >= 0) || (!sortingEntry.desc && cmpRes[j] <= 0) || (cmpRes[j] == 0);
-						EXPECT_TRUE(sortOrderSatisfied) << "\nSort order is incorrect for column: " << sortingEntry.column;
 						if (!sortOrderSatisfied) {
+							EXPECT_TRUE(sortOrderSatisfied) << "\nSort order is incorrect for column: " << sortingEntry.expression;
 							TEST_COUT << query.GetSQL() << std::endl;
 							PrintFailedSortOrder(query, qr, i);
 						}
@@ -195,28 +339,15 @@ public:
 			}
 		}
 
-		if (!query.forcedSortOrder.empty()) {
-			EXPECT_TRUE(query.forcedSortOrder.size() <= qr.Count()) << "Size of QueryResults is incorrect!";
-			if (query.forcedSortOrder.size() <= qr.Count()) {
-				for (size_t i = 0; i < qr.Count(); ++i) {
-					Item item(qr[i].GetItem());
-					Variant sortedValue = item[query.sortingEntries_[0].column];
-					EXPECT_EQ(query.forcedSortOrder[i].Compare(sortedValue), 0) << "Forced sort order is incorrect!";
-				}
-			}
-		}
-
 		// Check non found items, to not match conditions
 
 		// If query has limit and offset, skip verification
 		if (query.start != 0 || query.count != UINT_MAX) return;
 
 		// If query has distinct, skip verification
-		bool haveDistinct = false;
-		query.entries.ForeachEntry([&haveDistinct](const reindexer::QueryEntry& qe, OpType) {
-			if (qe.distinct) haveDistinct = true;
-		});
-		if (haveDistinct) return;
+		for (const auto& agg : query.aggregations_) {
+			if (agg.type_ == AggDistinct) return;
+		}
 
 		for (auto& insertedItem : insertedItems[ns]) {
 			if (pks.find(insertedItem.first) != pks.end()) continue;
@@ -244,8 +375,10 @@ protected:
 	const std::vector<string>& getNsPks(const string& ns) {
 		if (ns == default_namespace) return defaultNsPks;
 		if (ns == testSimpleNs) return simpleTestNsPks;
+		if (ns == joinNs) return joinNsPks;
 		if (ns == compositeIndexesNs) return compositeIndexesNsPks;
 		if (ns == comparatorsNs) return comparatorsNsPks;
+		if (ns == forcedSortOffsetNs) return forcedSortOffsetNsPks;
 		std::abort();
 	}
 
@@ -264,11 +397,12 @@ protected:
 			bool iterationResult = true;
 			if (it->IsLeaf()) {
 				if (it->Value().distinct) continue;
+				if (it->Value().joinIndex != QueryEntry::kNoJoins) continue;
 				iterationResult = checkCondition(item, it->Value());
 			} else {
-				iterationResult = checkConditions(item, it->cbegin(it), it->cend(it));
+				iterationResult = checkConditions(item, it.cbegin(), it.cend());
 			}
-			switch (it->Op) {
+			switch (it->operation) {
 				case OpNot:
 					if (!result) return false;
 					result = !iterationResult;
@@ -412,7 +546,6 @@ protected:
 
 	bool checkCondition(Item& item, const QueryEntry& qentry) {
 		EXPECT_TRUE(item.NumFields() > 0);
-		EXPECT_TRUE(qentry.values.size() > 0);
 
 		bool result = false;
 		IndexOpts& opts = indexesOptions[qentry.index];
@@ -435,6 +568,13 @@ protected:
 			}
 		}
 
+		return result;
+	}
+
+	static std::vector<JoinedSelectorMock> getJoinedSelectors(const Query& query) {
+		std::vector<JoinedSelectorMock> result;
+		result.reserve(query.joinQueries_.size());
+		for (const auto& jq : query.joinQueries_) result.emplace_back(jq._namespace);
 		return result;
 	}
 
@@ -491,6 +631,36 @@ protected:
 		insertedItems[compositeIndexesNs][pkString] = std::move(lastItem);
 	}
 
+	void FillForcedSortNamespace() {
+		forcedSortOffsetValues.clear();
+		forcedSortOffsetValues.reserve(forcedSortOffsetNsSize);
+		for (size_t i = 0; i < forcedSortOffsetNsSize; ++i) {
+			Item item = NewItem(forcedSortOffsetNs);
+			item[kFieldNameId] = static_cast<int>(i);
+			forcedSortOffsetValues.emplace_back(rand() % forcedSortOffsetMaxValue, rand() % forcedSortOffsetMaxValue);
+			item[kFieldNameColumnHash] = forcedSortOffsetValues.back().first;
+			item[kFieldNameColumnTree] = forcedSortOffsetValues.back().second;
+			Upsert(forcedSortOffsetNs, item);
+			string pkString = getPkString(item, forcedSortOffsetNs);
+			insertedItems[forcedSortOffsetNs][pkString] = std::move(item);
+		}
+		Commit(forcedSortOffsetNs);
+	}
+
+	void FillTestJoinNamespace() {
+		for (int i = 0; i < 200; ++i) {
+			Item item = NewItem(joinNs);
+			item[kFieldNameId] = i;
+			item[kFieldNameYear] = 1900 + i;
+			item[kFieldNameName] = RandString().c_str();
+			item[kFieldNameGenre] = rand() % 50;
+			Upsert(joinNs, item);
+			string pkString = getPkString(item, joinNs);
+			insertedItems[joinNs].emplace(std::move(pkString), std::move(item));
+		}
+		Commit(testSimpleNs);
+	}
+
 	void FillTestSimpleNamespace() {
 		Item item1 = NewItem(testSimpleNs);
 		item1[kFieldNameId] = 1;
@@ -511,6 +681,93 @@ protected:
 		insertedItems[testSimpleNs].emplace(pkString, std::move(item2));
 
 		Commit(testSimpleNs);
+	}
+
+	enum Column { First, Second };
+
+	vector<Variant> ForcedSortOffsetTestExpectedResults(size_t offset, size_t limit, bool desc, const vector<int>& forcedSortOrder,
+														Column column) const {
+		if (limit == 0 || offset >= forcedSortOffsetValues.size()) return {};
+		vector<int> res;
+		res.resize(forcedSortOffsetValues.size());
+		std::transform(
+			forcedSortOffsetValues.cbegin(), forcedSortOffsetValues.cend(), res.begin(),
+			column == First ? [](const pair<int, int>& v) { return v.first; } : [](const pair<int, int>& v) { return v.second; });
+		std::sort(
+			res.begin(), res.end(), desc ? [](int lhs, int rhs) { return lhs > rhs; } : [](int lhs, int rhs) { return lhs < rhs; });
+		const auto boundary = std::stable_partition(res.begin(), res.end(), [&forcedSortOrder, desc](int v) {
+			return desc == (std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), v) == forcedSortOrder.cend());
+		});
+		if (desc) {
+			std::sort(boundary, res.end(), [&forcedSortOrder](int lhs, int rhs) {
+				return std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), lhs) >
+					   std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), rhs);
+			});
+		} else {
+			std::sort(res.begin(), boundary, [&forcedSortOrder](int lhs, int rhs) {
+				return std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), lhs) <
+					   std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), rhs);
+			});
+		}
+		return {res.cbegin() + offset, (offset + limit >= res.size()) ? res.cend() : (res.begin() + offset + limit)};
+	}
+
+	pair<vector<Variant>, vector<Variant>> ForcedSortOffsetTestExpectedResults(size_t offset, size_t limit, bool desc1Column,
+																			   bool desc2Column, const vector<int>& forcedSortOrder,
+																			   Column firstSortColumn) {
+		if (limit == 0 || offset >= forcedSortOffsetValues.size()) return {};
+		if (firstSortColumn == First) {
+			std::sort(forcedSortOffsetValues.begin(), forcedSortOffsetValues.end(),
+					  [desc1Column, desc2Column](pair<int, int> lhs, pair<int, int> rhs) {
+						  return lhs.first == rhs.first ? (desc2Column ? (lhs.second > rhs.second) : (lhs.second < rhs.second))
+														: (desc1Column ? (lhs.first > rhs.first) : (lhs.first < rhs.first));
+					  });
+			const auto boundary = std::stable_partition(
+				forcedSortOffsetValues.begin(), forcedSortOffsetValues.end(), [&forcedSortOrder, desc1Column](pair<int, int> v) {
+					return desc1Column == (std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), v.first) == forcedSortOrder.cend());
+				});
+			std::sort(desc1Column ? boundary : forcedSortOffsetValues.begin(), desc1Column ? forcedSortOffsetValues.end() : boundary,
+					  [&forcedSortOrder, desc1Column, desc2Column](pair<int, int> lhs, pair<int, int> rhs) {
+						  const auto lhsPos = std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), lhs.first);
+						  const auto rhsPos = std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), rhs.first);
+						  if (lhsPos == rhsPos) {
+							  return desc2Column ? lhs.second > rhs.second : lhs.second < rhs.second;
+						  } else {
+							  return desc1Column ? lhsPos > rhsPos : lhsPos < rhsPos;
+						  }
+					  });
+		} else {
+			std::sort(forcedSortOffsetValues.begin(), forcedSortOffsetValues.end(),
+					  [desc1Column, desc2Column](pair<int, int> lhs, pair<int, int> rhs) {
+						  return lhs.second == rhs.second ? (desc1Column ? (lhs.first > rhs.first) : (lhs.first < rhs.first))
+														  : (desc2Column ? (lhs.second > rhs.second) : (lhs.second < rhs.second));
+					  });
+			const auto boundary = std::stable_partition(
+				forcedSortOffsetValues.begin(), forcedSortOffsetValues.end(), [&forcedSortOrder, desc2Column](pair<int, int> v) {
+					return desc2Column == (std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), v.second) == forcedSortOrder.cend());
+				});
+			std::sort(desc2Column ? boundary : forcedSortOffsetValues.begin(), desc2Column ? forcedSortOffsetValues.end() : boundary,
+					  [&forcedSortOrder, desc1Column, desc2Column](pair<int, int> lhs, pair<int, int> rhs) {
+						  const auto lhsPos = std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), lhs.second);
+						  const auto rhsPos = std::find(forcedSortOrder.cbegin(), forcedSortOrder.cend(), rhs.second);
+						  if (lhsPos == rhsPos) {
+							  return desc1Column ? lhs.first > rhs.first : lhs.first < rhs.first;
+						  } else {
+							  return desc2Column ? lhsPos > rhsPos : lhsPos < rhsPos;
+						  }
+					  });
+		}
+		vector<Variant> resFirstColumn, resSecondColumn;
+		resFirstColumn.resize(std::min(limit, forcedSortOffsetValues.size() - offset));
+		resSecondColumn.resize(std::min(limit, forcedSortOffsetValues.size() - offset));
+		const bool byLimit = limit + offset < forcedSortOffsetValues.size();
+		std::transform(forcedSortOffsetValues.cbegin() + offset,
+					   byLimit ? (forcedSortOffsetValues.cbegin() + offset + limit) : forcedSortOffsetValues.cend(), resFirstColumn.begin(),
+					   [](const pair<int, int>& v) { return Variant(v.first); });
+		std::transform(forcedSortOffsetValues.cbegin() + offset,
+					   byLimit ? (forcedSortOffsetValues.cbegin() + offset + limit) : forcedSortOffsetValues.cend(),
+					   resSecondColumn.begin(), [](const pair<int, int>& v) { return Variant(v.second); });
+		return std::make_pair(std::move(resFirstColumn), std::move(resSecondColumn));
 	}
 
 	void FillComparatorsNamespace() {
@@ -564,8 +821,8 @@ protected:
 
 			tr.Insert(move(item));
 		}
-
-		rt.reindexer->CommitTransaction(tr);
+		QueryResults res;
+		rt.reindexer->CommitTransaction(tr, res);
 		Commit(default_namespace);
 	}
 
@@ -603,15 +860,68 @@ protected:
 		return item;
 	}
 
-	void CheckStandartQueries() {
-		const char* sortIdxs[] = {"", kFieldNameName, kFieldNameYear, kFieldNameRate, kFieldNameBtreeIdsets};
-		const vector<string> distincts = {"", kFieldNameYear, kFieldNameRate};
-		const vector<bool> sortOrders = {true, false};
+	void CheckDistinctQueries() {
+		static const vector<string> distincts = {"", kFieldNameYear, kFieldNameRate};
 
-		const string compositeIndexName(kFieldNameAge + compositePlus + kFieldNameGenre);
+		for (const string& distinct : distincts) {
+			const int randomAge = rand() % 50;
+			const int randomGenre = rand() % 50;
+
+			ExecuteAndVerifyWithSql(
+				default_namespace,
+				Query(default_namespace).Where(kFieldNameGenre, CondEq, randomGenre).Distinct(distinct.c_str()).Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(
+				default_namespace,
+				Query(default_namespace).Where(kFieldNameName, CondEq, RandString()).Distinct(distinct.c_str()).Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(default_namespace, Query(default_namespace)
+														   .Where(kFieldNameRate, CondEq, static_cast<double>(rand() % 100) / 10)
+														   .Distinct(distinct.c_str())
+														   .Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(default_namespace, Query(default_namespace)
+														   .Where(kFieldNameGenre, CondGt, randomGenre)
+														   .Distinct(distinct.c_str())
+														   .Sort(kFieldNameYear, true)
+														   .Debug(LogTrace));
+
+			ExecuteAndVerifyWithSql(
+				default_namespace,
+				Query(default_namespace).Where(kFieldNameName, CondGt, RandString()).Distinct(distinct.c_str()).Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(default_namespace, Query(default_namespace)
+														   .Where(kFieldNameRate, CondGt, static_cast<double>(rand() % 100) / 10)
+														   .Distinct(distinct.c_str())
+														   .Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(
+				default_namespace,
+				Query(default_namespace).Where(kFieldNameGenre, CondLt, randomGenre).Distinct(distinct.c_str()).Sort(kFieldNameYear, true));
+
+			ExecuteAndVerifyWithSql(default_namespace, Query(default_namespace)
+														   .Where(kFieldNameAge, CondEq, randomAge)
+														   .Where(kFieldNameGenre, CondEq, randomGenre)
+														   .Distinct(distinct.c_str())
+														   .Sort(kFieldNameYear, true));
+		}
+	}
+
+	void CheckStandartQueries() {
+		static const vector<string> sortIdxs = {"",
+												kFieldNameName,
+												kFieldNameYear,
+												kFieldNameRate,
+												kFieldNameBtreeIdsets,
+												string{"-2.5 * "} + kFieldNameRate + " / (" + kFieldNameYear + " + " + kFieldNameId + ')'};
+		static const vector<string> distincts = {"", kFieldNameYear, kFieldNameRate};
+		static const vector<bool> sortOrders = {true, false};
+
+		static const string compositeIndexName(kFieldNameAge + compositePlus + kFieldNameGenre);
+		Query joinQuery(joinNs);
 
 		for (const bool sortOrder : sortOrders) {
-			for (const char* sortIdx : sortIdxs) {
+			for (const auto& sortIdx : sortIdxs) {
 				for (const string& distinct : distincts) {
 					const int randomAge = rand() % 50;
 					const int randomGenre = rand() % 50;
@@ -757,6 +1067,8 @@ protected:
 															.Sort(kFieldNameActor, false)
 															.Sort(kFieldNameRate, true)
 															.Sort(kFieldNameLocation, false));
+
+					ExecuteAndVerify(default_namespace, Query(default_namespace).Sort(kFieldNameGenre, true, {10, 20, 30}));
 
 					ExecuteAndVerify(
 						default_namespace,
@@ -966,6 +1278,18 @@ protected:
 															.Sort(sortIdx, sortOrder)
 															.WhereComposite(compositeIndexName.c_str(), CondEq,
 																			{{Variant(rand() % 10), Variant(rand() % 50)}}));
+
+					ExecuteAndVerify(default_namespace, Query(default_namespace)
+															.InnerJoin(kFieldNameYear, kFieldNameYear, CondEq, joinQuery)
+															.Distinct(distinct)
+															.Sort(joinNs + '.' + kFieldNameId, sortOrder));
+
+					ExecuteAndVerify(default_namespace, Query(default_namespace)
+															.InnerJoin(kFieldNameYear, kFieldNameYear, CondEq, joinQuery)
+															.Distinct(distinct)
+															.Sort(joinNs + '.' + kFieldNameId + " * " + joinNs + '.' + kFieldNameGenre +
+																	  (sortIdx.empty() || (sortIdx == "name") ? "" : (" + " + sortIdx)),
+																  sortOrder));
 				}
 			}
 		}
@@ -1005,8 +1329,7 @@ protected:
 	}
 
 	template <typename ExpectedFacet>
-	static void checkFacet(const reindexer::h_vector<reindexer::FacetResult, 1>& result, const ExpectedFacet& expected,
-						   const std::string& name) {
+	static void checkFacet(const std::vector<reindexer::FacetResult>& result, const ExpectedFacet& expected, const std::string& name) {
 		ASSERT_EQ(result.size(), expected.size()) << (name + " aggregation Facet result is incorrect!");
 		auto resultIt = result.begin();
 		auto expectedIt = expected.cbegin();
@@ -1014,6 +1337,26 @@ protected:
 			checkFacetValues(resultIt->values, expectedIt->first, name);
 			EXPECT_EQ(resultIt->count, expectedIt->second) << (name + " aggregation Facet result is incorrect!");
 		}
+	}
+
+	void InitNSObj() {
+		Error err = rt.reindexer->OpenNamespace(nsWithObject);
+		ASSERT_TRUE(err.ok()) << err.what();
+		DefineNamespaceDataset(nsWithObject, {IndexDeclaration{"id", "hash", "int", IndexOpts().PK(), 0}});
+		reindexer::WrSerializer ser;
+		for (int i = 0; i < 10; ++i) {
+			ser.Reset();
+			reindexer::JsonBuilder bld(ser);
+			bld.Put("id", i);
+			auto objNode = bld.Object(kFieldNameObjectField);
+			objNode.Put("data", rand() % 3);
+			objNode.End();
+			bld.End();
+			auto item = NewItem(nsWithObject);
+			item.FromJSON(ser.Slice());
+			Upsert(nsWithObject, item);
+		}
+		Commit(nsWithObject);
 	}
 
 	void CheckAggregationQueries() {
@@ -1030,7 +1373,7 @@ protected:
 		reindexer::QueryResults wrongQr2;
 		err = rt.reindexer->Select(wrongQuery2, wrongQr2);
 		ASSERT_FALSE(err.ok());
-		EXPECT_EQ(err.what(), "For aggregation avg available exactly one field");
+		EXPECT_EQ(err.what(), "For aggregation avg is available exactly one field");
 
 		const Query wrongQuery3 = Query(default_namespace).Aggregate(AggAvg, {kFieldNameYear}, {{kFieldNameYear, true}});
 		reindexer::QueryResults wrongQr3;
@@ -1055,6 +1398,13 @@ protected:
 		err = rt.reindexer->Select(wrongQuery6, wrongQr6);
 		ASSERT_FALSE(err.ok());
 		EXPECT_EQ(err.what(), "Multifield facet cannot contain an array field");
+
+		InitNSObj();
+		const Query wrongQuery7 = Query(nsWithObject).Distinct(kFieldNameObjectField);
+		reindexer::QueryResults wrongQr7;
+		err = rt.reindexer->Select(wrongQuery7, wrongQr7);
+		ASSERT_FALSE(err.ok());
+		EXPECT_EQ(err.what(), "Cannot aggregate object field");
 
 		Query testQuery = Query(default_namespace)
 							  .Aggregate(AggAvg, {kFieldNameYear})
@@ -1239,6 +1589,38 @@ protected:
 
 		CompareQueryResults(sqlQr5, checkQr5);
 		Verify(default_namespace, checkQr5, checkQuery5);
+
+		sqlQuery = string("SELECT ID FROM test_namespace ORDER BY '") + kFieldNameYear + " + " + kFieldNameId + " * 5' DESC LIMIT 10000000";
+		const Query checkQuery6 =
+			Query(default_namespace, 0, 10000000).Sort(kFieldNameYear + std::string(" + ") + kFieldNameId + " * 5", true);
+
+		QueryResults sqlQr6;
+		err = rt.reindexer->Select(sqlQuery, sqlQr6);
+		ASSERT_TRUE(err.ok()) << err.what();
+
+		QueryResults checkQr6;
+		err = rt.reindexer->Select(checkQuery6, checkQr6);
+		ASSERT_TRUE(err.ok()) << err.what();
+
+		CompareQueryResults(sqlQr6, checkQr6);
+		Verify(default_namespace, checkQr6, checkQuery6);
+
+		sqlQuery = string("SELECT ID FROM test_namespace ORDER BY '") + kFieldNameYear + " + " + kFieldNameId +
+				   " * 5' DESC ORDER BY '2 * " + kFieldNameGenre + " / (1 + " + kFieldNameIsDeleted + ")' ASC LIMIT 10000000";
+		const Query checkQuery7 = Query(default_namespace, 0, 10000000)
+									  .Sort(kFieldNameYear + string(" + ") + kFieldNameId + " * 5", true)
+									  .Sort(string("2 * ") + kFieldNameGenre + " / (1 + " + kFieldNameIsDeleted + ')', false);
+
+		QueryResults sqlQr7;
+		err = rt.reindexer->Select(sqlQuery, sqlQr7);
+		ASSERT_TRUE(err.ok()) << err.what();
+
+		QueryResults checkQr7;
+		err = rt.reindexer->Select(checkQuery7, checkQr7);
+		ASSERT_TRUE(err.ok()) << err.what();
+
+		CompareQueryResults(sqlQr7, checkQr7);
+		Verify(default_namespace, checkQr7, checkQuery7);
 	}
 
 	void CheckCompositeIndexesQueries() {
@@ -1342,11 +1724,11 @@ protected:
 	static void PrintQueryEntries(reindexer::QueryEntries::const_iterator it, reindexer::QueryEntries::const_iterator to) {
 		TestCout() << "(";
 		for (; it != to; ++it) {
-			TestCout() << (it->Op == OpAnd ? "AND" : (it->Op == OpOr ? "OR" : "NOT"));
+			TestCout() << (it->operation == OpAnd ? "AND" : (it->operation == OpOr ? "OR" : "NOT"));
 			if (it->IsLeaf()) {
 				TestCout() << it->Value().Dump();
 			} else {
-				PrintQueryEntries(it->cbegin(it), it->cend(it));
+				PrintQueryEntries(it.cbegin(), it.cend());
 			}
 		}
 		TestCout() << ")";
@@ -1362,7 +1744,7 @@ protected:
 		Item rdummy(qr[0].GetItem());
 		boldOn();
 		for (size_t idx = 0; idx < query.sortingEntries_.size(); idx++) {
-			TestCout() << rdummy[query.sortingEntries_[idx].column].Name() << " ";
+			TestCout() << rdummy[query.sortingEntries_[idx].expression].Name() << " ";
 		}
 		boldOff();
 		TestCout() << std::endl << std::endl;
@@ -1373,7 +1755,7 @@ protected:
 			Item item(qr[i].GetItem());
 			if (i == itemIndex) boldOn();
 			for (size_t j = 0; j < query.sortingEntries_.size(); ++j) {
-				TestCout() << item[query.sortingEntries_[j].column].As<string>() << " ";
+				TestCout() << item[query.sortingEntries_[j].expression].As<string>() << " ";
 			}
 			if (i == itemIndex) boldOff();
 			TestCout() << std::endl;
@@ -1387,7 +1769,7 @@ protected:
 		for (int i = firstItem; i < lastItem; ++i) {
 			Item item(qr[i].GetItem());
 			for (size_t j = 0; j < query.sortingEntries_.size(); ++j) {
-				TestCout() << item[query.sortingEntries_[j].column].As<string>() << " ";
+				TestCout() << item[query.sortingEntries_[j].expression].As<string>() << " ";
 			}
 			TestCout() << std::endl;
 		}
@@ -1432,19 +1814,31 @@ protected:
 	const char* kFieldNameColumnFullText = "columnFullText";
 	const char* kFieldNameColumnStringNumeric = "columnStringNumeric";
 
+	const char* kFieldNameColumnHash = "columnHash";
+	const char* kFieldNameColumnTree = "columnTree";
+	const char* kFieldNameObjectField = "object";
+
 	const string compositePlus = "+";
 	const string testSimpleNs = "test_simple_namespace";
+	const string joinNs = "join_namespace";
 	const string compositeIndexesNs = "composite_indexes_namespace";
 	const string comparatorsNs = "comparators_namespace";
+	const string forcedSortOffsetNs = "forced_sort_offset_namespace";
+	const string nsWithObject = "namespace_with_object";
 
 	const string kCompositeFieldPricePages = kFieldNamePrice + compositePlus + kFieldNamePages;
 	const string kCompositeFieldTitleName = kFieldNameTitle + compositePlus + kFieldNameName;
 
 	vector<string> defaultNsPks;
 	vector<string> simpleTestNsPks;
+	vector<string> joinNsPks;
 	vector<string> compositeIndexesNsPks;
 	vector<string> comparatorsNsPks;
+	vector<string> forcedSortOffsetNsPks;
 	std::mutex m_;
 
 	int currBtreeIdsetsValue = rand() % 10000;
+	static constexpr size_t forcedSortOffsetNsSize = 1000;
+	static constexpr int forcedSortOffsetMaxValue = 1000;
+	vector<pair<int, int>> forcedSortOffsetValues;
 };

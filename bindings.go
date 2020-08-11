@@ -138,19 +138,26 @@ func (db *reindexerImpl) getMeta(ctx context.Context, namespace, key string) ([]
 }
 
 func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool, nonCacheableData bool, item interface{}) (interface{}, error) {
-	useCache := item == nil && (ns.deepCopyIface || allowUnsafe) && !nonCacheableData && ns.cacheItems != nil
+	useCache := item == nil && (ns.deepCopyIface || allowUnsafe) && !nonCacheableData
+	hasCache := false
 	needCopy := ns.deepCopyIface && !allowUnsafe
 	var err error
 
 	if useCache {
 		ns.cacheLock.RLock()
+		hasCache = ns.cacheItems != nil
+		if !hasCache {
+			ns.cacheLock.RUnlock()
+		}
+	}
+	if useCache && hasCache {
 		if citem, ok := ns.cacheItems[params.id]; ok && citem.version == params.version {
 			item = citem.item
 			ns.cacheLock.RUnlock()
 		} else {
 			ns.cacheLock.RUnlock()
 			item = reflect.New(ns.rtype).Interface()
-			dec := ns.localCjsonState.NewDecoder(item)
+			dec := ns.localCjsonState.NewDecoder(item, logger)
 			if params.cptr != 0 {
 				err = dec.DecodeCPtr(params.cptr, item)
 			} else if params.data != nil {
@@ -162,14 +169,22 @@ func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool,
 				return item, err
 			}
 			ns.cacheLock.Lock()
-			ns.cacheItems[params.id] = cacheItem{item: item, version: params.version}
+			if citem, ok := ns.cacheItems[params.id]; ok {
+				if citem.version == params.version {
+					item = citem.item
+				} else if citem.version < params.version {
+					ns.cacheItems[params.id] = cacheItem{item: item, version: params.version}
+				}
+			} else {
+				ns.cacheItems[params.id] = cacheItem{item: item, version: params.version}
+			}
 			ns.cacheLock.Unlock()
 		}
 	} else {
 		if item == nil {
 			item = reflect.New(ns.rtype).Interface()
 		}
-		dec := ns.localCjsonState.NewDecoder(item)
+		dec := ns.localCjsonState.NewDecoder(item, logger)
 		if params.cptr != 0 {
 			err = dec.DecodeCPtr(params.cptr, item)
 		} else if params.data != nil {
@@ -490,4 +505,16 @@ func WithServerConfig(startupTimeout time.Duration, serverConfig *config.ServerC
 
 func WithTimeouts(loginTimeout time.Duration, requestTimeout time.Duration) interface{} {
 	return bindings.OptionTimeouts{loginTimeout, requestTimeout}
+}
+
+func WithCreateDBIfMissing() interface{} {
+	return bindings.OptionConnect{CreateDBIfMissing: true}
+}
+
+func WithNetCompression() interface{} {
+	return bindings.OptionCompression{EnableCompression: true}
+}
+
+func WithAppName(appName string) interface{} {
+	return bindings.OptionAppName{AppName: appName}
 }

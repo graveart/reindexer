@@ -18,17 +18,19 @@ namespace reindexer_server {
 const std::string kUsersYAMLFilename = "users.yml";
 const std::string kUsersJSONFilename = "users.json";
 
-DBManager::DBManager(const string &dbpath, bool noSecurity)
-	: dbpath_(dbpath), noSecurity_(noSecurity), storageType_(datastorage::StorageType::LevelDB) {}
+DBManager::DBManager(const string &dbpath, bool noSecurity, IClientsStats *clientsStats)
+	: dbpath_(dbpath), noSecurity_(noSecurity), storageType_(datastorage::StorageType::LevelDB), clientsStats_(clientsStats) {}
 
 Error DBManager::Init(const std::string &storageEngine, bool allowDBErrors, bool withAutorepair) {
-	auto status = readUsers();
-	if (!status.ok() && !noSecurity_) {
-		return status;
+	if (!noSecurity_) {
+		auto status = readUsers();
+		if (!status.ok()) {
+			return status;
+		}
 	}
 
 	vector<fs::DirEntry> foundDb;
-	if (fs::ReadDir(dbpath_, foundDb) < 0) {
+	if (!dbpath_.empty() && fs::ReadDir(dbpath_, foundDb) < 0) {
 		return Error(errParams, "Can't read reindexer dir %s", dbpath_);
 	}
 
@@ -60,46 +62,58 @@ Error DBManager::OpenDatabase(const string &dbName, AuthContext &auth, bool canC
 	if (!status.ok()) {
 		return status;
 	}
+	auto dbConnect = [&auth](Reindexer *db) {
+		if (auth.checkClusterID_) {
+			return db->Connect(std::string(), ConnectOpts().WithExpectedClusterID(auth.expectedClusterID_));
+		}
+		return Error();
+	};
 
 	smart_lock<Mutex> lck(mtx_, dummyCtx);
 	auto it = dbs_.find(dbName);
 	if (it != dbs_.end()) {
+		status = dbConnect(it->second.get());
+		if (!status.ok()) return status;
 		auth.db_ = it->second.get();
-		return 0;
+		return errOK;
 	}
 	lck.unlock();
 
 	if (!canCreate) {
-		return Error(errParams, "Database '%s' not found", dbName);
+		return Error(errNotFound, "Database '%s' not found", dbName);
 	}
 	if (auth.role_ < kRoleOwner) {
 		return Error(errForbidden, "Forbidden to create database %s", dbName);
 	}
 	if (!validateObjectName(dbName)) {
-		return Error(errParams, "Database name contains invalid character. Only alphas, digits,'_','-, are allowed");
+		return Error(errParams, "Database name contains invalid character. Only alphas, digits,'_','-', are allowed");
 	}
 
 	lck = smart_lock<Mutex>(mtx_, dummyCtx, true);
 	it = dbs_.find(dbName);
 	if (it != dbs_.end()) {
+		status = dbConnect(it->second.get());
+		if (!status.ok()) return status;
 		auth.db_ = it->second.get();
-		return 0;
+		return errOK;
 	}
 
-	status = loadOrCreateDatabase(dbName, true, true);
+	status = loadOrCreateDatabase(dbName, true, true, auth);
 	if (!status.ok()) {
 		return status;
 	}
 
-	lck.unlock();
-	return OpenDatabase(dbName, auth, false);
+	it = dbs_.find(dbName);
+	assert(it != dbs_.end());
+	auth.db_ = it->second.get();
+	return errOK;
 }
 
-Error DBManager::loadOrCreateDatabase(const string &dbName, bool allowDBErrors, bool withAutorepair) {
-	string storagePath = fs::JoinPath(dbpath_, dbName);
+Error DBManager::loadOrCreateDatabase(const string &dbName, bool allowDBErrors, bool withAutorepair, const AuthContext &auth) {
+	string storagePath = !dbpath_.empty() ? fs::JoinPath(dbpath_, dbName) : "";
 
 	logPrintf(LogInfo, "Loading database %s", dbName);
-	auto db = unique_ptr<reindexer::Reindexer>(new reindexer::Reindexer);
+	auto db = unique_ptr<reindexer::Reindexer>(new reindexer::Reindexer(clientsStats_));
 	StorageTypeOpt storageType = kStorageTypeOptLevelDB;
 	switch (storageType_) {
 		case datastorage::StorageType::LevelDB:
@@ -109,8 +123,11 @@ Error DBManager::loadOrCreateDatabase(const string &dbName, bool allowDBErrors, 
 			storageType = kStorageTypeOptRocksDB;
 			break;
 	}
-	auto status =
-		db->Connect(storagePath, ConnectOpts().AllowNamespaceErrors(allowDBErrors).WithStorageType(storageType).Autorepair(withAutorepair));
+	auto opts = ConnectOpts().AllowNamespaceErrors(allowDBErrors).WithStorageType(storageType).Autorepair(withAutorepair);
+	if (auth.checkClusterID_) {
+		opts = opts.WithExpectedClusterID(auth.expectedClusterID_);
+	}
+	auto status = db->Connect(storagePath, opts);
 	if (status.ok()) {
 		dbs_[dbName] = std::move(db);
 	}
@@ -180,7 +197,6 @@ Error DBManager::Login(const string &dbName, AuthContext &auth) {
 
 	if (!dbName.empty()) {
 		const UserRecord &urec = it->second;
-		auth.role_ = kRoleNone;
 
 		auto dbIt = urec.roles.find("*");
 		if (dbIt != urec.roles.end()) {

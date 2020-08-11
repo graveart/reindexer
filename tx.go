@@ -13,40 +13,31 @@ const maxAsyncRequests = 500
 const asyncResponseQueueSize = 2 * maxAsyncRequests
 const retriesOnInvalidStateCnt = 1
 
+// Tx is transaction object. Transaction are performs atomic namespace update.
+// There are synchronous and async transaction available. To start transaction method `db.BeginTx()` is used.
+// This method creates transaction object
 type Tx struct {
-	namespace        string
-	started          bool
-	forceCommitCount uint32
-	db               *reindexerImpl
-	ns               *reindexerNamespace
-	counter          uint32
-	asyncRspCnt      uint32
-	ctx              bindings.TxCtx
-	cmplCh           chan modifyInfo
-	cmplCond         *sync.Cond
-	lock             sync.Mutex
-	asyncErr         error
-	asyncErrLock     sync.RWMutex
+	namespace    string
+	started      bool
+	db           *reindexerImpl
+	ns           *reindexerNamespace
+	asyncRspCnt  uint32
+	ctx          bindings.TxCtx
+	cmplCh       chan modifyInfo
+	cmplCond     *sync.Cond
+	lock         sync.Mutex
+	asyncErr     error
+	asyncErrLock sync.RWMutex
 }
 
-func newTx(db *reindexerImpl, namespace string, ctx context.Context) (*Tx, error) {
-	tx := &Tx{db: db, namespace: namespace, forceCommitCount: 0}
-	err := tx.startTxCtx(ctx)
-	if err != nil {
+func newTx(db *reindexerImpl, namespace string, ctx context.Context) (tx *Tx, err error) {
+	tx = &Tx{db: db, namespace: namespace}
+	if tx.ns, err = tx.db.getNS(tx.namespace); err != nil {
 		return nil, err
 	}
-	tx.ns, _ = tx.db.getNS(tx.namespace)
-
-	return tx, nil
-}
-
-func newTxAutocommit(db *reindexerImpl, namespace string, forceCommitCount uint32) (*Tx, error) {
-	tx := &Tx{db: db, namespace: namespace, forceCommitCount: forceCommitCount}
-	err := tx.startTx()
-	if err != nil {
+	if err = tx.startTxCtx(ctx); err != nil {
 		return nil, err
 	}
-	tx.ns, _ = tx.db.getNS(tx.namespace)
 
 	return tx, nil
 }
@@ -59,7 +50,6 @@ func (tx *Tx) startTxCtx(ctx context.Context) (err error) {
 	if tx.started {
 		return nil
 	}
-	tx.counter = 0
 	tx.asyncRspCnt = 0
 	tx.started = true
 	tx.ctx, err = tx.db.binding.BeginTx(ctx, tx.namespace)
@@ -97,13 +87,13 @@ func (tx *Tx) Update(item interface{}, precepts ...string) error {
 	return tx.modifyInternal(item, nil, modeUpdate, precepts...)
 }
 
-// Upsert (Insert or Update) item to index
+// Upsert (Insert or Update) item to namespace
 func (tx *Tx) Upsert(item interface{}, precepts ...string) error {
 	tx.startTx()
 	return tx.modifyInternal(item, nil, modeUpsert, precepts...)
 }
 
-// UpsertJSON (Insert or Update) item to index
+// UpsertJSON (Insert or Update) item to namespace
 func (tx *Tx) UpsertJSON(json []byte, precepts ...string) error {
 	tx.startTx()
 	return tx.modifyInternal(nil, json, modeUpsert, precepts...)
@@ -122,6 +112,7 @@ func (tx *Tx) DeleteJSON(json []byte, precepts ...string) error {
 	return tx.modifyInternal(nil, json, modeDelete, precepts...)
 }
 
+// UpdateAsync Insert item to namespace. Calls completion on result
 func (tx *Tx) InsertAsync(item interface{}, cmpl bindings.Completion, precepts ...string) error {
 	tx.startTx()
 	if err := tx.startAsyncRoutines(); err != nil {
@@ -130,6 +121,7 @@ func (tx *Tx) InsertAsync(item interface{}, cmpl bindings.Completion, precepts .
 	return tx.modifyInternalAsync(item, nil, modeInsert, cmpl, retriesOnInvalidStateCnt, precepts...)
 }
 
+// UpdateAsync Update item to namespace. Calls completion on result
 func (tx *Tx) UpdateAsync(item interface{}, cmpl bindings.Completion, precepts ...string) error {
 	tx.startTx()
 	if err := tx.startAsyncRoutines(); err != nil {
@@ -138,7 +130,7 @@ func (tx *Tx) UpdateAsync(item interface{}, cmpl bindings.Completion, precepts .
 	return tx.modifyInternalAsync(item, nil, modeUpdate, cmpl, retriesOnInvalidStateCnt, precepts...)
 }
 
-// UpsertAsync (Insert or Update) item to index. Calls completion on result
+// UpsertAsync (Insert or Update) item to namespace. Calls completion on result
 func (tx *Tx) UpsertAsync(item interface{}, cmpl bindings.Completion, precepts ...string) error {
 	tx.startTx()
 	if err := tx.startAsyncRoutines(); err != nil {
@@ -175,7 +167,7 @@ func (tx *Tx) DeleteJSONAsync(json []byte, cmpl bindings.Completion, precepts ..
 	return tx.modifyInternalAsync(nil, json, modeDelete, cmpl, retriesOnInvalidStateCnt, precepts...)
 }
 
-// CommitWithCount apply changes with count
+// CommitWithCount apply changes, and return count of changed items
 func (tx *Tx) CommitWithCount() (count int, err error) {
 	if !tx.started {
 		return 0, nil
@@ -187,7 +179,10 @@ func (tx *Tx) CommitWithCount() (count int, err error) {
 	return
 }
 
-// Commit apply changes
+// Commit - apply changes. Commit also waits for all async operations done, and then apply changes.
+// if any error occurred during prepare process, then tx.Commit should
+// return an error. So it is enough, to check error returned by Commit - to be sure
+// that all data has been successfully committed or not.
 func (tx *Tx) Commit() error {
 	_, err := tx.CommitWithCount()
 	return err
@@ -214,7 +209,10 @@ func (tx *Tx) AwaitResults() *Tx {
 	return tx
 }
 
-// Query creates Query in transaction for Update or Delete operation
+// Query creates Query in transaction for Update or Delete or Read
+// Read-committed isolation is available for read operations.
+// Changes made in active transaction is invisible to current and another transactions.
+
 func (tx *Tx) Query() *Query {
 	return tx.db.queryTx(tx.namespace, tx)
 }
@@ -224,6 +222,10 @@ func (tx *Tx) finalize() {
 	if tx.cmplCh != nil {
 		close(tx.cmplCh)
 		tx.cmplCh = nil
+	}
+	if tx.ctx.Result != nil {
+		tx.ctx.Result.Free()
+		tx.ctx.Result = nil
 	}
 }
 
@@ -243,16 +245,11 @@ func (tx *Tx) modifyInternal(item interface{}, json []byte, mode int, precepts .
 		if err != nil {
 			rerr, ok := err.(bindings.Error)
 			if ok && rerr.Code() == bindings.ErrStateInvalidated {
-				tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+				it := tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+				it.Close()
 				err = rerr
 				continue
 			}
-			return err
-		}
-		tx.counter++
-		if tx.counter > tx.forceCommitCount && tx.forceCommitCount != 0 {
-			tx.counter = 0
-			_, err := tx.commitInternal()
 			return err
 		}
 		return nil
@@ -287,7 +284,9 @@ func (tx *Tx) cmplHandlingRoutine(cmplCh chan modifyInfo) {
 			if err != nil {
 				rerr, ok := err.(bindings.Error)
 				if ok && rerr.Code() == bindings.ErrStateInvalidated && modifyRes.retries > 0 {
-					err = tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx).Error()
+					it := tx.db.query(tx.ns.name).Limit(0).ExecCtx(tx.ctx.UserCtx)
+					err = it.Error()
+					it.Close()
 				}
 			}
 			if err == nil && modifyRes.retries > 0 {
@@ -394,15 +393,12 @@ func (tx *Tx) commitInternal() (count int, err error) {
 	return
 }
 
-// Rollback update
+// Rollback transaction.
+// It is safe to call Rollback after Commit
+
 func (tx *Tx) Rollback() error {
 	tx.AwaitResults()
 	tx.asyncErr = nil
-
-	err := tx.db.binding.RollbackTx(&tx.ctx)
-	tx.finalize()
-	if err != nil {
-		return err
-	}
-	return nil
+	defer tx.finalize()
+	return tx.db.binding.RollbackTx(&tx.ctx)
 }

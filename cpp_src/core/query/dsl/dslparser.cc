@@ -15,7 +15,6 @@ enum class Root {
 	Namespace,
 	Limit,
 	Offset,
-	Distinct,
 	Filters,
 	Sort,
 	Merged,
@@ -23,13 +22,16 @@ enum class Root {
 	SelectFunctions,
 	ReqTotal,
 	Aggregations,
-	Explain
+	Explain,
+	EqualPosition,
+	WithRank,
+	StrictMode,
 };
 
 enum class Sort { Desc, Field, Values };
 enum class JoinRoot { Type, On, Namespace, Filters, Sort, Limit, Offset };
-enum class JoinEntry { LetfField, RightField, Cond, Op };
-enum class Filter { Cond, Op, Field, Value, Distinct, Filters, JoinQuery };
+enum class JoinEntry { LeftField, RightField, Cond, Op };
+enum class Filter { Cond, Op, Field, Value, Filters, JoinQuery };
 enum class Aggregation { Fields, Type, Sort, Limit, Offset };
 
 // additional for parse root DSL fields
@@ -39,7 +41,6 @@ using fast_str_map = fast_hash_map<string, T, nocase_hash_str, nocase_equal_str>
 static const fast_str_map<Root> root_map = {{"namespace", Root::Namespace},
 											{"limit", Root::Limit},
 											{"offset", Root::Offset},
-											{"distinct", Root::Distinct},
 											{"filters", Root::Filters},
 											{"sort", Root::Sort},
 											{"merge_queries", Root::Merged},
@@ -47,7 +48,10 @@ static const fast_str_map<Root> root_map = {{"namespace", Root::Namespace},
 											{"select_functions", Root::SelectFunctions},
 											{"req_total", Root::ReqTotal},
 											{"aggregations", Root::Aggregations},
-											{"explain", Root::Explain}};
+											{"explain", Root::Explain},
+											{"equal_position", Root::EqualPosition},
+											{"select_with_rank", Root::WithRank},
+											{"strict_mode", Root::StrictMode}};
 
 // additional for parse field 'sort'
 
@@ -61,20 +65,19 @@ static const fast_str_map<JoinRoot> joins_map = {
 	{"on", JoinRoot::On}};
 
 static const fast_str_map<JoinEntry> joined_entry_map = {
-	{"left_field", JoinEntry::LetfField}, {"right_field", JoinEntry::RightField}, {"cond", JoinEntry::Cond}, {"op", JoinEntry::Op}};
+	{"left_field", JoinEntry::LeftField}, {"right_field", JoinEntry::RightField}, {"cond", JoinEntry::Cond}, {"op", JoinEntry::Op}};
 
 static const fast_str_map<JoinType> join_types = {{"inner", InnerJoin}, {"left", LeftJoin}, {"orinner", OrInnerJoin}};
 
 // additionalfor parse field 'filters'
 
-static const fast_str_map<Filter> filter_map = {{"cond", Filter::Cond},			  {"op", Filter::Op},		{"field", Filter::Field},
-												{"distinct", Filter::Distinct},   {"value", Filter::Value}, {"filters", Filter::Filters},
-												{"join_query", Filter::JoinQuery}};
+static const fast_str_map<Filter> filter_map = {{"cond", Filter::Cond},	  {"op", Filter::Op},			{"field", Filter::Field},
+												{"value", Filter::Value}, {"filters", Filter::Filters}, {"join_query", Filter::JoinQuery}};
 
 // additional for 'filter::cond' field
 
 static const fast_str_map<CondType> cond_map = {
-	{"any", CondAny},	 {"eq", CondEq},   {"lt", CondLt},			{"le", CondLe},		  {"gt", CondGt},	{"ge", CondGe},
+	{"any", CondAny},	  {"eq", CondEq},	{"lt", CondLt},			{"le", CondLe},		  {"gt", CondGt},	 {"ge", CondGe},
 	{"range", CondRange}, {"set", CondSet}, {"allset", CondAllSet}, {"empty", CondEmpty}, {"match", CondEq}, {"like", CondLike},
 };
 
@@ -92,8 +95,8 @@ static const fast_str_map<Aggregation> aggregation_map = {{"fields", Aggregation
 														  {"sort", Aggregation::Sort},
 														  {"limit", Aggregation::Limit},
 														  {"offset", Aggregation::Offset}};
-static const fast_str_map<AggType> aggregation_types = {
-	{"sum", AggSum}, {"avg", AggAvg}, {"max", AggMax}, {"min", AggMin}, {"facet", AggFacet}};
+static const fast_str_map<AggType> aggregation_types = {{"sum", AggSum}, {"avg", AggAvg},	  {"max", AggMax},
+														{"min", AggMin}, {"facet", AggFacet}, {"distinct", AggDistinct}};
 
 bool checkTag(JsonValue& val, JsonTag tag) { return val.getTag() == tag; }
 
@@ -153,15 +156,15 @@ void parseSortEntry(JsonValue& entry, Query& q) {
 
 			case Sort::Field:
 				checkJsonValueType(v, name, JSON_STRING);
-				sortingEntry.column.assign(string(v.toString()));
+				sortingEntry.expression.assign(string(v.toString()));
 				break;
 
 			case Sort::Values:
-				parseValues(v, q.forcedSortOrder);
+				parseValues(v, q.forcedSortOrder_);
 				break;
 		}
 	}
-	if (!sortingEntry.column.empty()) {
+	if (!sortingEntry.expression.empty()) {
 		q.sortingEntries_.push_back(std::move(sortingEntry));
 	}
 }
@@ -180,14 +183,14 @@ void parseSortEntry(JsonValue& entry, AggregateEntry& agg) {
 
 			case Sort::Field:
 				checkJsonValueType(v, name, JSON_STRING);
-				sortingEntry.column.assign(string(v.toString()));
+				sortingEntry.expression.assign(string(v.toString()));
 				break;
 
 			case Sort::Values:
 				throw Error(errConflict, "Fixed values not available in aggregation sort");
 		}
 	}
-	if (!sortingEntry.column.empty()) {
+	if (!sortingEntry.expression.empty()) {
 		agg.sortingEntries_.push_back(std::move(sortingEntry));
 	}
 }
@@ -210,6 +213,7 @@ void parseFilter(JsonValue& filter, Query& q) {
 	checkJsonValueType(filter, "filter", JSON_OBJECT);
 	bool joinEntry = false;
 	enum { ENTRY, BRACKET } entryOrBracket = ENTRY;
+	int elemsParsed = 0;
 	for (auto elem : filter) {
 		auto& v = elem->value;
 		auto name = elem->key;
@@ -226,11 +230,6 @@ void parseFilter(JsonValue& filter, Query& q) {
 
 			case Filter::Value:
 				parseValues(v, qe.values);
-				break;
-
-			case Filter::Distinct:
-				if ((v.getTag() != JSON_TRUE) && (v.getTag() != JSON_FALSE)) throw Error(errParseJson, "Wrong type of field '%s'", name);
-				qe.distinct = (v.getTag() == JSON_TRUE);
 				break;
 
 			case Filter::JoinQuery:
@@ -252,7 +251,9 @@ void parseFilter(JsonValue& filter, Query& q) {
 				entryOrBracket = BRACKET;
 				break;
 		}
+		++elemsParsed;
 	}
+	if (elemsParsed == 0) return;
 	if (entryOrBracket == BRACKET) {
 		q.entries.SetLastOperation(op);
 		return;
@@ -310,7 +311,7 @@ void parseJoinedEntries(JsonValue& joinEntries, JoinedQuery& qjoin) {
 			auto& value = subelement->value;
 			string_view name = subelement->key;
 			switch (get(joined_entry_map, name)) {
-				case JoinEntry::LetfField:
+				case JoinEntry::LeftField:
 					checkJsonValueType(value, name, JSON_STRING);
 					qjoinEntry.index_ = string(value.toString());
 					break;
@@ -437,11 +438,6 @@ void parse(JsonValue& root, Query& q) {
 				q.start = static_cast<unsigned>(v.toNumber());
 				break;
 
-			case Root::Distinct:
-				checkJsonValueType(v, name, JSON_STRING);
-				if (v.toString().size()) q.Distinct(string(v.toString()));
-				break;
-
 			case Root::Filters:
 				checkJsonValueType(v, name, JSON_ARRAY);
 				for (auto filter : v) parseFilter(filter->value, q);
@@ -474,6 +470,27 @@ void parse(JsonValue& root, Query& q) {
 				checkJsonValueType(v, name, JSON_FALSE, JSON_TRUE);
 				q.explain_ = v.getTag() == JSON_TRUE;
 				break;
+			case Root::WithRank:
+				checkJsonValueType(v, name, JSON_FALSE, JSON_TRUE);
+				if (v.getTag() == JSON_TRUE) q.WithRank();
+				break;
+			case Root::StrictMode:
+				checkJsonValueType(v, name, JSON_STRING);
+				q.strictMode = strictModeFromString(string(v.toString()));
+				if (q.strictMode == StrictModeNotSet) {
+					throw Error(errParseDSL, "Unexpected strict mode value: %s", v.toString());
+				}
+				break;
+			case Root::EqualPosition: {
+				checkJsonValueType(v, name, JSON_ARRAY);
+				vector<string> ep;
+				for (auto f : v) {
+					checkJsonValueType(f->value, f->key, JSON_STRING);
+					ep.emplace_back(f->value.toString());
+				}
+				if (ep.size() < 2) throw Error(errLogic, "equal_position() is supposed to have at least 2 arguments");
+				q.equalPositions_.emplace(q.entries.DetermineEqualPositionIndexes(ep));
+			} break;
 		}
 	}
 }

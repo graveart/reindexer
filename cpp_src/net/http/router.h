@@ -140,15 +140,14 @@ public:
 	virtual ~Reader() = default;
 };
 
-class ClientData {
-public:
-	typedef std::shared_ptr<ClientData> Ptr;
+struct ClientData {
 	virtual ~ClientData() = default;
 };
 
 struct Context {
 	int JSON(int code, string_view slice);
 	int JSON(int code, chunk &&chunk);
+	int MSGPACK(int code, chunk &&chunk);
 	int String(int code, string_view slice);
 	int String(int code, chunk &&chunk);
 	int File(int code, string_view path, string_view data = string_view());
@@ -157,7 +156,7 @@ struct Context {
 	Request *request;
 	Writer *writer;
 	Reader *body;
-	ClientData::Ptr clientData;
+	std::unique_ptr<ClientData> clientData;
 
 	Stat stat;
 };

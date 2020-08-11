@@ -4,7 +4,7 @@
 #include "core/query/query.h"
 #include "core/queryresults/queryresults.h"
 #include "core/rdxcontext.h"
-#include "transaction.h"
+#include "core/transaction.h"
 
 #include <chrono>
 
@@ -15,6 +15,8 @@ using std::chrono::milliseconds;
 
 class ReindexerImpl;
 class IUpdatesObserver;
+class IClientsStats;
+class UpdatesFilters;
 
 /// The main Reindexer interface. Holds database object<br>
 /// *Thread safety*: All methods of Reindexer are thread safe. <br>
@@ -29,7 +31,8 @@ public:
 	using Completion = std::function<void(const Error &err)>;
 
 	/// Create Reindexer database object
-	Reindexer();
+	/// @param clientsStats - object for receiving clients statistics
+	Reindexer(IClientsStats *clientsStats = nullptr);
 	/// Destrory Reindexer database object
 	~Reindexer();
 	/// Create not holding copy
@@ -70,6 +73,10 @@ public:
 	/// Delete all items from namespace
 	/// @param nsName - Name of namespace
 	Error TruncateNamespace(string_view nsName);
+	/// Rename namespace. If namespace with dstNsName exists, then it is replaced.
+	/// @param srcNsName  - Name of namespace
+	/// @param dstNsName  - desired name of namespace
+	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName);
 	/// Add index to namespace
 	/// @param nsName - Name of namespace
 	/// @param index - IndexDef with index name and parameters
@@ -82,10 +89,18 @@ public:
 	/// @param nsName - Name of namespace
 	/// @param index - index name
 	Error DropIndex(string_view nsName, const IndexDef &index);
+	/// Set fields schema for namespace
+	/// @param nsName - Name of namespace
+	/// @param schema - JSON in JsonSchema format
+	Error SetSchema(string_view nsName, string_view schema);
+	/// Get fields schema for namespace
+	/// @param nsName - Name of namespace
+	/// @param schema - result JSON in JsonSchema format
+	Error GetSchema(string_view nsName, string &schema);
 	/// Get list of all available namespaces
 	/// @param defs - std::vector of NamespaceDef of available namespaves
-	/// @param bEnumAll - Also include currenty not opened, but exists on disk namespaces
-	Error EnumNamespaces(vector<NamespaceDef> &defs, bool bEnumAll);
+	/// @param opts - Enumeration options
+	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts);
 	/// Insert new Item to namespace. If item with same PK is already exists, when item.GetID will
 	/// return -1, on success item.GetID() will return internal Item ID
 	/// May be used with completion
@@ -140,7 +155,8 @@ public:
 	Transaction NewTransaction(string_view nsName);
 	/// Commit transaction - transaction will be deleted after commit
 	/// @param tr - transaction to commit
-	Error CommitTransaction(Transaction &tr);
+	/// @param result - QueryResults with IDs of changed by tx items.
+	Error CommitTransaction(Transaction &tr, QueryResults &result);
 	/// RollBack transaction - transaction will be deleted after rollback
 	/// Cancelation context doesn't affect this call
 	/// @param tr - transaction to rollback
@@ -165,6 +181,8 @@ public:
 	/// @param pos - position in sql query for suggestions.
 	/// @param suggestions - all the suggestions for 'pos' position in query.
 	Error GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string> &suggestions);
+	/// Get curret connection status
+	Error Status();
 
 	/// Init system namepaces, and load config from config namespace
 	/// Cancelation context doesn't affect this call
@@ -173,8 +191,13 @@ public:
 	/// Subscribe to updates of database
 	/// Cancelation context doesn't affect this call
 	/// @param observer - Observer interface, which will receive updates
-	/// @param subscribe - true: subscribe, false: unsubscribe
-	Error SubscribeUpdates(IUpdatesObserver *observer, bool subscribe);
+	/// @param filters - Subscription filters set
+	/// @param opts - Subscription options (allows to either add new filters or reset them)
+	Error SubscribeUpdates(IUpdatesObserver *observer, const UpdatesFilters &filter, SubscriptionOpts opts = SubscriptionOpts());
+	/// Unsubscribe from updates of database
+	/// Cancelation context doesn't affect this call
+	/// @param observer - Observer interface, which will be unsubscribed updates
+	Error UnsubscribeUpdates(IUpdatesObserver *observer);
 
 	/// Add cancelable context
 	/// @param ctx - context pointer
@@ -188,13 +211,23 @@ public:
 	/// Add activityTracer
 	/// @param activityTracer - name of activity tracer
 	/// @param user - user identifying information
+	/// @param connectionId - unique identifier for the connection
+	Reindexer WithActivityTracer(string_view activityTracer, string_view user, int connectionId) const {
+		return Reindexer(impl_, ctx_.WithActivityTracer(activityTracer, user, connectionId));
+	}
 	Reindexer WithActivityTracer(string_view activityTracer, string_view user) const {
 		return Reindexer(impl_, ctx_.WithActivityTracer(activityTracer, user));
 	}
+
 	/// Set activityTracer to current DB
 	/// @param activityTracer - name of activity tracer
 	/// @param user - user identifying information
+	/// @param connectionId - unique identifier for the connection
 	void SetActivityTracer(string_view activityTracer, string_view user) { ctx_.SetActivityTracer(activityTracer, user); }
+	void SetActivityTracer(string_view activityTracer, string_view user, int connectionId) {
+		ctx_.SetActivityTracer(activityTracer, user, connectionId);
+	}
+
 	bool NeedTraceActivity() const;
 
 	typedef QueryResults QueryResultsT;

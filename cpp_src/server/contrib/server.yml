@@ -5,7 +5,7 @@ info:
     Reindexer's goal is to provide fast search with complex queries.
     The Reindexer is compact and fast. It has not heavy dependencies. Complete reindexer docker image with all libraries and web interface size is just 15MB.
     Reindexer is fast.
-  version: "2.3.4"
+  version: "2.11.0"
   title: "Reindexer REST API"
   license:
     name: "Apache 2.0"
@@ -13,11 +13,11 @@ info:
 basePath: "/api/v1"
 tags:
 - name: "databases"
-  description: "Databases managment"
+  description: "Databases management"
 - name: "namespaces"
-  description: "Namespaces managment"
+  description: "Namespaces management"
 - name: "items"
-  description: "Documents managment"
+  description: "Documents management"
 - name: "indexes"
   description: "Indexes management"
 - name: "queries"
@@ -47,13 +47,15 @@ paths:
           $ref: "#/definitions/Database"
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid parameters"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
     get:
       tags:
@@ -76,9 +78,13 @@ paths:
           schema:
             $ref: "#/definitions/Databases"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}:
     delete:
@@ -98,13 +104,15 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces:
     post:
@@ -129,13 +137,15 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid parameters"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     get:
       tags:
       - "namespaces"
@@ -163,9 +173,13 @@ paths:
           schema:
             $ref: "#/definitions/Namespaces"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}:
     get:
@@ -192,9 +206,13 @@ paths:
           schema:
             $ref: "#/definitions/Namespace"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     delete:
       tags:
       - "namespaces"
@@ -217,13 +235,15 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/truncate:
     delete:
@@ -246,13 +266,53 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
+  /db/{database}/namespaces/{name}/rename/{newname}:
+    get:
+      tags:
+      - "namespaces"
+      summary: "Rename namespace"
+      description: |
+        This operation will rename namespace.
+      operationId: "renameNamespace"
+      parameters:
+      - name: "database"
+        in: "path"
+        type: "string"
+        description: "Database name"
+        required: true
+      - name: "name"
+        in: "path"
+        type: "string"
+        description: "Namespace name"
+        required: true
+      - name: "newname"
+        in: "path"
+        type: "string"
+        description: "Namespace new name"
+        required: true
+
+      responses:
+        200:
+          $ref: "#/responses/OK"
+        400:
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
 
   /db/{database}/namespaces/{name}/metalist:
     get:
@@ -304,9 +364,13 @@ paths:
           schema:
             $ref: "#/definitions/MetaListResponse"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/metabykey/{key}:
     get:
@@ -338,9 +402,13 @@ paths:
           schema:
             $ref: "#/definitions/MetaByKeyResponse"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/metabykey:
     put:
@@ -373,9 +441,13 @@ paths:
           schema:
             $ref: "#/definitions/UpdateResponse"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/items:
     delete:
@@ -421,9 +493,13 @@ paths:
           schema:
             $ref: "#/definitions/ItemsUpdateResponse"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     post:
       tags:
       - "items"
@@ -461,15 +537,27 @@ paths:
         required: false
         items:
           type: "string"
+      - name: "format"
+        in: "query"
+        type: "string"
+        description: "encoding data format"
+        required: false
+        enum:
+          - json
+          - msgpack
       responses:
         200:
           description: "successful operation"
           schema:
             $ref: "#/definitions/ItemsUpdateResponse"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     put:
       tags:
       - "items"
@@ -507,15 +595,27 @@ paths:
         required: false
         items:
           type: "string"
+      - name: "format"
+        in: "query"
+        type: "string"
+        description: "encoding data format"
+        required: false
+        enum:
+          - json
+          - msgpack
       responses:
         200:
           description: "successful operation"
           schema:
             $ref: "#/definitions/ItemsUpdateResponse"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     get:
       tags:
       - "items"
@@ -561,15 +661,27 @@ paths:
         in: "query"
         type: "string"
         description: "Comma-separated list of returned fields"
+      - name: "format"
+        in: "query"
+        type: "string"
+        description: "encoding data format"
+        required: false
+        enum:
+          - json
+          - msgpack
       responses:
         200:
           description: "successful operation"
           schema:
             $ref: '#/definitions/Items'
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/indexes:
     get:
@@ -596,9 +708,13 @@ paths:
           schema:
             $ref: "#/definitions/Indexes"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     post:
       tags:
       - "indexes"
@@ -626,14 +742,15 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
-
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     put:
       tags:
       - "indexes"
@@ -661,13 +778,15 @@ paths:
         required: true
       responses:
         200:
-          description: "successful operation"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/{name}/indexes/{indexname}:
     delete:
@@ -696,13 +815,82 @@ paths:
         required: true
       responses:
         200:
+          $ref: "#/responses/OK"
+        400:
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
+  /db/{database}/namespaces/{name}/schema:
+    put:
+      tags:
+      - "schema"
+      summary: "Set namespace schema"
+      operationId: "putSchema"
+      description: |
+        This operation will set namespace schema (information about available fields and field types)
+      parameters:
+      - in: "body"
+        name: "body"
+        description: This operation will put new schema for specified database and namespace
+        schema:
+          $ref: "#/definitions/SchemaDef"
+        required: true
+      - name: "database"
+        in: "path"
+        type: "string"
+        description: "Database name"
+        required: true
+      - name: "name"
+        in: "path"
+        type: "string"
+        description: "Namespace name"
+        required: true
+      responses:
+        200:
+          $ref: "#/responses/OK"
+        400:
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+    get:
+      tags:
+      - "schema"
+      summary: "Get namespace schema"
+      description: This operation will return current schema from specified database and namespace
+      operationId: "getSchema"
+      parameters:
+      - name: "database"
+        in: "path"
+        type: "string"
+        description: "Database name"
+        required: true
+      - name: "name"
+        in: "path"
+        type: "string"
+        description: "Namespace name"
+        required: true
+      responses:
+        200:
           description: "successful operation"
           schema:
-            $ref: "#/definitions/StatusResponse"
+            $ref: "#/definitions/SchemaDef"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/query:
     get:
@@ -743,15 +931,27 @@ paths:
         type: "integer"
         description: "Total width in rows of view for table format output"
         required: false
+      - name: "format"
+        in: "query"
+        type: "string"
+        description: "encoding data format"
+        required: false
+        enum:
+          - json
+          - msgpack
       responses:
         200:
           description: "successful operation"
           schema:
             $ref: '#/definitions/QueryItems'
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     post:
       tags:
       - "queries"
@@ -781,15 +981,24 @@ paths:
         type: "integer"
         description: "Total width in rows of view for table format output"
         required: false
+      - name: "format"
+        in: "query"
+        type: "string"
+        description: "format of encoding data: json or msgpack"
+        required: false
       responses:
         200:
           description: "successful operation"
           schema:
             $ref: '#/definitions/QueryItems'
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
     delete:
       tags:
       - "queries"
@@ -811,11 +1020,16 @@ paths:
           $ref: "#/definitions/Query"
       responses:
         200:
-          description: "successful operation"
+          $ref: "#/responses/OK"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
   /db/{database}/suggest:
     get:
       tags:
@@ -851,9 +1065,13 @@ paths:
           schema:
             $ref: '#/definitions/SuggestItems'
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/sqlquery:
     post:
@@ -891,9 +1109,13 @@ paths:
           schema:
             $ref: '#/definitions/QueryItems'
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /check:
     get:
@@ -908,9 +1130,13 @@ paths:
           schema:
             $ref: "#/definitions/SysInfo"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/%23activitystats/items:
     get:
@@ -931,9 +1157,40 @@ paths:
           schema:
             $ref: "#/definitions/ActivityStats"
         400:
-          description: "Invalid arguments supplied"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
+  /db/{database}/namespaces/%23clientsstats/items:
+    get:
+      tags:
+      - "system"
+      summary: "Get client connection information"
+      description: "This operation will return detailed informatiom about all connections on the server"
+      operationId: "getClientsStats"
+      parameters:
+      - name: "database"
+        in: "path"
+        type: "string"
+        description: "Database name"
+        required: true
+      responses:
+        200:
+          description: "successful operation"
           schema:
-            $ref: "#/definitions/StatusResponse"
+            $ref: "#/definitions/ClientsStats"
+        400:
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/%23memstats/items:
     get:
@@ -954,9 +1211,13 @@ paths:
           schema:
             $ref: "#/definitions/DatabaseMemStats"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/%23perfstats/items:
     get:
@@ -977,9 +1238,13 @@ paths:
           schema:
             $ref: "#/definitions/DatabasePerfStats"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/%23queriesperfstats/items:
     get:
@@ -1000,9 +1265,13 @@ paths:
           schema:
             $ref: "#/definitions/QueriesPerfStats"
         400:
-          description: "Invalid arguments supplied"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
 
   /db/{database}/namespaces/%23config/items:
     put:
@@ -1031,9 +1300,35 @@ paths:
           schema:
             $ref: "#/definitions/UpdateResponse"
         400:
-          description: "Invalid status value"
-          schema:
-            $ref: "#/definitions/StatusResponse"
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
+responses:
+  OK:
+    description: "Successful operation"
+    schema:
+      $ref: "#/definitions/StatusResponse"
+  BadRequest:
+    description: "Invalid arguments supplied"
+    schema:
+      $ref: "#/definitions/StatusResponse"
+  Forbidden:
+    description: "Forbidden"
+    schema:
+      $ref: "#/definitions/StatusResponse"
+  NotFound:
+    description: "Entry not found"
+    schema:
+      $ref: "#/definitions/StatusResponse"
+  UnexpectedError:
+    description: "Unexpected internal error"
+    schema:
+      $ref: "#/definitions/StatusResponse"
 
 definitions:
   SysInfo:
@@ -1103,9 +1398,65 @@ definitions:
               - "indexes_lookup"
               - "bool"
               - "select_loop"
-
             lock_description:
               type: "string"
+
+  ClientsStats:
+    type: "object"
+    properties:
+      total_items:
+        description: "Count of connected clients"
+        type: "integer"
+      items:
+        type: "array"
+        items:
+          type: "object"
+          required:
+            - connection_id
+            - ip
+            - user_name
+            - user_rights
+            - db_name
+            - current_activity
+            - start_time
+            - recv_bytes
+            - sent_bytes
+            - client_version
+            - app_name
+          properties:
+            connection_id:
+              type: "integer"
+              description: "Connection identifier"
+            ip:
+              type: "string"
+              description: "Ip"
+            user_name:
+              type: "string"
+              description: "User name"
+            user_rights:
+              type: string
+              description: "User right"
+            db_name:
+              type: "string"
+              description: "Database name"
+            current_activity:
+              type: "string"
+              description: "Current activity"
+            start_time:
+              type: "integer"
+              description: "Server start time in unix timestamp"
+            recv_bytes:
+              type: "integer"
+              description: "Receive byte"
+            sent_bytes:
+              type: "integer"
+              description: "Send byte"
+            client_version:
+              type: string
+              description: "Client version string"
+            app_name:
+              type: string
+              description: "Client's aplication name"
 
   Databases:
     type: "object"
@@ -1138,9 +1489,6 @@ definitions:
             name:
               type: "string"
               description: "Name of namespace"
-            storage_enabled:
-              type: "boolean"
-              description: "If true, then documents will be stored to disc storage, else all data will be lost on server shutdown"
       total_items:
         type: "integer"
         description: "Total count of namespaces"
@@ -1217,6 +1565,10 @@ definitions:
         description: "Value of index may not present in the document, and threfore, reduce data size but decreases speed operations on index"
         type: "boolean"
         default: false
+      is_simple_tag:
+        description: "Use simple tag instead of actual index, which will notice rx about possible field name for strict policies"
+        type: "boolean"
+        default: false
       collate_mode:
         type: "string"
         description: "String collate mode"
@@ -1233,6 +1585,39 @@ definitions:
       config:
         $ref: "#/definitions/FulltextConfig"
 
+  JsonObjectDef:
+    type: "object"
+    properties:
+      required:
+        description: "Array of required fieldsl. Allowed for objects only"
+        type: "array"
+        items:
+          type: "string"
+      properties:
+        type: "object"
+        properties:
+          field1:
+            $ref: "#/definitions/JsonObjectDef"
+          field2:
+            $ref: "#/definitions/JsonObjectDef"
+      items:
+        $ref: "#/definitions/JsonObjectDef"
+      additionalProperties:
+        description: "Allow additional fields in this schema level. Allowed for objects only"
+        type: "boolean"
+        default: false
+      type:
+        description: "Entity type"
+        type: "string"
+        enum:
+        - "object"
+        - "string"
+        - "number"
+        - "array"
+
+  SchemaDef:
+    $ref: "#/definitions/JsonObjectDef"
+
   Query:
     type: "object"
     required:
@@ -1247,9 +1632,6 @@ definitions:
       offset:
         description: "Offset of first returned item"
         type: "integer"
-      distinct:
-        description: "Distinct field/index name. Results will contain's document with distinct field value"
-        type: "string"
       req_total:
         description: "Ask query to calculate total documents, match condition"
         type: "string"
@@ -1289,10 +1671,27 @@ definitions:
         type: "array"
         items:
           $ref: "#/definitions/AggregationsDef"
+      equal_positions:
+        type: "array"
+        description: "Array fields to be searched with equal array indexes"
+        items:
+          type: "string"
       explain:
         description: "Add query execution explain information"
         type: "boolean"
         default: false
+      select_with_rank:
+        description: "Output fulltext rank in QueryResult. Allowed only with fulltext query"
+        type: "boolean"
+        default: false
+      strict_mode:
+        description: "Strict mode for query. Adds additional check for fields('names')/indexes('indexes') existance in sorting and filtering conditions"
+        type: "string"
+        enum:
+          - "none"
+          - "names"
+          - "indexes"
+        default: "names"
 
   FilterDef:
     description: "If contains 'filters' then cannot contain 'cond', 'field' and 'value'. If not contains 'filters' then 'field' and 'cond' are required."
@@ -1420,6 +1819,9 @@ definitions:
 
   AggregationsDef:
     type: "object"
+    required:
+      - fields
+      - type
     properties:
       fields:
         type: "array"
@@ -1435,8 +1837,9 @@ definitions:
         - "MIN"
         - "MAX"
         - "FACET"
+        - "DISTINCT"
       sort:
-        description: "Specifies results sorting order"
+        description: "Specifies results sorting order. Allowed only for FACET"
         type: "array"
         items:
           $ref: "#/definitions/AggregationsSortDef"
@@ -1444,12 +1847,12 @@ definitions:
         type: "integer"
         default: UINT_MAX
         minimum: 0
-        description: "Number of rows to get from result set"
+        description: "Number of rows to get from result set. Allowed only for FACET"
       offset:
         type: "integer"
         default: 0
         minimum: 0
-        description: "Index of the first row to get from result set"
+        description: "Index of the first row to get from result set. Allowed only for FACET"
 
   AggregationsSortDef:
     description: "Specifies facet aggregations results sorting order"
@@ -1507,6 +1910,11 @@ definitions:
         description: "List of stemmers to use"
         items:
           type: "string"
+      synonyms:
+        type: "array"
+        description: "List of synonyms for replacement"
+        items:
+          $ref: "#/definitions/FulltextSynonym"
       bm25_boost:
         type: "number"
         format: "float"
@@ -1517,7 +1925,7 @@ definitions:
       bm25_weight:
         type: "number"
         format: "float"
-        default: 0.5
+        default: 0.1
         minimum: 0.0
         maximum: 1.0
         description: "Weight of bm25 rank in final rank 0: bm25 will not change final rank. 1: bm25 will affect to finl rank in 0 - 100% range"
@@ -1549,6 +1957,27 @@ definitions:
         minimum: 0.0
         maximum: 1.0
         description: "Weight of search query term length in final rank. 0: term length will not change final rank. 1: term length will affect to final rank in 0 - 100% range"
+      position_boost:
+        type: "number"
+        format: "float"
+        default: 1.0
+        minimum: 0.0
+        maximum: 10.0
+        description: "Boost of search query term position"
+      position_weght:
+        type: "number"
+        format: "float"
+        default: 0.1
+        minimum: 0.0
+        maximum: 1.0
+        description: "Weight of search query term position in final rank. 0: term position will not change final rank. 1: term position will affect to final rank in 0 - 100% range"
+      full_match_boost:
+        type: "number"
+        format: "float"
+        default: 1.1
+        minimum: 0.0
+        maximum: 10.0
+        description: "Boost of full match of search phrase with doc"
       min_relevancy:
         type: "number"
         format: "float"
@@ -1570,7 +1999,7 @@ definitions:
         maximum: 100
       max_rebuild_steps:
         type: "integer"
-        description: "Maximum steps withou full rebuild of ft - more steps faster commit slower select - optimal about 15."
+        description: "Maximum steps without full rebuild of ft - more steps faster commit slower select - optimal about 15."
         default: 50
         minimum: 0
         maximum: 500
@@ -1581,6 +2010,20 @@ definitions:
         minimum: 5
         maximum: 1000000000
 
+  FulltextSynonym:
+    type: "object"
+    description: "Fulltext synonym definition"
+    properties:
+      tokens:
+        type: "array"
+        description: "List source tokens in query, which will be replaced with alternatives"
+        items:
+          type: "string"
+      alternatives:
+        type: "array"
+        description: "List of alternatives, which will be used for search documents"
+        items:
+          type: "string"
   MetaInfo:
     type: "object"
     required:
@@ -1671,6 +2114,11 @@ definitions:
         description: "Aggregation functions results"
         items:
           $ref: "#/definitions/AggregationResDef"
+      equal_position:
+        type: "array"
+        description: "Array fields to be searched with equal array indexes"
+        items:
+          type: "string"
       columns:
         type: "array"
         description: "Columns for table output"
@@ -1689,7 +2137,7 @@ definitions:
       total_items:
         type: "integer"
         description: "Total count of indexes"
-        
+
   ExplainDef:
     type: "object"
     description: "Query execution explainings"
@@ -1709,9 +2157,15 @@ definitions:
       prepare_us:
         type: "integer"
         description: "Query prepare and optimize time"
+      general_sort_us:
+        type: "integer"
+        description: "Result sort time"
       sort_index: 
         type: "string"
         description: "Index, which used for sort results"
+      sort_by_uncommitted_index:
+        type: "boolean"
+        description: "Optimization of sort by uncompleted index has been performed"
       selectors:
         type: "array"
         description: "Filter selectos, used to proccess query conditions"
@@ -1744,9 +2198,18 @@ definitions:
             keys:
               type: "integer"
               description: "Number of uniq keys, processed by this selector (may be incorrect, in case of internal query optimization/caching"
+            explain_preselect:
+              description: "Preselect in joined namespace execution explainings"
+              $ref: "#/definitions/ExplainDef"
+            explain_select:
+              description: "One of selects in joined namespace execution explainings"
+              $ref: "#/definitions/ExplainDef"
 
   AggregationResDef:
     type: "object"
+    required:
+      - fields
+      - type
     properties:
       fields:
         type: "array"
@@ -1762,6 +2225,7 @@ definitions:
         - "MIN"
         - "MAX"
         - "FACET"
+        - "DISTINCT"
       value:
         type: "number"
         description: "Value, calculated by aggregator"
@@ -1770,6 +2234,9 @@ definitions:
         description: "Facets, calculated by aggregator"
         items:
           type: "object"
+          required:
+            - values
+            - count
           properties:
             values:
               type: "array"
@@ -1779,6 +2246,11 @@ definitions:
             count: 
               type: "integer"
               description: "Count of elemens these fields values"
+      distincts:
+        type: "array"
+        description: "List of distinct values of the field"
+        items:
+          type: "string"
 
   QueryColumnDef:
     type: "object"
@@ -1884,6 +2356,9 @@ definitions:
       storage_path:
         type: "string"
         description: "Filesystem path to namespace storage"
+      optimization_completed:
+        type: "boolean"
+        description: "Background indexes optimization has been completed"
       total:
         type: "object"
         description: "Summary of total namespace memory consumption"
@@ -1986,6 +2461,31 @@ definitions:
       error_message:
         type: "string"
         description: "Error message of last replication"
+      status:
+        type: "string"
+        enum:
+          - idle
+          - error
+          - fatal
+          - syncing
+          - none
+        description: "Current replication status for this namespace"
+      master_state:
+        type: "object"
+        description: "State of current master namespace"
+        properties:
+           data_hash:
+             type: "integer"
+             description: "Hashsum of all records in namespace"
+           last_lsn:
+             type: "integer"
+             description: "Last Log Sequence Number (LSN) of applied namespace modification"
+           updated_unix_nano:
+             type: "integer"
+             description: "Last update time"
+           data_count:
+             type: "integer"
+             description: "Items count in master namespace"
       incarnation_counter:
         type: "integer"
         description: "Number of storage's master <-> slave switches"
@@ -1998,6 +2498,12 @@ definitions:
       wal_size:
         type: "integer"
         description: "Total memory consumption of Write Ahead Log (WAL)"
+      updated_unix_nano:
+        type: "integer"
+        description: "Last update time"
+      data_count:
+        type: "integer"
+        description: "Items count in namespace"
 
   DatabasePerfStats:
     type: "object"
@@ -2021,6 +2527,8 @@ definitions:
         $ref: "#/definitions/UpdatePerfStats"
       selects:
         $ref: "#/definitions/SelectPerfStats"
+      transactions:
+        $ref: "#/definitions/TransactionsPerfStats"
       indexes:
         type: "array"
         description: "Memory consumption of each namespace index"
@@ -2075,6 +2583,53 @@ definitions:
     description: "Performance statistics for select operations"
     allOf: 
       - $ref: "#/definitions/CommonPerfStats"
+
+  TransactionsPerfStats:
+    description: "Performance statistics for transactions"
+    type: "object"
+    properties:
+      total_count:
+        type: integer
+        description: "Total transactions count for this namespace"
+      total_copy_count:
+        type: integer
+        description: "Total namespace copy operations"
+      avg_steps_count:
+        type: integer
+        description: "Average steps count in transactions for this namespace"
+      min_steps_count:
+        type: integer
+        description: "Minimum steps count in transactions for this namespace"
+      max_steps_count:
+        type: integer
+        description: "Maximum steps count in transactions for this namespace"
+      avg_prepare_time_us:
+        type: integer
+        description: "Average transaction preparation time usec"
+      min_prepare_time_us:
+        type: integer
+        description: "Minimum transaction preparation time usec"
+      max_prepare_time_us:
+        type: integer
+        description: "Maximum transaction preparation time usec"
+      avg_commit_time_us:
+        type: integer
+        description: "Average transaction commit time usec"
+      min_commit_time_us:
+        type: integer
+        description: "Minimum transaction commit time usec"
+      max_commit_time_us:
+        type: integer
+        description: "Maximum transaction commit time usec"
+      avg_copy_time_us:
+        type: integer
+        description: "Average namespace copy time usec"
+      min_copy_time_us:
+        type: integer
+        description: "Maximum namespace copy time usec"
+      max_copy_time_us:
+        type: integer
+        description: "Minimum namespace copy time usec"
 
   QueriesPerfStats:
     type: "object"
@@ -2178,18 +2733,25 @@ definitions:
       unload_idle_threshold:
         type: "integer"
         description: "Unload namespace data from RAM after this idle timeout in seconds. If 0, then data should not be unloaded"
-      start_copy_politics_count:
+      start_copy_policy_tx_size:
         type: "integer"
-        description: "Copy namespce policts will start only after item's count become greater in this param"
-      merge_limit_count:
+        description: "Enable namespace copying for transaction with steps count greater than this value (if copy_politics_multiplier also allows this)"
+      copy_policy_multiplier:
         type: "integer"
-        description: "Merge write namespace after get thi count of operations"
+        description: "Disables copy policy if namespace size is greater than copy_policy_multiplier * start_copy_policy_tx_size"
+      tx_size_to_always_copy:
+        type: "integer"
+        description: "Force namespace copying for transaction with steps count greater than this value"
       optimization_timeout_ms:
         type: "integer"
         description: "Timeout before background indexes optimization start after last update. 0 - disable optimizations"
       optimization_sort_workers:
         type: "integer"
         description: "Maximum number of background threads of sort indexes optimization. 0 - disable sort optimizations"
+      wal_size:
+        type: "integer"
+        description: "Maximum WAL size for this namespace (maximum count of WAL records)"
+
   ReplicationConfig:
     type: "object"
     properties:  
@@ -2203,9 +2765,15 @@ definitions:
       master_dsn:
         type: "string"
         description: "DSN to master. Only cproto schema is supported"
+      app_name:
+        type: "string"
+        description: "Application name, used by replicator as a login tag"
       timeout_sec:
         type: "integer"
         description: "Network timeout for communication with master, in seconds"
+      enable_compression:
+        type: "boolean"
+        description: "Enable network traffic compression"
       cluster_id:
         type: "integer"
         description: "Cluser ID - must be same for client and for master"
@@ -2220,6 +2788,7 @@ definitions:
         description: "List of namespaces for replication. If emply, all namespaces. All replicated namespaces will become read only for slave"
         items:
           type: string
+
   ActionCommand:
     type: "object"
     properties:  

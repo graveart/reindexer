@@ -2,6 +2,7 @@
 #include <thread>
 #include "allocs_tracker.h"
 #include "core/cjson/jsonbuilder.h"
+#include "core/nsselecter/joinedselector.h"
 #include "core/reindexer.h"
 #include "tools/string_regexp_functions.h"
 
@@ -38,6 +39,7 @@ void ApiTvSimple::RegisterAllCases() {
 	Register("Query2CondLeftJoinTotal", &ApiTvSimple::Query2CondLeftJoinTotal, this);
 	Register("Query2CondLeftJoinCachedTotal", &ApiTvSimple::Query2CondLeftJoinCachedTotal, this);
 	Register("Query0CondInnerJoinUnlimit", &ApiTvSimple::Query0CondInnerJoinUnlimit, this);
+	Register("Query0CondInnerJoinPreResultStoreValues", &ApiTvSimple::Query0CondInnerJoinPreResultStoreValues, this);
 	Register("Query2CondInnerJoin", &ApiTvSimple::Query2CondInnerJoin, this);
 	Register("Query2CondInnerJoinTotal", &ApiTvSimple::Query2CondInnerJoinTotal, this);
 	Register("Query2CondInnerJoinCachedTotal", &ApiTvSimple::Query2CondInnerJoinCachedTotal, this);
@@ -134,76 +136,28 @@ void ApiTvSimple::WarmUpIndexes(State& state) {
 		Error err;
 
 		// Ensure indexes complete build
-		// In current implementation - just wait
-		// Index build process is in background routine
-		std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+		WaitForOptimization();
+		for (size_t i = 0; i < packages_.size() * 2; i++) {
+			QueryResults qres;
+			Query q(nsdef_.name);
+			q.Where("packages", CondSet, packages_.at(i % packages_.size())).Limit(20).Sort("start_time", false);
+			err = db_->Select(q, qres);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
+		}
 
-		for (size_t i = 0; i < packages_.size() * 3; i++) {
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				auto randIdx = random<size_t>(0, packages_.size() - 1);
-				q.Where("packages", CondSet, toArray<int>(packages_.at(randIdx))).Limit(20).Sort("start_time", false);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
-
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				auto randIdx = random<size_t>(0, packages_.size() - 1);
-				q.Where("packages", CondSet, toArray<int>(packages_.at(randIdx))).Limit(20).Sort("year", false);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
-
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				q.Where("year", CondRange, {2010, 2016}).Limit(20);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
+		for (size_t i = 0; i < packages_.size() * 2; i++) {
+			QueryResults qres;
+			Query q(nsdef_.name);
+			q.Where("packages", CondSet, packages_.at(i % packages_.size())).Limit(20).Sort("year", false);
+			err = db_->Select(q, qres);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
 		}
 
 		for (size_t i = 0; i < priceIDs_.size() * 3; i++) {
 			QueryResults qres;
 			Query q("JoinItems");
-			auto randIdx = random<size_t>(0, priceIDs_.size() - 1);
-			q.Where("id", CondSet, toArray<int>(priceIDs_.at(randIdx))).Limit(20);
+			q.Where("id", CondSet, priceIDs_.at(i % priceIDs_.size())).Limit(20);
 			err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < 1000; ++i) {
-			Query q(nsdef_.name);
-			q.Where("start_time", CondEq, start_times_.at(random<size_t>(0, start_times_.size() - 1)));
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < priceIDs_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("price_id", CondEq, priceIDs_[random<size_t>(0, priceIDs_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < countries_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("countries", CondEq, countries_[random<size_t>(0, countries_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < countryLikePatterns_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("countries", CondLike, countryLikePatterns_[random<size_t>(0, countryLikePatterns_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
 			if (!err.ok()) state.SkipWithError(err.what().c_str());
 		}
 	}
@@ -469,6 +423,59 @@ void ApiTvSimple::Query2CondInnerJoin(benchmark::State& state) {
 		QueryResults qres;
 		auto err = db_->Select(q, qres);
 		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	}
+}
+
+void ApiTvSimple::Query0CondInnerJoinPreResultStoreValues(benchmark::State& state) {
+	using reindexer::JoinedSelector;
+	static const string rightNs = "rightNs";
+	static const vector<string> leftNs = {"leftNs1", "leftNs2", "leftNs3", "leftNs4"};
+	static constexpr char const* id = "id";
+	static constexpr char const* data = "data";
+	static constexpr int maxDataValue = 10;
+	static constexpr int maxRightNsRowCount = maxDataValue * (JoinedSelector::MaxIterationsForPreResultStoreValuesOptimization() - 1);
+	static constexpr int maxLeftNsRowCount = 10000;
+
+	const auto createNs = [this, &state](const string& ns) {
+		Error err = db_->OpenNamespace(ns);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+		err = db_->AddIndex(ns, {id, "hash", "int", IndexOpts().PK()});
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+		err = db_->AddIndex(ns, {data, "hash", "int", IndexOpts()});
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	};
+	const auto fill = [this, &state](const string& ns, int startId, int endId) {
+		Error err;
+		for (int i = startId; i < endId; ++i) {
+			Item item = db_->NewItem(ns);
+			item[id] = i;
+			item[data] = i % maxDataValue;
+			err = db_->Upsert(ns, item);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
+		}
+		err = db_->Commit(ns);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	};
+
+	createNs(rightNs);
+	fill(rightNs, 0, maxRightNsRowCount);
+	for (size_t i = 0; i < leftNs.size(); ++i) {
+		createNs(leftNs[i]);
+		fill(leftNs[i], 0, maxLeftNsRowCount);
+	}
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		vector<std::thread> threads;
+		threads.reserve(leftNs.size());
+		for (size_t i = 0; i < leftNs.size(); ++i) {
+			threads.emplace_back([this, i, &state]() {
+				Query q = Query(leftNs[i]).InnerJoin(data, data, CondEq, Query(rightNs).Where(data, CondEq, rand() % maxDataValue));
+				QueryResults qres;
+				Error err = db_->Select(q, qres);
+				if (!err.ok()) state.SkipWithError(err.what().c_str());
+			});
+		}
+		for (auto& th : threads) th.join();
 	}
 }
 

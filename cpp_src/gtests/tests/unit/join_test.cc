@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "core/itemimpl.h"
+#include "core/nsselecter/joinedselector.h"
 #include "join_selects_api.h"
 
 TEST_F(JoinSelectsApi, JoinsAsWhereConditionsTest) {
@@ -33,6 +34,18 @@ TEST_F(JoinSelectsApi, JoinsAsWhereConditionsTest) {
 	EXPECT_TRUE(err.ok()) << err.what();
 	EXPECT_TRUE(qr.Count() <= 50);
 	CheckJoinsInComplexWhereCondition(qr);
+}
+
+TEST_F(JoinSelectsApi, JoinsLockWithCache_364) {
+	Query queryGenres = Query(genres_namespace).Where(genreid, CondEq, 1);
+	Query queryBooks = Query(books_namespace, 0, 50).InnerJoin(genreId_fk, genreid, CondEq, queryGenres);
+	TurnOnJoinCache(genres_namespace);
+
+	for (int i = 0; i < 10; ++i) {
+		reindexer::QueryResults qr;
+		Error err = rt.reindexer->Select(queryBooks, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
 }
 
 TEST_F(JoinSelectsApi, JoinsAsWhereConditionsTest2) {
@@ -164,7 +177,7 @@ TEST_F(JoinSelectsApi, LeftJoinTest) {
 			Variant authorIdKeyRef1 = item[authorid];
 			const reindexer::ItemRef& rowid = rowIt.GetItemRef();
 
-			auto itemIt = rowIt.GetJoinedItemsIterator();
+			auto itemIt = rowIt.GetJoined();
 			if (itemIt.getJoinedItemsCount() == 0) continue;
 			for (auto joinedFieldIt = itemIt.begin(); joinedFieldIt != itemIt.end(); ++joinedFieldIt) {
 				reindexer::ItemImpl item2(joinedFieldIt.GetItem(0, joinQueryRes.getPayloadType(1), joinQueryRes.getTagsMatcher(1)));
@@ -173,13 +186,13 @@ TEST_F(JoinSelectsApi, LeftJoinTest) {
 			}
 
 			presentedAuthorIds.insert(static_cast<int>(authorIdKeyRef1));
-			rowidsIndexes.insert({rowid.id, i});
+			rowidsIndexes.insert({rowid.Id(), i});
 			i++;
 		}
 
 		for (auto rowIt : joinQueryRes) {
-			IdType rowid = rowIt.GetItemRef().id;
-			auto itemIt = rowIt.GetJoinedItemsIterator();
+			IdType rowid = rowIt.GetItemRef().Id();
+			auto itemIt = rowIt.GetJoined();
 			if (itemIt.getJoinedItemsCount() == 0) continue;
 			auto joinedFieldIt = itemIt.begin();
 			for (int i = 0; i < joinedFieldIt.ItemsCount(); ++i) {
@@ -224,7 +237,7 @@ TEST_F(JoinSelectsApi, OrInnerJoinTest) {
 	if (err.ok()) {
 		for (auto rowIt : queryRes) {
 			Item item(rowIt.GetItem());
-			reindexer::joins::ItemIterator itemIt = rowIt.GetJoinedItemsIterator();
+			auto itemIt = rowIt.GetJoined();
 
 			reindexer::joins::JoinedFieldIterator authorIdIt = itemIt.at(authorsNsJoinIndex);
 			Variant authorIdKeyRef1 = item[authorid_fk];
@@ -275,7 +288,7 @@ TEST_F(JoinSelectsApi, JoinTestSorting) {
 			}
 
 			Variant key = item[authorid];
-			auto itemIt = rowIt.GetJoinedItemsIterator();
+			auto itemIt = rowIt.GetJoined();
 			if (itemIt.getJoinedItemsCount() == 0) continue;
 			auto joinedFieldIt = itemIt.begin();
 
@@ -295,6 +308,39 @@ TEST_F(JoinSelectsApi, JoinTestSorting) {
 			}
 			prevField = item[age];
 		}
+	}
+}
+
+TEST_F(JoinSelectsApi, TestSortingByJoinedNs) {
+	Query joinedQuery1 = Query(books_namespace);
+	Query query1 =
+		Query(authors_namespace).LeftJoin(authorid, authorid_fk, CondEq, joinedQuery1).Sort(books_namespace + '.' + price, false);
+
+	reindexer::QueryResults joinQueryRes1;
+	Error err = rt.reindexer->Select(query1, joinQueryRes1);
+	// several book to one author, cannot sort
+	ASSERT_FALSE(err.ok()) << err.what();
+
+	Query joinedQuery2 = Query(authors_namespace);
+	Query query2 = Query(books_namespace).InnerJoin(authorid_fk, authorid, CondEq, joinedQuery2).Sort(authors_namespace + '.' + age, false);
+
+	reindexer::QueryResults joinQueryRes2;
+	err = rt.reindexer->Select(query2, joinQueryRes2);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	Variant prevValue;
+	for (auto rowIt : joinQueryRes2) {
+		const auto itemIt = rowIt.GetJoined();
+		ASSERT_EQ(itemIt.getJoinedItemsCount(), 1);
+		const auto joinedFieldIt = itemIt.begin();
+		reindexer::ItemImpl joinItem(joinedFieldIt.GetItem(0, joinQueryRes2.getPayloadType(1), joinQueryRes2.getTagsMatcher(1)));
+		const Variant recentValue = joinItem.GetField(joinQueryRes2.getPayloadType(1).FieldByName(age));
+		reindexer::WrSerializer ser;
+		if (prevValue.Type() != KeyValueNull) {
+			reindexer::WrSerializer ser;
+			ASSERT_TRUE(prevValue.Compare(recentValue) <= 0) << (prevValue.Dump(ser), ser << ' ', recentValue.Dump(ser), ser.Slice());
+		}
+		prevValue = recentValue;
 	}
 }
 
@@ -377,11 +423,110 @@ TEST_F(JoinSelectsApi, JoinsEasyStressTest) {
 		EXPECT_TRUE(err.ok()) << err.what();
 	};
 
+	int32_t since = 0, count = 1000;
 	std::vector<std::thread> threads;
 	for (size_t i = 0; i < 20; ++i) {
 		threads.push_back(std::thread(selectTh));
 		if (i % 2 == 0) threads.push_back(std::thread(removeTh));
-		if (i % 4 == 0) threads.push_back(std::thread([this]() { FillBooksNamespace(1000); }));
+		if (i % 4 == 0) threads.push_back(std::thread([this, since, count]() { FillBooksNamespace(since, count); }));
+		since += 1000;
 	}
 	for (size_t i = 0; i < threads.size(); ++i) threads[i].join();
+}
+
+TEST_F(JoinSelectsApi, JoinPreResultStoreValuesOptimizationStressTest) {
+	using reindexer::JoinedSelector;
+	static const string rightNs = "rightNs";
+	static constexpr char const* data = "data";
+	static constexpr int maxDataValue = 10;
+	static constexpr int maxRightNsRowCount = maxDataValue * JoinedSelector::MaxIterationsForPreResultStoreValuesOptimization();
+	static constexpr int maxLeftNsRowCount = 10000;
+	static constexpr size_t leftNsCount = 50;
+	static vector<string> leftNs;
+	if (leftNs.empty()) {
+		leftNs.reserve(leftNsCount);
+		for (size_t i = 0; i < leftNsCount; ++i) leftNs.push_back("leftNs" + std::to_string(i));
+	}
+
+	const auto createNs = [this](const string& ns) {
+		Error err = rt.reindexer->OpenNamespace(ns);
+		ASSERT_TRUE(err.ok()) << err.what();
+		DefineNamespaceDataset(
+			ns, {IndexDeclaration{id, "hash", "int", IndexOpts().PK(), 0}, IndexDeclaration{data, "hash", "int", IndexOpts(), 0}});
+	};
+	const auto fill = [this](const string& ns, int startId, int endId) {
+		for (int i = startId; i < endId; ++i) {
+			Item item = NewItem(ns);
+			item[id] = i;
+			item[data] = rand() % maxDataValue;
+			Upsert(ns, item);
+		}
+		Commit(ns);
+	};
+
+	createNs(rightNs);
+	fill(rightNs, 0, maxRightNsRowCount);
+	std::atomic<bool> start{false};
+	vector<std::thread> threads;
+	threads.reserve(leftNs.size());
+	for (size_t i = 0; i < leftNs.size(); ++i) {
+		createNs(leftNs[i]);
+		fill(leftNs[i], 0, maxLeftNsRowCount);
+		threads.emplace_back([this, i, &start]() {
+			// about 50% of queries will use the optimization
+			Query q = Query(leftNs[i]).InnerJoin(data, data, CondEq, Query(rightNs).Where(data, CondEq, rand() % maxDataValue));
+			QueryResults qres;
+			while (!start) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			Error err = rt.reindexer->Select(q, qres);
+			EXPECT_TRUE(err.ok()) << err.what();
+		});
+	}
+	start = true;
+	for (auto& th : threads) th.join();
+}
+
+bool checkForAllowedJsonTags(const vector<string>& tags, gason::JsonValue jsonValue) {
+	size_t count = 0;
+	for (auto elem : jsonValue) {
+		if (std::find(tags.begin(), tags.end(), string(elem->key)) == tags.end()) {
+			return false;
+		}
+		++count;
+	}
+	return (count == tags.size());
+}
+
+TEST_F(JoinSelectsApi, JoinWithSelectFilter) {
+	Query queryAuthors(authors_namespace);
+	queryAuthors.selectFilter_.emplace_back(name);
+	queryAuthors.selectFilter_.emplace_back(age);
+
+	Query queryBooks = Query(books_namespace).Where(pages, CondGe, 100).InnerJoin(authorid_fk, authorid, CondEq, queryAuthors);
+	queryBooks.selectFilter_.emplace_back(title);
+	queryBooks.selectFilter_.emplace_back(price);
+
+	QueryResults qr;
+	Error err = rt.reindexer->Select(queryBooks, qr);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	for (auto it : qr) {
+		reindexer::WrSerializer wrser;
+		it.GetJSON(wrser, false);
+
+		reindexer::joins::ItemIterator joinIt = it.GetJoined();
+		gason::JsonParser jsonParser;
+		gason::JsonNode root = jsonParser.Parse(reindexer::giftStr(wrser.Slice()));
+		EXPECT_TRUE(checkForAllowedJsonTags({title, price, "joined_authors_namespace"}, root.value));
+
+		for (auto fieldIt = joinIt.begin(); fieldIt != joinIt.end(); ++fieldIt) {
+			QueryResults jqr = fieldIt.ToQueryResults();
+			jqr.addNSContext(qr.getPayloadType(1), qr.getTagsMatcher(1), qr.getFieldsFilter(1));
+			for (auto jit : jqr) {
+				wrser.Reset();
+				jit.GetJSON(wrser, false);
+				root = jsonParser.Parse(reindexer::giftStr(wrser.Slice()));
+				EXPECT_TRUE(checkForAllowedJsonTags({name, age}, root.value));
+			}
+		}
+	}
 }
