@@ -22,9 +22,10 @@ public:
 	ReplicationSlaveSlaveApi() {}
 	void WaitSync(ServerControl& s1, ServerControl& s2, const std::string& nsName) {
 		int count = 0;
+		ReplicationStateApi state1, state2;
 		while (count < 1000) {
-			ReplicationStateApi state1 = s1.Get()->GetState(nsName);
-			ReplicationStateApi state2 = s2.Get()->GetState(nsName);
+			state1 = s1.Get()->GetState(nsName);
+			state2 = s2.Get()->GetState(nsName);
 			if (state1.lsn == state2.lsn) {
 				return;
 			}
@@ -32,7 +33,7 @@ public:
 			count++;
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		}
-		EXPECT_TRUE(false) << "Wait sync is too long.";
+		EXPECT_TRUE(false) << "Wait sync is too long. s1 lsn: " << state1.lsn << "; s2 lsn: " << state2.lsn;
 	}
 
 	void CreateConfiguration(vector<ServerControl>& nodes, const std::vector<int>& slaveConfiguration, int basePort, int baseServerId,
@@ -192,7 +193,7 @@ TEST_F(ReplicationSlaveSlaveApi, MasterSlaveStart) {
 	std::string nsName("ns1_debug");
 	TestNamespace1 ns1(nodes[0], nsName);
 
-	unsigned int n1 = 10;
+	unsigned int n1 = 100;
 	printf("Add 1\n");
 	ns1.AddRows(nodes[0], 0, n1);
 	nodes[0].Get()->SetWALSize(1000, nsName);

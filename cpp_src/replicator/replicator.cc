@@ -792,6 +792,10 @@ void Replicator::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &
 	SyncStat stat;
 
 	try {
+		if (nsName.find("debug"_sv) != string_view::npos) {
+			std::hash<std::thread::id> hash;
+			printf("%ld, OnWalUpdate; APPLY lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), LSNs.originLSN_.Counter(), wrec.type);
+		}
 		err = applyWALRecord(LSNs, nsName, slaveNs, wrec, stat);
 	} catch (const Error &e) {
 		err = e;
