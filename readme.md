@@ -29,9 +29,15 @@ The core is written in C++ and the application level API is in Go.
 - [Advanced Usage](#advanced-usage)
 	- [Index Types and Their Capabilites](#index-types-and-their-capabilites)
 	- [Nested Structs](#nested-structs)
-	- [Complex Primary Keys and Composite Indexes](#complex-primary-keys-and-composite-indexes)
+	- [Sort](#sort)
 	- [Join](#join)
-		- [Joinable interface](#joinable-interface)
+	  - [Joinable interface](#joinable-interface)
+    - [Update queries](#update-queries)
+    - [Transactions and batch update](#transactions-and-batch-update)
+      - [Synchronous mode](#synchronous-mode)
+      - [Async batch mode](#async-batch-mode)
+      - [Transactions commit strategies](#transactions-commit-strategies)
+      - [Implementation notes](#implementation-notes)
 	- [Complex Primary Keys and Composite Indices](#complex-primary-keys-and-composite-indices)
 	- [Atomic on update functions](#atomic-on-update-functions)
 	- [Aggregations](#aggregations)
@@ -148,7 +154,8 @@ func main() {
 	db := reindexer.NewReindex("builtin:///tmp/reindex/testdb")
 
 	// OR - Init a database instance and choose the binding (connect to server)
-	// db := reindexer.NewReindex("cproto://127.0.0.1:6534/testdb")
+	// Database should be created explicitly via reindexer_tool or via WithCreateDBIfMissing option:
+	// db := reindexer.NewReindex("cproto://127.0.0.1:6534/testdb", reindexer.WithCreateDBIfMissing())
 
 	// OR - Init a database instance and choose the binding (builtin, with bundled server)
 	// serverConfig := config.DefaultServerConfig ()
@@ -209,6 +216,7 @@ func main() {
 	}
 }
 ```
+
 ### SQL compatible interface
 
 As alternative to Query builder Reindexer provides SQL compatible query interface. Here is sample of SQL interface usage:
@@ -218,7 +226,7 @@ As alternative to Query builder Reindexer provides SQL compatible query interfac
 	iterator := db.ExecSQL ("SELECT * FROM items WHERE name='Vasya' AND year > 2020 AND articles IN (6,1,8) ORDER BY year LIMIT 10")
     ...
 ```
-Please note, that Query builder interface is prefferable way: It have more features, and faster than SQL interface
+Please note, that Query builder interface is preferable way: It have more features, and faster than SQL interface
 
 ## Installation
 
@@ -263,6 +271,7 @@ go generate github.com/restream/reindexer/bindings/builtinserver
 ```
 
 ## Advanced Usage
+
 ### Index Types and Their Capabilites
 
 Internally, structs are split into two parts:
@@ -275,7 +284,7 @@ Queries are possible only on the indexed fields, marked with `reindex` tag. The 
 
 - `name` – index name.
 - `type` – index type:
-    - `hash` – fast select by EQ and SET match. Does not allow sorting results by field. Used by default. Allows *slow* and uneffecient sorting by field
+    - `hash` – fast select by EQ and SET match. Used by default. Allows *slow* and ineffecient sorting by field.
     - `tree` – fast select by RANGE, GT, and LT matches. A bit slower for EQ and SET matches than `hash` index. Allows fast sorting results by field.
     - `text` – full text search index. Usage details of full text search is described [here](fulltext.md)
     - `-` – column index. Can't perform fast select because it's implemented with full-scan technic. Has the smallest memory overhead.
@@ -284,7 +293,7 @@ Queries are possible only on the indexed fields, marked with `reindex` tag. The 
     - `pk` – field is part of a primary key. Struct must have at least 1 field tagged with `pk`
     - `composite` – create composite index. The field type must be an empty struct: `struct{}`.
     - `joined` – field is a recipient for join. The field type must be `[]*SubitemType`.
-	- `dense` - reduce index size. For `hash` and `tree` it will save 8 bytes per unique key value. For `-` it will save 4-8 bytes per each element. Useful for indexes with high sectivity, but for `tree` and `hash` indexes with low selectivity can seriously decrease update performance. Also `dense` will slow down wide fullscan queries on `-` indexes, due to lack of CPU cache optimization.
+	- `dense` - reduce index size. For `hash` and `tree` it will save 8 bytes per unique key value. For `-` it will save 4-8 bytes per each element. Useful for indexes with high selectivity, but for `tree` and `hash` indexes with low selectivity can seriously decrease update performance. Also `dense` will slow down wide fullscan queries on `-` indexes, due to lack of CPU cache optimization.
 	- `sparse` - Row (document) contains a value of Sparse index only in case if it's set on purpose - there are no empty (or default) records of this type of indexes in the row (document). It allows to save RAM but it will cost you performance - it works a bit slower than regular indexes.
 	- `collate_numeric` - create string index that provides values order in numeric sequence. The field type must be a string.
 	- `collate_ascii` - create case-insensitive string index works with ASCII. The field type must be a string.
@@ -314,6 +323,205 @@ type ComplexItem struct {
 	parent   *Item   `reindex:"-"` // Index fields of parent will NOT be added to reindex
 }
 ```
+
+### Sort
+
+Reindexer can sort documents by fields (including nested and fields of joined `namespaces`) or by expressions in ascending or descending order.
+
+Sort expressions can contain fields names (including nested and fields of joined `namespaces`) of int, float or bool type, numbers, functions rank() and abs(), parenthesis and arithmetic operations: +, - (unary and binary), * and /.
+If field name followed by '+' they must be separated by space (to distinguish composite index name).
+Fields of joined namespaces writes in form `joined_namespace.field`.
+Abs() means absolute value of an argument.
+Rank() means fulltext rank of match and is applicable only in fulltext query.
+In SQL query sort expression must be quoted.
+
+```go
+type Person struct {
+	Name string `reindex:"name"`
+	Age  int    `reindex:"age"`
+}
+
+type City struct {
+	Id                 int `reindex:"id"`
+	NumberOfPopulation int `reindex:"population"`
+}
+
+type Actor struct {
+	ID          int    `reindex:"id"`
+	PersonData  Person `reindex:"person"`
+	Price       int    `reindex:"price"`
+	Description string `reindex:"description,text"`
+	BirthPlace  int    `reindex:"birth_place_id"`
+}
+....
+
+query := db.Query("actors").Sort("id", true)           // Sort by field
+....
+query = db.Query("actors").Sort("person.age", true)   // Sort by nested field
+....
+// Sort by joined field
+query = db.Query("actors").
+	Join(db.Query("cities")).On("birth_place_id", reindexer.EQ, "id").
+	Sort("cities.population", true)
+....
+// Sort by expression:
+query = db.Query("actors").Sort("person.age / -10 + price / 1000 * (id - 5)", true)
+....
+query = db.Query("actors").Where("description", reindexer.EQ, "ququ").
+    Sort("rank() + id / 100", true)   // Sort with fulltext rank
+....
+// In SQL query:
+iterator := db.ExecSQL ("SELECT * FROM actors ORDER BY person.name ASC")
+....
+iterator := db.ExecSQL ("SELECT * FROM actors WHERE description = 'ququ' ORDER BY 'rank() + id / 100' DESC")
+```
+
+It is also possible to set a custom sort order like this
+```go
+type SortModeCustomItem struct {
+	ID      int    `reindex:"id,,pk"`
+	InsItem string `reindex:"item_custom,hash,collate_custom=a-zA-Z0-9"`
+}
+```
+or like this
+```go
+type SortModeCustomItem struct {
+	ID      int    `reindex:"id,,pk"`
+	InsItem string `reindex:"item_custom,hash,collate_custom=АаБбВвГгДдЕеЖжЗзИиКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭ-ЯAaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0-9ЁёЙйэ-я"`
+}
+```
+The very first character in this list has the highest priority, priority of the last character is the smallest one. It means that sorting algorithm will put items that start with the first character before others. If some characters are skipped their priorities would have their usual values (according to characters in the list).   
+
+### Update queries
+
+UPDATE queries are used to modify the existing records in a namespace.
+There are several kinds of update queries: updating existing fields, adding new fields and dropping existing non-indexed fields.
+
+UPDATE Sql-Syntax
+```sql
+UPDATE nsName
+SET field1 = value1, field2 = value2, ..
+WHERE condition;
+```
+It is also possible to use arithmetic expressions with +, -, /, * and brackets
+```sql
+UPDATE NS SET field1 = field2+field3-(field4+5)/2
+```
+make an array-field empty
+```sql
+UPDATE NS SET arrayfield = [] where id = 100
+```
+and set field to null
+```sql
+UPDATE NS SET field = null where id > 100
+```
+In case of non-indexed fields setting it's value to a value of a different type will replace it completely, in case of indexed fields it is only possible to convert it from adjacent type (integral types and bool), convert numeric strings (like "123456") to integral types and back. Setting indexed field to null resets it to a default value.
+
+It is possible to add new fields to existing items
+```sql
+UPDATE Ns set newField = 'Brand new!' where id > 100
+```
+and even add a new field by a complex nested path like this
+```sql
+UPDATE Ns set nested.nested2.nested3.nested4.newField = 'new nested field!' where id > 100
+```
+will create the following nested objects: nested, nested2, nested3, nested4 and newField as a member of object nested4.
+
+Example of using Update queries in golang code
+```go
+db.Query("items").Where("id", reindexer.EQ, 40).Set("field1", values).Update()
+```
+Reindexer allows to update and add object fields. Object can be set by either a struct, a map or a byte array (that is a JSON version of object representation).
+```go
+type ClientData struct {
+    Name          string `reindex:"name" json:"name"`
+	Age           int    `reindex:"age" json:"age"`
+	Address       int    `reindex:"year" json:"year"`
+	Occupation    string `reindex:"occupation" json:"occupation"`
+	TaxYear       int    `reindex:tax_year json:"tax_year"`
+	TaxConsultant string `reindex:tax_consultant json:"tax_consultant"`
+}
+type Client struct {
+	ID      int         `reindex:"id" json:"id"`
+	Data    ClientData  `reindex:"client_data" json:"client_data"`
+	...
+}
+clientData := updateClientData(clientId)
+db.Query("clients").Where("id", reindexer.EQ, 100).SetObject("client_data", clientData).Update()
+```
+Map in golang should always has string as a key. ```map[string]interface{}``` is a perfect choice.
+
+Updating of object field by Sql statement
+```sql
+UPDATE clients SET client_data = {"Name":"John Doe","Age":40,"Address":"Fifth Avenue, Manhattan","Occupation":"Bank Manager","TaxYear":1999,"TaxConsultant":"Jane Smith"} where id = 100;
+```
+
+UPDATE Sql-Syntax of queries that drop existing non-indexed fields
+```sql
+UPDATE nsName
+DROP field1, field2, ..
+WHERE condition;
+```
+```go
+db.Query("items").Where("id", reindexer.EQ, 40).Drop("field1").Update()
+```
+### Transactions and batch update
+
+Reindexer supports transactions. Transaction are performs atomic namespace update. There are synchronous and async transaction available. To start transaction method `db.BeginTx()` is used. This method creates transaction object, which provides usual Update/Upsert/Insert/Delete interface for application.
+
+#### Synchronous mode
+```go
+
+	// Create new transaction object
+	tx, err := db.BeginTx("items");
+	if err != nil {
+		panic(err)
+	}
+	// Fill transaction object
+	tx.Upsert(&Item{ID: 100})
+	tx.Upsert(&Item{ID: 101})
+	tx.Query().WhereInt("id", reindexer.EQ, 102).Set("Name", "Petya").Update()
+	// Apply transaction
+	if err := tx.Commit(); err != nil {
+		panic(err)
+	}
+
+```
+#### Async batch mode
+For speed up insertion of bulk records async mode can be used.
+```go
+
+	// Create new transaction object
+	tx, err := db.BeginTx("items");
+	if err != nil {
+		panic(err)
+	}
+	// Prepare transaction object async.
+	tx.UpsertAsync(&Item{ID: 100},func(err error) {})
+	tx.UpsertAsync(&Item{ID: 100},func(err error) {})
+	// Wait for async operations done, and apply transaction.
+	if err := tx.Commit(); err != nil {
+		panic(err)
+	}
+```
+The second argument of `UpsertAsync` is completion function, which will be called after receiving server response. Also, if any error occurred during prepare process, then `tx.Commit` should
+return an error.
+So it is enough, to check error returned by `tx.Commit` - to be sure, that all data has been successfully committed or not.
+
+#### Transactions commit strategies
+
+Depends on amount changes in transaction there are 2 possible Commit strategies:
+- Locked atomic update. Reindexer locks namespace and applying all changes under common lock. This mode is used with small amounts of changes.
+- Copy & atomic replace. In this mode Reindexer makes namespace's snapshot, applying all changes to this snapshot, and atomically replaces namespace without lock
+
+Data amount for choosing Commit strategy can be choose in namespaces config. pls refer [DBNamespacesConfig](describer.go#L277)
+
+#### Implementation notes
+
+1. Transaction object is not thread safe and can't be used from different goroutines.
+2. Transaction object holds Reindexer's resources, therefore application should explicitly call Rollback or Commit, otherwise resources will leak
+3. It is safe to call Rollback after Commit
+4. It is possible ro call  Query from transaction  by call `tx.Query("ns").Exec() ...`. Only read-committed isolation is available. Changes made in active transaction is invisible to current and another transactions.
 
 ### Join
 
@@ -473,14 +681,15 @@ For make query to the composite index, pass []interface{} to `.WhereComposite` f
 
 ### Aggregations
 
-Reindexer allows to retrive aggregated results. Currently Average, Sum, Minimum, Maximum and Facet aggregations are supported.
+Reindexer allows to retrive aggregated results. Currently Average, Sum, Minimum, Maximum Facet and Distinct aggregations are supported.
 - `AggregateMax` - get maximum field value
 - `AggregateMin` - get manimum field value
 - `AggregateSum` - get sum field value
 - `AggregateAvg` - get averatge field value
 - `AggregateFacet` - get fields facet value
+- `Distinct` - get list of unique values of the field
 
-In order to support aggregation, `Query` has methods `AggregateAvg`, `AggregateSum`, `AggregateMin`, `AggregateMax` and `AggregateFacet` those should be called before the `Query` execution: this will ask reindexer to calculate data aggregations.
+In order to support aggregation, `Query` has methods `AggregateAvg`, `AggregateSum`, `AggregateMin`, `AggregateMax`, `AggregateFacet` and `Distinct` those should be called before the `Query` execution: this will ask reindexer to calculate data aggregations.
 Aggregation Facet is applicable to multiple data columns and the result of that could be sorted by any data column or 'count' and cutted off by offset and limit.
 In order to support this functionality method `AggregateFacet` returns `AggregationFacetRequest` which has methods `Sort`, `Limit` and `Offset`.
 
@@ -506,6 +715,64 @@ Example code for aggregate `items` by `price` and `name`
 		fmt.Printf ("'%s' '%s' -> %d", facet.Values[0], facet.Values[1], facet.Count)
 	}
 
+```
+
+```go
+
+	query := db.Query("items")
+	query.Distinct("name").Distinct("price")
+	iterator := query.Exec()
+
+	aggResults := iterator.aggResults()
+
+	distNames := aggResults[0]
+	fmt.Println ("names:")
+	for _, name := range distNames.Distincts {
+		fmt.Println(name)
+	}
+
+	distPrices := aggResults[1]
+	fmt.Println ("prices:")
+	for _, price := range distPrices.Distincts {
+		fmt.Println(price)
+	}
+```
+
+### Searching in array fields with matching array indexes
+Reindexer allows to search data in array fields when matching values have same indixes positions.
+For instance, we've got an array of structures:
+
+```go
+type Elem struct {
+   F1 int `reindex:"f1"`
+   F2 int `reindex:"f2"`
+}
+
+type A struct {
+   Elems []Elem
+}
+```
+Common attempt to search values in this array
+```go
+Where ("f1",EQ,1).Where ("f2",EQ,2)
+```
+finds all items of array `Elem[]` where `f1` is equal to 1 and `f2` is equal to 2.
+
+`EqualPosition` function allows to search in array fields with equal indices.
+Search like this:
+```go
+Where("f1", reindexer.GE, 5).Where("f2", reindexer.EQ, 100).EqualPosition("f1", "f2")
+```
+or
+```sql
+SELECT * FROM Namespace WHERE f1 >= 5 AND f2 = 100 EQUAL_POSITION(f1,f2);
+```
+
+finds all items of array `Elem[]` where `f1` is greater or equal to 5 and `f2` is equal to 100 `and` their indices are always equal (for instance, query returned 5 items where only 3rd element of array has appropriate values).
+
+With complex expressions (expressions with brackets) equal_position() works only within a bracket:
+```sql
+SELECT * FROM Namespace WHERE (f1 >= 5 AND f2 = 100 EQUAL_POSITION(f1,f2)) OR (f3 = 3 AND f4 < 4 EQUAL_POSITION(f3,f4));
 ```
 
 ### Atomic on update functions
@@ -734,6 +1001,11 @@ Command line tool can run in 2 modes. With server via network, and in server-les
 
 ### Dump and restore database
 
+Database creation via reindexer_tool:
+```sh
+reindexer_tool --dsn cproto://127.0.0.1:6534/mydb --command '\databases create mydb'
+```
+
 To dump and restore database in normal way there reindexer command line tool is used
 
 Backup whole database into single backup file:
@@ -782,7 +1054,7 @@ To configure storage type for Go bindings either `bindings.ConnectOptions` (for 
 
 ### RocksDB
 
-Reindexer will try to autodetect RocksDB library and it's dependencies at compile time if CMake flag `ENABLE_ROCKSDB` was passed (enabled by default). 
+Reindexer will try to autodetect RocksDB library and it's dependencies at compile time if CMake flag `ENABLE_ROCKSDB` was passed (enabled by default).
 If reindexer library was built with rocksdb, it requires Go build tag `rocksdb` in order to link with go-applications and go-bindinds.
 
 ## Integration with other program languages
@@ -791,13 +1063,17 @@ A list of connectors for work with Reindexer via other program languages (TBC la
 
 ### Pyreindexer
 
-1. [Pyreindexer](connectors/py_reindexer) for Python (version >=3.6 is required). For setup run:
+1. Pyreindexer for Python (version >=3.6 is required).
+
+Before installation reindexer-dev (version >= 2.10) should be installed. See [installation instructions](cpp_src/readme.md#Installation) for details.
+For install run:
 
 
 ```bash
-pip3 install git+https://github.com/Restream/reindexer.git
-
+pip3 install pyreindexer
 ```
+https://github.com/Restream/reindexer-py
+https://pypi.org/project/pyreindexer/
 
 ### HTTP REST API
 

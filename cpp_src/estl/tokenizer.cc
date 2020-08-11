@@ -4,7 +4,7 @@
 
 namespace reindexer {
 
-tokenizer::tokenizer(const string_view &query) : q_(query), cur_(query.begin()) {}
+tokenizer::tokenizer(string_view query) : q_(query), cur_(query.begin()) {}
 
 bool tokenizer::end() const { return cur_ == q_.end(); }
 
@@ -38,7 +38,7 @@ token tokenizer::next_token(bool to_lower, bool treatSignAsToken) {
 		do {
 			res.text_.push_back(to_lower ? tolower(*cur_++) : *cur_++);
 			++pos_;
-		} while (cur_ != q_.end() && (isalpha(*cur_) || isdigit(*cur_) || *cur_ == '_' || *cur_ == '#'));
+		} while (cur_ != q_.end() && (isalpha(*cur_) || isdigit(*cur_) || *cur_ == '_' || *cur_ == '#' || *cur_ == '.'));
 	} else if (isdigit(*cur_) || (!treatSignAsToken && (*cur_ == '-' || *cur_ == '+'))) {
 		res.type = TokenNumber;
 		do {
@@ -80,6 +80,7 @@ token tokenizer::next_token(bool to_lower, bool treatSignAsToken) {
 	// null terminate it
 	res.text_.reserve(res.text_.size() + 1);
 	*(res.text_.begin() + res.text_.size()) = 0;
+	skip_space();
 	return res;
 }
 
@@ -105,7 +106,14 @@ token tokenizer::peek_token(bool to_lower, bool treatSignAsToken) {
 	return res;
 }
 
-size_t tokenizer::pos() const { return pos_; }
+void tokenizer::setPos(size_t pos) {
+	int delta = pos - pos_;
+	pos_ += delta;
+	cur_ += delta;
+}
+size_t tokenizer::getPos() const { return pos_; }
+
 size_t tokenizer::length() const { return q_.length(); }
+const char *tokenizer::begin() const { return q_.begin(); }
 
 }  // namespace reindexer

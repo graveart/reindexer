@@ -32,7 +32,8 @@ public:
 		: dbNoCtx_(args...),
 		  db_(dbNoCtx_.WithContext(&cancelCtx_)),
 		  output_(outFileName),
-		  fileName_(inFileName),
+		  outFileName_(outFileName),
+		  inFileName_(inFileName),
 		  command_(command),
 		  connPoolSize_(connPoolSize),
 		  numThreads_(numThreads) {
@@ -43,12 +44,13 @@ public:
 	CommandsProcessor& operator=(const CommandsProcessor&) = delete;
 	CommandsProcessor& operator=(const CommandsProcessor&&) = delete;
 	~CommandsProcessor();
-	Error Connect(const string& dsn);
+	template <typename... Args>
+	Error Connect(const string& dsn, Args... args);
 	bool Run();
 
 protected:
 	bool Interactive();
-	bool FromFile();
+	bool FromFile(std::istream& in);
 	string getCurrentDsn() const;
 	Error queryResultsToJson(ostream& o, const typename DBInterface::QueryResultsT& r, bool isWALQuery);
 	Error getAvailableDatabases(vector<string>&);
@@ -80,7 +82,7 @@ protected:
 	Error commandSubscribe(const string& command);
 	Error commandProcessDatabases(const string& command);
 
-	void OnWALUpdate(int64_t lsn, string_view nsName, const reindexer::WALRecord& wrec) override final;
+	void OnWALUpdate(reindexer::LSNPair LSNs, string_view nsName, const reindexer::WALRecord& wrec) override final;
 	void OnConnectionState(const Error& err) override;
 
 	struct commandDefinition {
@@ -141,6 +143,12 @@ protected:
 
 		\namespaces drop <namespace>
 		Drop namespace
+		
+		\namespaces truncate <namespace>
+		Truncate namespace
+		
+		\namespaces rename <oldName> <newName>
+		Rename namespace
 		)help"},
         {"\\meta",		"Manipulate meta",&CommandsProcessor::commandMeta,R"help(
 	Syntax:
@@ -162,9 +170,12 @@ protected:
 	Syntax:
 		\bench <time>
 		)help"},
-        {"\\subscribe",	"Subscribe to upstream updates",&CommandsProcessor::commandSubscribe,R"help(
+		{"\\subscribe",	"Subscribe to upstream updates",&CommandsProcessor::commandSubscribe,R"help(
 	Syntax:
 		\subscribe <on|off>
+		Subscribe/unsubscribe to any updates
+		\subscribe <namespace>[ <namespace>[ ...]]
+		Subscribe to specific namespaces updates
 		)help"},
         {"\\quit",		"Exit from tool",&CommandsProcessor::commandQuit,""},
         {"\\help",		"Show help",&CommandsProcessor::commandHelp,""},
@@ -175,6 +186,9 @@ protected:
 
          \databases use <db>
          Switches to one of the existing databases.
+
+         \databases create <db>
+         Creates new database.
          )help"}
     };
 	// clang-format on
@@ -183,7 +197,8 @@ protected:
 	reindexer::CancelContextImpl cancelCtx_;
 	DBInterface db_;
 	Output output_;
-	string fileName_;
+	string outFileName_;
+	string inFileName_;
 	string command_;
 	int connPoolSize_;
 	int numThreads_;

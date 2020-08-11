@@ -161,6 +161,88 @@ public:
 		return *this;
 	}
 
+	/// Sets a new value for a field.
+	/// @param field - field name.
+	/// @param value - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename ValueType>
+	Query &Set(string field, ValueType value, bool hasExpressions = false) {
+		return Set(std::move(field), {value}, hasExpressions);
+	}
+	/// Sets a new value for a field.
+	/// @param field - field name.
+	/// @param l - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename ValueType>
+	Query &Set(string field, std::initializer_list<ValueType> l, bool hasExpressions = false) {
+		VariantArray value;
+		value.reserve(l.size());
+		for (auto it = l.begin(); it != l.end(); it++) value.emplace_back(*it);
+		return Set(std::move(field), std::move(value), hasExpressions);
+	}
+	/// Sets a new value for a field.
+	/// @param field - field name.
+	/// @param l - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename T>
+	Query &Set(string field, const std::vector<T> &l, bool hasExpressions = false) {
+		VariantArray value;
+		value.reserve(l.size());
+		value.MarkArray();
+		for (auto it = l.begin(); it != l.end(); it++) value.emplace_back(*it);
+		return Set(std::move(field), std::move(value), hasExpressions);
+	}
+	/// Sets a new value for a field.
+	/// @param field - field name.
+	/// @param value - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	Query &Set(string field, VariantArray value, bool hasExpressions = false) {
+		updateFields_.emplace_back(std::move(field), std::move(value), FieldModeSet, hasExpressions);
+		return *this;
+	}
+	/// Sets a value for a field as an object.
+	/// @param field - field name.
+	/// @param value - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename ValueType>
+	Query &SetObject(string field, ValueType value, bool hasExpressions = false) {
+		return SetObject(std::move(field), {value}, hasExpressions);
+	}
+	/// Sets a new value for a field as an object.
+	/// @param field - field name.
+	/// @param l - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename ValueType>
+	Query &SetObject(string field, std::initializer_list<ValueType> l, bool hasExpressions = false) {
+		VariantArray value;
+		value.reserve(l.size());
+		for (auto it = l.begin(); it != l.end(); it++) value.emplace_back(Variant(*it));
+		return SetObject(std::move(field), std::move(value), hasExpressions);
+	}
+	/// Sets a new value for a field as an object.
+	/// @param field - field name.
+	/// @param l - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	template <typename T>
+	Query &SetObject(string field, const std::vector<T> &l, bool hasExpressions = false) {
+		VariantArray value;
+		value.reserve(l.size());
+		value.MarkArray();
+		for (auto it = l.begin(); it != l.end(); it++) value.emplace_back(Variant(*it));
+		return SetObject(std::move(field), std::move(value), hasExpressions);
+	}
+	/// Sets a value for a field as an object.
+	/// @param field - field name.
+	/// @param value - new value.
+	/// @param hasExpressions - true: value has expresions in it
+	Query &SetObject(string field, VariantArray value, bool hasExpressions = false);
+	/// Drops a value for a field.
+	/// @param field - field name.
+	Query &Drop(string field) {
+		updateFields_.emplace_back(std::move(field), VariantArray(), FieldModeDrop);
+		return *this;
+	}
+
 	/// Add sql-function to query.
 	/// @param function - function declaration.
 	void AddFunction(const string &function) { selectFunctions_.push_back(std::move(function)); }
@@ -228,6 +310,14 @@ public:
 		return *this;
 	}
 
+	/// Changes strict mode.
+	/// @param mode - strict mode.
+	/// @return Query object.
+	Query &Strict(StrictMode mode) {
+		strictMode = mode;
+		return *this;
+	}
+
 	/// Performs sorting by certain column. Analog to sql ORDER BY.
 	/// @param sort - sorting column name.
 	/// @param desc - is sorting direction descending or ascending.
@@ -237,14 +327,38 @@ public:
 		return *this;
 	}
 
+	/// Performs sorting by certain column. Analog to sql ORDER BY.
+	/// @param sort - sorting column name.
+	/// @param desc - is sorting direction descending or ascending.
+	/// @param forcedSortOrder - list of values for forced sort order.
+	/// @return Query object.
+	template <typename T>
+	Query &Sort(const string &sort, bool desc, initializer_list<T> forcedSortOrder) {
+		if (!forcedSortOrder_.empty()) throw Error(errParams, "Allowed only one forced sort order");
+		sortingEntries_.push_back({sort, desc});
+		for (const T &v : forcedSortOrder) forcedSortOrder_.emplace_back(v);
+		return *this;
+	}
+
+	/// Performs sorting by certain column. Analog to sql ORDER BY.
+	/// @param sort - sorting column name.
+	/// @param desc - is sorting direction descending or ascending.
+	/// @param forcedSortOrder - list of values for forced sort order.
+	/// @return Query object.
+	template <typename T>
+	Query &Sort(const string &sort, bool desc, const T &forcedSortOrder) {
+		if (!forcedSortOrder_.empty()) throw Error(errParams, "Allowed only one forced sort order");
+		sortingEntries_.push_back({sort, desc});
+		for (const auto &v : forcedSortOrder) forcedSortOrder_.emplace_back(v);
+		return *this;
+	}
+
 	/// Performs distinct for a certain index.
 	/// @param indexName - name of index for distict operation.
 	Query &Distinct(const string &indexName) {
 		if (indexName.length()) {
-			QueryEntry qentry;
-			qentry.index = indexName;
-			qentry.distinct = true;
-			entries.Append(OpAnd, std::move(qentry));
+			AggregateEntry aggEntry{AggDistinct, {indexName}};
+			aggregations_.emplace_back(std::move(aggEntry));
 		}
 		return *this;
 	}
@@ -338,6 +452,15 @@ public:
 		return *this;
 	}
 
+	/// Output fulltext rank
+	/// Allowed only with fulltext query
+	/// @return Query object
+	Query &WithRank() noexcept {
+		withRank_ = true;
+		return *this;
+	}
+	bool IsWithRank() const noexcept { return withRank_; }
+
 	/// Serializes query data to stream.
 	/// @param ser - serializer object for write.
 	/// @param mode - serialization mode.
@@ -351,31 +474,39 @@ public:
 
 	bool HasLimit() const noexcept { return count != UINT_MAX; }
 	bool HasOffset() const noexcept { return start != 0; }
+	bool IsWALQuery() const noexcept;
+	const h_vector<UpdateEntry, 0> &UpdateFields() const noexcept { return updateFields_; }
 
 protected:
 	void deserialize(Serializer &ser, bool &hasJoinConditions);
 
 public:
-	string _namespace;						/// Name of the namespace.
-	unsigned start = 0;						/// First row index from result set.
-	unsigned count = UINT_MAX;				/// Number of rows from result set.
-	int debugLevel = 0;						/// Debug level.
-	bool explain_ = false;					/// Explain query if true
-	CalcTotalMode calcTotal = ModeNoTotal;  /// Calculation mode.
-	QueryType type_ = QuerySelect;			/// Query type
-	OpType nextOp_ = OpAnd;					/// Next operation constant.
-	SortingEntries sortingEntries_;			/// Sorting data.
-	h_vector<Variant, 0> forcedSortOrder;   /// Keys that always go first - before any ordered values.
-	vector<JoinedQuery> joinQueries_;		/// List of queries for join.
-	vector<JoinedQuery> mergeQueries_;		/// List of merge queries.
-	h_vector<string, 1> selectFilter_;		/// List of columns in a final result set.
-	h_vector<string, 0> selectFunctions_;   /// List of sql functions
+	string _namespace;						   /// Name of the namespace.
+	unsigned start = 0;						   /// First row index from result set.
+	unsigned count = UINT_MAX;				   /// Number of rows from result set.
+	int debugLevel = 0;						   /// Debug level.
+	StrictMode strictMode = StrictModeNotSet;  /// Strict mode.
+	bool explain_ = false;					   /// Explain query if true
+	CalcTotalMode calcTotal = ModeNoTotal;	   /// Calculation mode.
+	QueryType type_ = QuerySelect;			   /// Query type
+	OpType nextOp_ = OpAnd;					   /// Next operation constant.
+	SortingEntries sortingEntries_;			   /// Sorting data.
+	h_vector<Variant, 0> forcedSortOrder_;	   /// Keys that always go first - before any ordered values.
+	vector<JoinedQuery> joinQueries_;		   /// List of queries for join.
+	vector<JoinedQuery> mergeQueries_;		   /// List of merge queries.
+	h_vector<string, 1> selectFilter_;		   /// List of columns in a final result set.
+	h_vector<string, 0> selectFunctions_;	   /// List of sql functions
 
-	std::multimap<unsigned, EqualPosition> equalPositions_;  /// List of same position fields for queries with arrays
+	std::multimap<unsigned, EqualPosition> equalPositions_;	 /// List of same position fields for queries with arrays
 	QueryEntries entries;
 
-	h_vector<AggregateEntry, 0> aggregations_;
-	h_vector<UpdateEntry, 0> updateFields_;  /// List of fields (and values) for update.
+	vector<AggregateEntry> aggregations_;
+
+private:
+	h_vector<UpdateEntry, 0> updateFields_;	 /// List of fields (and values) for update.
+	bool withRank_ = false;
+
+	friend class SQLParser;
 };
 
 class JoinedQuery : public Query {
@@ -385,7 +516,7 @@ public:
 	using Query::Query;
 	bool operator==(const JoinedQuery &obj) const;
 
-	JoinType joinType{JoinType::LeftJoin};	 /// Default join type.
+	JoinType joinType{JoinType::LeftJoin};	   /// Default join type.
 	h_vector<QueryJoinEntry, 0> joinEntries_;  /// Condition for join. Filled in each subqueries, empty in  root query
 };
 

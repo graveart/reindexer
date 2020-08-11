@@ -24,7 +24,11 @@ type ExplainResults struct {
 	LoopUs int `json:"loop_us"`
 	// Index, which used for sort results
 	SortIndex string `json:"sort_index"`
-	// Filter selectos, used to proccess query conditions
+	// General sort time
+	GeneralSortUs int `json:"general_sort_us"`
+	// Optimization of sort by uncompleted index has been performed
+	SortByUncommittedIndex bool `json:"sort_by_uncommitted_index"`
+	// Filter selectors, used to proccess query conditions
 	Selectors []struct {
 		// Field or index name
 		Field string `json:"field"`
@@ -35,11 +39,15 @@ type ExplainResults struct {
 		// Count of comparators used, for this selector
 		Comparators int `json:"comparators"`
 		// Cost expectation of this selector
-		Cost float32 `json:"cost"`
+		Cost float64 `json:"cost"`
 		// Count of processed documents, matched this selector
 		Matched int `json:"matched"`
 		// Count of scanned documents by this selector
 		Items int `json:"items"`
+		// Preselect in joined namespace execution explainings
+		ExplainPreselect *ExplainResults `json:"explain_preselect,omitempty"`
+		// One of selects in joined namespace execution explainings
+		ExplainSelect *ExplainResults `json:"explain_select,omitempty"`
 	} `json:"selectors"`
 }
 
@@ -74,8 +82,18 @@ func newIterator(
 	it.ptr = 0
 	it.err = nil
 	it.userCtx = userCtx
-	if len(it.joinToFields) > 0 {
-		it.current.joinObj = make([][]interface{}, len(it.joinToFields))
+	it.allowUnsafe = false
+	joinObjSize := len(it.joinToFields)
+	if q != nil {
+		for _, mq := range q.mergedQueries {
+			joinSize := len(mq.joinToFields)
+			if joinSize > joinObjSize {
+				joinObjSize = joinSize
+			}
+		}
+	}
+	if joinObjSize > 0 {
+		it.current.joinObj = make([][]interface{}, joinObjSize)
 	}
 	it.setBuffer(result)
 
@@ -139,6 +157,9 @@ func (it *Iterator) NextObj(obj interface{}) (hasNext bool) {
 	}
 	if it.needMore() {
 		it.fetchResults()
+		if it.err != nil {
+			return
+		}
 	}
 	it.current.obj, it.current.rank = it.readItem(obj)
 	if it.err != nil {
@@ -158,9 +179,18 @@ func (it *Iterator) joinedNsIndexOffset(parentNsID int) int {
 		return 1
 	}
 
+	// main NS + count of merged ones
 	offset := 1 + len(it.query.mergedQueries)
-	for m := 0; m < parentNsID; m++ {
-		offset += len(it.query.mergedQueries[m].joinQueries)
+
+	mergedNsIdx := parentNsID
+	if mergedNsIdx > 0 {
+		offset += len(it.query.joinQueries)
+		// it.query.mergedQueries doesn't store main object joined data
+		mergedNsIdx--
+	}
+
+	for i := 0; i < mergedNsIdx; i++ {
+		offset += len(it.query.mergedQueries[i].joinQueries)
 	}
 	return offset
 }
@@ -196,6 +226,7 @@ func (it *Iterator) readItem(toObj interface{}) (item interface{}, rank int) {
 				return
 			}
 		}
+
 		it.current.joinObj[nsIndex] = subitems
 		it.join(nsIndex, nsIndexOffset, params.nsid, item)
 	}
@@ -228,16 +259,22 @@ func (it *Iterator) fetchResults() {
 }
 
 func (it *Iterator) join(nsIndex, nsIndexOffset, parentNsID int, item interface{}) {
-	field := it.joinToFields[nsIndex]
-	subitems := it.current.joinObj[nsIndex]
-	handler := it.joinHandlers[nsIndex]
+	var field string
+	var handler JoinHandler
+	if parentNsID == 0 {
+		field = it.joinToFields[nsIndex]
+		handler = it.joinHandlers[nsIndex]
+	} else {
+		field = it.query.mergedQueries[parentNsID-1].joinToFields[nsIndex]
+		handler = it.query.mergedQueries[parentNsID-1].joinHandlers[nsIndex]
+	}
 
+	subitems := it.current.joinObj[nsIndex]
 	if handler != nil {
 		if !handler(field, item, subitems) {
 			return
 		}
 	}
-
 	if joinable, ok := item.(Joinable); ok {
 		joinable.Join(field, subitems, it.queryContext)
 	} else {
@@ -393,7 +430,7 @@ func (it *Iterator) GetExplainResults() (*ExplainResults, error) {
 	if len(it.rawQueryParams.explainResults) > 0 {
 		explain := &ExplainResults{}
 		if err := json.Unmarshal(it.rawQueryParams.explainResults, explain); err != nil {
-			return nil, fmt.Errorf("Explain query results is broken")
+			return nil, fmt.Errorf("Explain query results is broken: %v", err)
 		}
 		return explain, nil
 	}
@@ -470,7 +507,7 @@ func (it *JSONIterator) GetExplainResults() (*ExplainResults, error) {
 	if len(it.explain) > 0 {
 		explain := &ExplainResults{}
 		if err := json.Unmarshal(it.explain, explain); err != nil {
-			return nil, fmt.Errorf("Explain query results is broken")
+			return nil, fmt.Errorf("Explain query results is broken: %v", err)
 		}
 		return explain, nil
 	}

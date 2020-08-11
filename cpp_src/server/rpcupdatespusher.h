@@ -1,5 +1,6 @@
 
 #include <atomic>
+#include <functional>
 #include "net/cproto/dispatcher.h"
 #include "replicator/updatesobserver.h"
 
@@ -13,12 +14,14 @@ class RPCUpdatesPusher : public reindexer::IUpdatesObserver {
 public:
 	RPCUpdatesPusher();
 	void SetWriter(Writer *writer) { writer_ = writer; }
-	void OnWALUpdate(int64_t lsn, string_view nsName, const WALRecord &walRec) override final;
+	void OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &walRec) override final;
 	void OnConnectionState(const Error &err) override final;
+	void SetFilter(std::function<bool(WALRecord &)> filter) { filter_ = std::move(filter); }
 
 protected:
 	Writer *writer_;
 	std::atomic<uint32_t> seq_;
+	std::function<bool(WALRecord &)> filter_;
 };
 }  // namespace cproto
 }  // namespace net

@@ -6,12 +6,19 @@
 #include "core/item.h"
 #include "core/keyvalue/key_string.h"
 #include "core/keyvalue/variant.h"
+#include "core/queryresults/joinresults.h"
 #include "core/reindexer.h"
 #include "tools/fsops.h"
 #include "tools/logger.h"
 #include "tools/stringstools.h"
 
 #include <deque>
+#include <thread>
+#include "debug/backtrace.h"
+
+#include "core/keyvalue/p_string.h"
+#include "gason/gason.h"
+#include "tools/serializer.h"
 
 using reindexer::Reindexer;
 
@@ -41,12 +48,161 @@ TEST_F(ReindexerApi, AddExistingNamespace) {
 	ASSERT_FALSE(err.ok()) << err.what();
 }
 
+TEST_F(ReindexerApi, RenameNamespace) {
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
+	ASSERT_TRUE(err.ok());
+	for (int i = 0; i < 10; ++i) {
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = i;
+		item["column1"] = i + 100;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+
+	const std::string renameNamespace("rename_namespace");
+	const std::string existingNamespace("existing_namespace");
+
+	err = rt.reindexer->OpenNamespace(existingNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	auto testInList = [&](const std::string& testNamespaceName, bool inList) {
+		vector<reindexer::NamespaceDef> namespacesList;
+		err = rt.reindexer->EnumNamespaces(namespacesList, reindexer::EnumNamespacesOpts());
+		ASSERT_TRUE(err.ok()) << err.what();
+		auto r = std::find_if(namespacesList.begin(), namespacesList.end(),
+							  [testNamespaceName](const reindexer::NamespaceDef& d) { return d.name == testNamespaceName; });
+		if (inList) {
+			ASSERT_FALSE(r == namespacesList.end()) << testNamespaceName << " not exist";
+		} else {
+			ASSERT_TRUE(r == namespacesList.end()) << testNamespaceName << " exist";
+		}
+	};
+
+	auto getRowsInJSON = [&](const std::string& namespaceName, std::vector<std::string>& resStrings) {
+		QueryResults result;
+		rt.reindexer->Select(Query(namespaceName), result);
+		resStrings.clear();
+		for (auto it = result.begin(); it != result.end(); ++it) {
+			reindexer::WrSerializer sr;
+			it.GetJSON(sr, false);
+			reindexer::string_view sv = sr.Slice();
+			resStrings.emplace_back(sv.data(), sv.size());
+		}
+	};
+
+	std::vector<std::string> resStrings;
+	std::vector<std::string> resStringsBeforeTest;
+	getRowsInJSON(default_namespace, resStringsBeforeTest);
+
+	// ok
+	err = rt.reindexer->RenameNamespace(default_namespace, renameNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	testInList(default_namespace, false);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to equal name
+	err = rt.reindexer->RenameNamespace(renameNamespace, renameNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to empty namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, "");
+	ASSERT_FALSE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to system namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, "#rename_namespace");
+	ASSERT_FALSE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to existing namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, existingNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, false);
+	testInList(existingNamespace, true);
+	getRowsInJSON(existingNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+}
+
 TEST_F(ReindexerApi, AddIndex) {
 	Error err = rt.reindexer->OpenNamespace(default_namespace);
 	ASSERT_TRUE(err.ok()) << err.what();
 
 	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
 	ASSERT_TRUE(err.ok()) << err.what();
+}
+
+TEST_F(ReindexerApi, DistinctDiffType) {
+	reindexer::p_string stringVal("abc");
+	std::hash<reindexer::p_string> hashStr;
+	size_t vString = hashStr(stringVal);
+	std::hash<size_t> hashInt;
+	auto vInt = hashInt(vString);
+	ASSERT_TRUE(vString == vInt) << "hash not equals";
+
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 1;
+		item["column1"] = int64_t(vInt);
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 2;
+		item["column1"] = stringVal;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 3;
+		item["column1"] = stringVal;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+
+	QueryResults result;
+	err = rt.reindexer->Select("select column1, distinct(column1) from test_namespace;", result);
+	ASSERT_TRUE(err.ok()) << err.what();
+	ASSERT_EQ(result.Count(), 2);
+	std::set<std::string> BaseVals = {"{\"column1\":" + std::to_string(int64_t(vInt)) + "}", "{\"column1\":\"abc\"}"};
+	std::set<std::string> Vals;
+	for (auto r : result) {
+		reindexer::WrSerializer ser;
+		auto err = r.GetJSON(ser, false);
+		ASSERT_TRUE(err.ok()) << err.what();
+		Vals.insert(ser.c_str());
+	}
+	ASSERT_TRUE(bool(BaseVals == Vals));
 }
 
 TEST_F(ReindexerApi, AddIndex_CaseInsensitive) {
@@ -265,9 +421,9 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 	EXPECT_TRUE(err.ok()) << err.what();
 
 	const std::vector<string> possibleValues = {
-		"apple",	 "arrangment", "agreement", "banana",   "bull",  "beech", "crocodile", "crucifix", "coat",	 "day",
-		"dog",		 "deer",	   "easter",	"ear",		"eager", "fair",  "fool",	  "foot",	 "genes",	"genres",
-		"greatness", "hockey",	 "homeless",  "homocide", "key",   "kit",   "knockdown", "motion",   "monument", "movement"};
+		"apple",	 "arrangment", "agreement", "banana",	"bull",	 "beech", "crocodile", "crucifix", "coat",	   "day",
+		"dog",		 "deer",	   "easter",	"ear",		"eager", "fair",  "fool",	   "foot",	   "genes",	   "genres",
+		"greatness", "hockey",	   "homeless",	"homocide", "key",	 "kit",	  "knockdown", "motion",   "monument", "movement"};
 
 	int sameOldValue = 0;
 	int stringValuedIdx = 0;
@@ -312,7 +468,7 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 
 		for (size_t j = 0; j < query.sortingEntries_.size(); ++j) {
 			const reindexer::SortingEntry& sortingEntry(query.sortingEntries_[j]);
-			Variant sortedValue = item[sortingEntry.column];
+			Variant sortedValue = item[sortingEntry.expression];
 			if (lastValues[j].Type() != KeyValueNull) {
 				cmpRes[j] = lastValues[j].Compare(sortedValue);
 				bool needToVerify = true;
@@ -328,7 +484,7 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 					bool sortOrderSatisfied =
 						(sortingEntry.desc && cmpRes[j] >= 0) || (!sortingEntry.desc && cmpRes[j] <= 0) || (cmpRes[j] == 0);
 					EXPECT_TRUE(sortOrderSatisfied)
-						<< "\nSort order is incorrect for column: " << sortingEntry.column << "; rowID: " << item[1].As<int>();
+						<< "\nSort order is incorrect for column: " << sortingEntry.expression << "; rowID: " << item[1].As<int>();
 				}
 			}
 		}
@@ -587,7 +743,7 @@ TEST_F(ReindexerApi, SortByUnorderedIndexWithJoins) {
 	EXPECT_TRUE(err.ok()) << err.what();
 
 	for (auto it : queryResult) {
-		auto itemIt = it.GetJoinedItemsIterator();
+		auto itemIt = it.GetJoined();
 		EXPECT_TRUE(itemIt.getJoinedItemsCount() > 0);
 	}
 }
@@ -701,7 +857,7 @@ TEST_F(ReindexerApi, DslFieldsTest) {
                                     "namespace": "services",
                                     "offset": 0,
                                     "limit": 3,
-                                    "distinct": "",
+                                    "distinct": [],
                                     "sort": {
                                         "field": "",
                                         "desc": true
@@ -717,7 +873,7 @@ TEST_F(ReindexerApi, DslFieldsTest) {
                                     "namespace": "services",
                                     "offset": 1,
                                     "limit": 5,
-                                    "distinct": "",
+                                    "distinct": [],
                                     "sort": {
                                         "field": "field1",
                                         "desc": false
@@ -737,6 +893,35 @@ TEST_F(ReindexerApi, DslFieldsTest) {
 	TestDSLParseCorrectness(R"xxx({"req_total":"enabled"})xxx");
 	TestDSLParseCorrectness(R"xxx({"req_total":"disabled"})xxx");
 	TestDSLParseCorrectness(R"xxx({"aggregations":[{"field":"field1", "type":"sum"}, {"field":"field2", "type":"avg"}]})xxx");
+	TestDSLParseCorrectness(R"xxx({"strict_mode":"indexes"})xxx");
+}
+
+TEST_F(ReindexerApi, DistinctQueriesEncodingTest) {
+	const string sql = "select distinct(country), distinct(city) from clients;";
+
+	Query q1;
+	q1.FromSQL(sql);
+	EXPECT_EQ(q1.entries.Size(), 0);
+	ASSERT_EQ(q1.aggregations_.size(), 2);
+	EXPECT_EQ(q1.aggregations_[0].type_, AggDistinct);
+	ASSERT_EQ(q1.aggregations_[0].fields_.size(), 1);
+	EXPECT_EQ(q1.aggregations_[0].fields_[0], "country");
+	EXPECT_EQ(q1.aggregations_[1].type_, AggDistinct);
+	ASSERT_EQ(q1.aggregations_[1].fields_.size(), 1);
+	EXPECT_EQ(q1.aggregations_[1].fields_[0], "city");
+
+	string dsl = q1.GetJSON();
+	Query q2;
+	q2.FromJSON(dsl);
+	EXPECT_TRUE(q1 == q2);
+
+	Query q3 = Query(default_namespace).Distinct("name").Distinct("city").Where("id", CondGt, static_cast<int64_t>(10));
+	string sql2 = q3.GetSQL();
+
+	Query q4;
+	q4.FromSQL(sql2);
+	EXPECT_TRUE(q3 == q4);
+	EXPECT_TRUE(sql2 == q4.GetSQL());
 }
 
 TEST_F(ReindexerApi, ContextCancelingTest) {
@@ -765,7 +950,7 @@ TEST_F(ReindexerApi, ContextCancelingTest) {
 
 	// Canceled delete
 	vector<reindexer::NamespaceDef> namespaces;
-	err = rt.reindexer->WithContext(&canceledCtx).EnumNamespaces(namespaces, true);
+	err = rt.reindexer->WithContext(&canceledCtx).EnumNamespaces(namespaces, reindexer::EnumNamespacesOpts());
 	ASSERT_TRUE(err.code() == errCanceled);
 
 	// Canceled select
@@ -833,4 +1018,140 @@ TEST_F(ReindexerApi, ContextCancelingTest) {
 	err = rt.reindexer->Select(Query(default_namespace), qr);
 	ASSERT_TRUE(err.ok()) << err.what();
 	ASSERT_EQ(qr.Count(), 0);
+}
+
+TEST_F(ReindexerApi, JoinConditionsSqlParserTest) {
+	Query query;
+	const string sql = "SELECT * FROM ns WHERE a > 0 AND  INNER JOIN (SELECT * FROM ns2 WHERE b > 10 AND c = 1) ON ns2.id = ns.fk_id";
+	query.FromSQL(sql);
+	ASSERT_TRUE(query.GetSQL() == sql);
+}
+
+TEST_F(ReindexerApi, EqualPositionsSqlParserTest) {
+	const string sql =
+		"SELECT * FROM ns WHERE (f1 = 1 AND f2 = 2 OR f3 = 3 equal_position(f1,f2) equal_position(f1,f3)) OR (f4 = 4 AND f5 > 5 "
+		"equal_position(f4,f5))";
+
+	Query query;
+	query.FromSQL(sql);
+	EXPECT_TRUE(query.equalPositions_.size() == 3);
+
+	auto rangeBracket1 = query.equalPositions_.equal_range(0);
+	EXPECT_TRUE(rangeBracket1.first != query.equalPositions_.end());
+	EXPECT_TRUE(std::next(rangeBracket1.first) != query.equalPositions_.end());
+
+	const reindexer::EqualPosition& ep1 = rangeBracket1.first->second;
+	EXPECT_TRUE(ep1.size() == 2) << ep1.size();
+	EXPECT_TRUE(ep1[0] == 1) << ep1[0];
+	EXPECT_TRUE(ep1[1] == 2) << ep1[1];
+
+	const reindexer::EqualPosition& ep2 = std::next(rangeBracket1.first)->second;
+	EXPECT_TRUE(ep2.size() == 2) << ep2.size();
+	EXPECT_TRUE(ep2[0] == 1) << ep2[0];
+	EXPECT_TRUE(ep2[1] == 3) << ep2[1];
+
+	auto rangeBracket2 = query.equalPositions_.equal_range(4);
+	EXPECT_TRUE(rangeBracket2.first != query.equalPositions_.end());
+	EXPECT_TRUE(std::next(rangeBracket2.first) == query.equalPositions_.end());
+	const reindexer::EqualPosition& ep3 = rangeBracket2.first->second;
+	EXPECT_TRUE(ep3.size() == 2) << ep3.size();
+	EXPECT_TRUE(ep3[0] == 5) << ep3[0];
+	EXPECT_TRUE(ep3[1] == 6) << ep3[1];
+
+	EXPECT_TRUE(query.GetSQL() == sql);
+}
+
+TEST_F(ReindexerApi, SchemaSuggestions) {
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	// clang-format off
+	const std::string jsonschema = R"xxx(
+	{
+	  "required": [
+		"Countries",
+		"Nest_fake",
+		"nested"
+	  ],
+	  "properties": {
+		"Countries": {
+		  "items": {
+			"type": "string"
+		  },
+		  "type": "array"
+		},
+		"Nest_fake": {
+		  "type": "number"
+		},
+		"nested": {
+		  "required": [
+			"Name",
+			"Naame",
+			"Age"
+		  ],
+		  "properties": {
+			"Name": {
+			  "type": "string"
+			},
+			"Naame": {
+			  "type": "string"
+			},
+			"Age": {
+			  "type": "integer"
+			}
+		  },
+		  "additionalProperties": false,
+		  "type": "object"
+		}
+	  },
+	  "additionalProperties": false,
+	  "type": "object"
+	})xxx";
+	// clang-format on
+
+	err = rt.reindexer->SetSchema(default_namespace, jsonschema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	auto validateSuggestions = [](const std::vector<std::string>& actual, const std::unordered_set<std::string>& expected) {
+		ASSERT_EQ(actual.size(), expected.size());
+		for (auto& sugg : actual) {
+			EXPECT_TRUE(expected.find(sugg) != expected.end()) << "Unexpected suggestion: " << sugg;
+		}
+	};
+
+	{
+		std::unordered_set<std::string> expected = {"Nest_fake", "nested"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where ne";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected;
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected = {".Name", ".Naame", ".Age"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested.";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected = {".Name", ".Naame"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested.Na";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
 }

@@ -81,9 +81,11 @@ VariantArray PayloadIface<T>::GetByJsonPath(const TagsPath &jsonPath, VariantArr
 	FieldsSet filter({jsonPath});
 	BaseEncoder<FieldsExtractor> encoder(nullptr, &filter);
 	krefs.resize(0);
-	FieldsExtractor extractor(&krefs, expectedType);
+	if (!jsonPath.empty()) {
+		FieldsExtractor extractor(&krefs, expectedType, jsonPath.size());
 
-	encoder.Encode(&pl, extractor);
+		encoder.Encode(&pl, extractor);
+	}
 	return krefs;
 }
 
@@ -102,8 +104,12 @@ void PayloadIface<T>::Set(int field, const VariantArray &keys, bool append) {
 		return;
 	}
 
-	int pos = ResizeArray(field, keys.size(), append);
+	if (keys.IsNullValue()) {
+		ResizeArray(field, 0, append);
+		return;
+	}
 
+	int pos = ResizeArray(field, keys.size(), append);
 	auto *arr = reinterpret_cast<PayloadFieldValue::Array *>(Field(field).p_);
 	auto elemSize = t_.Field(field).ElemSizeof();
 
@@ -185,16 +191,20 @@ void PayloadIface<T>::SerializeFields(WrSerializer &ser, const FieldsSet &fields
 	size_t tagPathIdx = 0;
 	VariantArray varr;
 	for (int field : fields) {
-		if (field != IndexValueType::SetByJsonPath) {
-			ser.PutVariant(Field(field).Get());
-		} else {
+		if (field == IndexValueType::SetByJsonPath) {
 			assert(tagPathIdx < fields.getTagsPathsLength());
-			const TagsPath &tagsPath = fields.getTagsPath(tagPathIdx++);
+			const TagsPath &tagsPath = fields.getTagsPath(tagPathIdx);
 			varr = GetByJsonPath(tagsPath, varr, KeyValueUndefined);
-			if (varr.size() != 1) {
-				throw Error(errParams, "PK error - field should present, and not array");
+			if (varr.empty()) {
+				throw Error(errParams, "PK serializing error: field [%s] cannot not be empty", fields.getJsonPath(tagPathIdx));
+			}
+			if (varr.size() > 1) {
+				throw Error(errParams, "PK serializing error: field [%s] cannot not be array", fields.getJsonPath(tagPathIdx));
 			}
 			ser.PutVariant(varr[0]);
+			++tagPathIdx;
+		} else {
+			ser.PutVariant(Field(field).Get());
 		}
 	}
 	return;
@@ -228,6 +238,20 @@ std::string PayloadIface<T>::Dump() const {
 		if (i != NumFields() - 1) printString += ", ";
 	}
 	return printString;
+}
+
+template <>
+void PayloadIface<const PayloadValue>::GetJSON(const TagsMatcher &tm, WrSerializer &ser) {
+	JsonBuilder b(ser);
+	JsonEncoder e(&tm);
+	e.Encode(this, b);
+}
+
+template <>
+std::string PayloadIface<const PayloadValue>::GetJSON(const TagsMatcher &tm) {
+	WrSerializer ser;
+	GetJSON(tm, ser);
+	return string(ser.Slice());
 }
 
 // Get fields hash
@@ -358,43 +382,49 @@ int PayloadIface<T>::Compare(const T &other, const FieldsSet &fields, const Coll
 }
 
 template <typename T>
-void PayloadIface<T>::AddRefStrings() {
-	for (auto field : t_.StrFields()) {
-		auto &f = t_.Field(field);
-		assert(f.Type() == KeyValueString);
+void PayloadIface<T>::AddRefStrings(int field) {
+	auto &f = t_.Field(field);
+	assert(f.Type() == KeyValueString);
 
-		// direct payloadvalue manipulation for speed optimize
-		if (!f.IsArray()) {
-			auto str = *reinterpret_cast<const p_string *>((v_->Ptr() + f.Offset()));
+	// direct payloadvalue manipulation for speed optimize
+	if (!f.IsArray()) {
+		auto str = *reinterpret_cast<const p_string *>((v_->Ptr() + f.Offset()));
+		key_string_add_ref(const_cast<string *>(str.getCxxstr()));
+	} else {
+		auto arr = reinterpret_cast<PayloadFieldValue::Array *>(v_->Ptr() + f.Offset());
+		for (int i = 0; i < arr->len; i++) {
+			auto str = *reinterpret_cast<const p_string *>(v_->Ptr() + arr->offset + i * t_.Field(field).ElemSizeof());
 			key_string_add_ref(const_cast<string *>(str.getCxxstr()));
-		} else {
-			auto arr = reinterpret_cast<PayloadFieldValue::Array *>(v_->Ptr() + f.Offset());
-			for (int i = 0; i < arr->len; i++) {
-				auto str = *reinterpret_cast<const p_string *>(v_->Ptr() + arr->offset + i * t_.Field(field).ElemSizeof());
-				key_string_add_ref(const_cast<string *>(str.getCxxstr()));
-			}
+		}
+	}
+}
+
+template <typename T>
+void PayloadIface<T>::AddRefStrings() {
+	for (auto field : t_.StrFields()) AddRefStrings(field);
+}
+
+template <typename T>
+void PayloadIface<T>::ReleaseStrings(int field) {
+	auto &f = t_.Field(field);
+	assert(f.Type() == KeyValueString);
+
+	// direct payloadvalue manipulation for speed optimize
+	if (!f.IsArray()) {
+		auto str = *reinterpret_cast<p_string *>((v_->Ptr() + f.Offset()));
+		key_string_release(const_cast<string *>(str.getCxxstr()));
+	} else {
+		auto arr = reinterpret_cast<PayloadFieldValue::Array *>(v_->Ptr() + f.Offset());
+		for (int i = 0; i < arr->len; i++) {
+			auto str = *reinterpret_cast<const p_string *>(v_->Ptr() + arr->offset + i * t_.Field(field).ElemSizeof());
+			key_string_release(const_cast<string *>(str.getCxxstr()));
 		}
 	}
 }
 
 template <typename T>
 void PayloadIface<T>::ReleaseStrings() {
-	for (auto field : t_.StrFields()) {
-		auto &f = t_.Field(field);
-		assert(f.Type() == KeyValueString);
-
-		// direct payloadvalue manipulation for speed optimize
-		if (!f.IsArray()) {
-			auto str = *reinterpret_cast<p_string *>((v_->Ptr() + f.Offset()));
-			key_string_release(const_cast<string *>(str.getCxxstr()));
-		} else {
-			auto arr = reinterpret_cast<PayloadFieldValue::Array *>(v_->Ptr() + f.Offset());
-			for (int i = 0; i < arr->len; i++) {
-				auto str = *reinterpret_cast<const p_string *>(v_->Ptr() + arr->offset + i * t_.Field(field).ElemSizeof());
-				key_string_release(const_cast<string *>(str.getCxxstr()));
-			}
-		}
-	}
+	for (auto field : t_.StrFields()) ReleaseStrings(field);
 }
 
 template <typename T>

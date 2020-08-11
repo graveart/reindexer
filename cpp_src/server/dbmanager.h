@@ -9,6 +9,10 @@
 #include "estl/shared_mutex.h"
 #include "tools/stringstools.h"
 
+namespace reindexer {
+class IClientsStats;
+}
+
 /// @namespace reindexer_server
 /// The namespace for reindexer server implementation
 namespace reindexer_server {
@@ -20,11 +24,11 @@ using std::unordered_map;
 
 /// Possible user roles
 enum UserRole {
-	kUnauthorized,   /// User is not authorized
+	kUnauthorized,	 /// User is not authorized
 	kRoleNone,		 /// User is authenticaTed, but has no any righs
-	kRoleDataRead,   /// User can read data from database
-	kRoleDataWrite,  /// User can write data to database
-	kRoleDBAdmin,	/// User can manage database: kRoleDataWrite + create & delete namespaces, modify indexes
+	kRoleDataRead,	 /// User can read data from database
+	kRoleDataWrite,	 /// User can write data to database
+	kRoleDBAdmin,	 /// User can manage database: kRoleDataWrite + create & delete namespaces, modify indexes
 	kRoleOwner,		 /// User has all privilegies on database: kRoleDBAdmin + create & drop database
 	kRoleSystem,	 /// Special role for internal usage
 };
@@ -36,7 +40,7 @@ struct UserRecord {
 	string login;							/// User's login
 	string hash;							/// User's password or hash
 	string salt;							/// Password salt
-	unordered_map<string, UserRole> roles;  /// map of user's roles on databases
+	unordered_map<string, UserRole> roles;	/// map of user's roles on databases
 };
 
 class DBManager;
@@ -56,6 +60,12 @@ public:
 	/// @param login - User's login
 	/// @param password - User's password
 	AuthContext(const string &login, const string &password) : login_(login), password_(password) {}
+	/// Set expected master's replication clusted ID
+	/// @param clusterID - Expected cluster ID value
+	void SetExpectedClusterID(int clusterID) {
+		checkClusterID_ = true;
+		expectedClusterID_ = clusterID;
+	}
 	/// Check if reqired role meets role from context, and get pointer to Reindexer DB object
 	/// @param role - Requested role one of UserRole enum
 	/// @param ret - Pointer to returned database pointer
@@ -81,6 +91,9 @@ public:
 	/// Get database name
 	/// @return db name
 	const string &DBName() { return dbName_; }
+	/// Get user rights
+	/// @return user rights
+	UserRole UserRights() const { return role_; }
 
 protected:
 	AuthContext(UserRole role) : role_(role) {}
@@ -89,6 +102,8 @@ protected:
 	string password_;
 	UserRole role_ = kUnauthorized;
 	string dbName_;
+	int expectedClusterID_ = -1;
+	bool checkClusterID_ = false;
 	Reindexer *db_ = nullptr;
 };
 
@@ -100,7 +115,8 @@ public:
 	/// Construct DBManager
 	/// @param dbpath - path to database on file system
 	/// @param noSecurity - if true, then disable all security validations and users authentication
-	DBManager(const string &dbpath, bool noSecurity);
+	/// @param clientsStats - object for receiving clients statistics
+	DBManager(const string &dbpath, bool noSecurity, IClientsStats *clientsStats = nullptr);
 	/// Initialize database:
 	/// Read all found databases to RAM
 	/// Read user's database
@@ -138,7 +154,7 @@ private:
 	Error readUsersJSON() noexcept;
 	Error createDefaultUsersYAML() noexcept;
 	static UserRole userRoleFromString(string_view strRole);
-	Error loadOrCreateDatabase(const string &name, bool allowDBErrors, bool withAutorepair);
+	Error loadOrCreateDatabase(const string &name, bool allowDBErrors, bool withAutorepair, const AuthContext &auth = AuthContext());
 
 	unordered_map<string, unique_ptr<Reindexer>, nocase_hash_str, nocase_equal_str> dbs_;
 	unordered_map<string, UserRecord> users_;
@@ -146,6 +162,8 @@ private:
 	Mutex mtx_;
 	bool noSecurity_;
 	datastorage::StorageType storageType_;
+
+	IClientsStats *clientsStats_ = nullptr;
 };
 
 }  // namespace reindexer_server

@@ -2,7 +2,7 @@
 #include "core/item.h"
 #include "core/itemimpl.h"
 #include "core/keyvalue/p_string.h"
-#include "core/namespace.h"
+#include "core/namespace/namespace.h"
 #include "core/rdxcontext.h"
 
 namespace reindexer {
@@ -99,6 +99,8 @@ Error Item::FromJSON(const string_view &slice, char **endp, bool pkOnly) { retur
 Error Item::FromCJSON(const string_view &slice, bool pkOnly) { return impl_->FromCJSON(slice, pkOnly); }
 string_view Item::GetCJSON() { return impl_->GetCJSON(); }
 string_view Item::GetJSON() { return impl_->GetJSON(); }
+Error Item::FromMsgPack(string_view buf, size_t &offset) { return impl_->FromMsgPack(buf, offset); }
+Error Item::GetMsgPack(WrSerializer &wrser) { return impl_->GetMsgPack(wrser); }
 
 int Item::NumFields() { return impl_->Type().NumFields(); }
 Item::FieldRef Item::operator[](int field) const {
@@ -106,7 +108,7 @@ Item::FieldRef Item::operator[](int field) const {
 	return FieldRef(field, impl_);
 }
 
-Item::FieldRef Item::operator[](string_view name) {
+Item::FieldRef Item::operator[](string_view name) const {
 	int field = 0;
 	if (impl_->Type().FieldByName(name, field)) {
 		return FieldRef(field, impl_);

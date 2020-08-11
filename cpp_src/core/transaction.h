@@ -13,6 +13,8 @@ class FieldsSet;
 
 class Transaction {
 public:
+	using time_point = std::chrono::time_point<std::chrono::high_resolution_clock>;
+
 	Transaction(const string &nsName, const PayloadType &pt, const TagsMatcher &tm, const FieldsSet &pf);
 	Transaction(const Error &err);
 	~Transaction();
@@ -28,6 +30,7 @@ public:
 	void Modify(Query &&query);
 	bool IsFree() { return impl_ == nullptr; }
 	Item NewItem();
+	Item GetItem(TransactionStep &&st);
 	Error Status() { return status_; }
 
 	const std::string &GetName();
@@ -35,6 +38,9 @@ public:
 	friend class ReindexerImpl;
 
 	vector<TransactionStep> &GetSteps();
+	const vector<TransactionStep> &GetSteps() const;
+	bool IsTagsUpdated() const;
+	time_point GetStartTime() const;
 
 protected:
 	std::unique_ptr<TransactionImpl> impl_;

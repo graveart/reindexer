@@ -95,7 +95,7 @@ class HelperMixin(object):
             'is_sparse': False,
             'collate_mode': 'none',
             'sort_order_letters': '',
-            'expire_after':0,
+            'expire_after': 0,
             'config': {}
         }
 
@@ -105,7 +105,7 @@ class HelperMixin(object):
             'value': value
         }
 
-    def helper_meta_list_request_construct(self, sort = False, with_values = False, offset = 0, limit = 0):
+    def helper_meta_list_request_construct(self, sort=False, with_values=False, offset=0, limit=0):
         return {
             'sort': sort,
             'with_values': with_values,
@@ -185,7 +185,7 @@ class HelperMixin(object):
 
     def helper_query_dsl_aggregation_construct(self, field, aggr_type):
         return {
-            'field': field,
+            'fields': [field],
             'type': aggr_type
         }
 
@@ -201,7 +201,7 @@ class HelperMixin(object):
             'on': on
         }
 
-    def helper_query_dsl_construct(self, namespace, limit=10, offset=0, distinct='',
+    def helper_query_dsl_construct(self, namespace, limit=10, offset=0, distinct=[],
                                    req_total='disabled', filters=[], sort={}, joined=[], merged=[],
                                    aggregations=[], select_filter=[], select_functions=[]):
         return {

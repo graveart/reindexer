@@ -4,7 +4,12 @@
 namespace reindexer {
 
 RdxContext::RdxContext(RdxContext&& other)
-	: holdStatus_(other.holdStatus_), activityPtr_(nullptr), cancelCtx_(other.cancelCtx_), cmpl_(other.cmpl_) {
+	: fromReplication_(other.fromReplication_),
+	  LSNs_(other.LSNs_),
+	  holdStatus_(other.holdStatus_),
+	  activityPtr_(nullptr),
+	  cancelCtx_(other.cancelCtx_),
+	  cmpl_(other.cmpl_) {
 	if (holdStatus_ == kHold) {
 		new (&activityCtx_) RdxActivityContext(std::move(other.activityCtx_));
 	} else if (holdStatus_ == kPtr) {
@@ -70,14 +75,20 @@ RdxContext InternalRdxContext::CreateRdxContext(string_view query, ActivityConta
 	if (activityTracer_.empty() || query.empty()) {
 		return {(deadlineCtx_.IsCancelable() ? &deadlineCtx_ : nullptr), cmpl_};
 	} else {
-		return {activityTracer_, user_, query, activityContainer, (deadlineCtx_.IsCancelable() ? &deadlineCtx_ : nullptr), cmpl_};
+		return {activityTracer_,
+				user_,
+				query,
+				activityContainer,
+				connectionId_,
+				(deadlineCtx_.IsCancelable() ? &deadlineCtx_ : nullptr),
+				cmpl_};
 	}
 }
 
 RdxContext InternalRdxContext::CreateRdxContext(string_view query, ActivityContainer& activityContainer, QueryResults& qresults) const {
 	if (activityTracer_.empty() || query.empty()) return {(deadlineCtx_.IsCancelable() ? &deadlineCtx_ : nullptr), cmpl_};
 	assert(!qresults.holdActivity_);
-	new (&qresults.activityCtx_) RdxActivityContext(activityTracer_, user_, query, activityContainer, true);
+	new (&qresults.activityCtx_) RdxActivityContext(activityTracer_, user_, query, activityContainer, connectionId_, true);
 	qresults.holdActivity_ = true;
 	return {&qresults.activityCtx_, (deadlineCtx_.IsCancelable() ? &deadlineCtx_ : nullptr), cmpl_};
 }

@@ -11,6 +11,7 @@
 #include "net/listener.h"
 #include "rpcupdatespusher.h"
 #include "statscollect/istatswatcher.h"
+#include "tools/semversion.h"
 
 namespace reindexer_server {
 
@@ -28,32 +29,40 @@ struct RPCClientData : public cproto::ClientData {
 	cproto::RPCUpdatesPusher pusher;
 	int connID;
 	bool subscribed;
+	SemVersion rxVersion;
 };
 
 class RPCServer {
 public:
-	RPCServer(DBManager &dbMgr, LoggerWrapper logger, bool allocDebug = false, IStatsWatcher *statsCollector = nullptr);
+	RPCServer(DBManager &dbMgr, LoggerWrapper logger, IClientsStats *clientsStats, bool allocDebug = false,
+			  IStatsWatcher *statsCollector = nullptr);
 	~RPCServer();
 
-	bool Start(const string &addr, ev::dynamic_loop &loop);
+	bool Start(const string &addr, ev::dynamic_loop &loop, bool enableStat);
 	void Stop() { listener_->Stop(); }
 
 	Error Ping(cproto::Context &ctx);
-	Error Login(cproto::Context &ctx, p_string login, p_string password, p_string db);
-	Error OpenDatabase(cproto::Context &ctx, p_string db);
+	Error Login(cproto::Context &ctx, p_string login, p_string password, p_string db, cproto::optional<bool> createDBIfMissing,
+				cproto::optional<bool> checkClusterID, cproto::optional<int> expectedClusterID, cproto::optional<p_string> clientRxVersion,
+				cproto::optional<p_string> appName);
+	Error OpenDatabase(cproto::Context &ctx, p_string db, cproto::optional<bool> createDBIfMissing);
 	Error CloseDatabase(cproto::Context &ctx);
 	Error DropDatabase(cproto::Context &ctx);
 
 	Error OpenNamespace(cproto::Context &ctx, p_string ns);
 	Error DropNamespace(cproto::Context &ctx, p_string ns);
 	Error TruncateNamespace(cproto::Context &ctx, p_string ns);
+	Error RenameNamespace(cproto::Context &ctx, p_string srcNsName, p_string dstNsName);
+
 	Error CloseNamespace(cproto::Context &ctx, p_string ns);
-	Error EnumNamespaces(cproto::Context &ctx);
+	Error EnumNamespaces(cproto::Context &ctx, cproto::optional<int> opts, cproto::optional<p_string> filter);
 	Error EnumDatabases(cproto::Context &ctx);
 
 	Error AddIndex(cproto::Context &ctx, p_string ns, p_string indexDef);
 	Error UpdateIndex(cproto::Context &ctx, p_string ns, p_string indexDef);
 	Error DropIndex(cproto::Context &ctx, p_string ns, p_string index);
+
+	Error SetSchema(cproto::Context &ctx, p_string ns, p_string schema);
 
 	Error Commit(cproto::Context &ctx, p_string ns);
 
@@ -66,12 +75,11 @@ public:
 	Error DeleteQueryTx(cproto::Context &ctx, p_string query, int64_t txID);
 	Error UpdateQueryTx(cproto::Context &ctx, p_string query, int64_t txID);
 
-	Error CommitTx(cproto::Context &ctx, int64_t txId);
-
+	Error CommitTx(cproto::Context &ctx, int64_t txId, cproto::optional<int> flags);
 	Error RollbackTx(cproto::Context &ctx, int64_t txId);
 
-	Error DeleteQuery(cproto::Context &ctx, p_string query);
-	Error UpdateQuery(cproto::Context &ctx, p_string query);
+	Error DeleteQuery(cproto::Context &ctx, p_string query, cproto::optional<int> flags);
+	Error UpdateQuery(cproto::Context &ctx, p_string query, cproto::optional<int> flags);
 
 	Error Select(cproto::Context &ctx, p_string query, int flags, int limit, p_string ptVersions);
 	Error SelectSQL(cproto::Context &ctx, p_string query, int flags, int limit, p_string ptVersions);
@@ -82,7 +90,7 @@ public:
 	Error GetMeta(cproto::Context &ctx, p_string ns, p_string key);
 	Error PutMeta(cproto::Context &ctx, p_string ns, p_string key, p_string data);
 	Error EnumMeta(cproto::Context &ctx, p_string ns);
-	Error SubscribeUpdates(cproto::Context &ctx, int subscribe);
+	Error SubscribeUpdates(cproto::Context &ctx, int subscribe, cproto::optional<p_string> filterJson, cproto::optional<int> options);
 
 	Error CheckAuth(cproto::Context &ctx);
 	void Logger(cproto::Context &ctx, const Error &err, const cproto::Args &ret);
@@ -91,6 +99,7 @@ public:
 
 protected:
 	Error sendResults(cproto::Context &ctx, QueryResults &qr, int reqId, const ResultFetchOpts &opts);
+	Error processTxItem(DataFormat format, string_view itemData, Item &item, ItemModifyMode mode, int stateToken) const noexcept;
 
 	Error fetchResults(cproto::Context &ctx, int reqId, const ResultFetchOpts &opts);
 	void freeQueryResults(cproto::Context &ctx, int id);
@@ -109,6 +118,8 @@ protected:
 	LoggerWrapper logger_;
 	bool allocDebug_;
 	IStatsWatcher *statsWatcher_;
+
+	IClientsStats *clientsStats_;
 
 	std::chrono::system_clock::time_point startTs_;
 };
