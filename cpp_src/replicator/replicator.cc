@@ -96,6 +96,11 @@ void Replicator::run() {
 	stop_.start();
 	logPrintf(LogInfo, "[repl] Replicator with %s started", config_.masterDSN);
 
+	if (config_.namespaces.empty()) {
+		std::hash<std::thread::id> hash;
+		auto terr = master_->SubscribeUpdates(this, UpdatesFilters());
+		printf("%ld, Subscribe all: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
+	}
 	{
 		std::lock_guard<std::mutex> lck(syncMtx_);
 		state_.store(StateInit, std::memory_order_release);
@@ -106,7 +111,7 @@ void Replicator::run() {
 	resyncTimer_.set([this](ev::timer &, int) { syncDatabase(); });
 	walForcesyncAsync_.set([this](ev::async &) {
 		NamespaceDef nsDef;
-		while (forcesyncQuery_.Pop(nsDef)) syncNamespaceForced(nsDef, "Upstrem node call force sync.");
+		while (forcesyncQuery_.Pop(nsDef)) syncNamespaceForced(nsDef, "Upstream node call force sync.");
 	});
 	walForcesyncAsync_.start();
 
@@ -240,22 +245,10 @@ Error Replicator::syncDatabase() {
 	logPrintf(LogInfo, "[repl:%s]:%d Starting sync from '%s' state=%d", slave_->storagePath_, config_.serverId, config_.masterDSN,
 			  state_.load());
 
-	auto terr = master_->UnsubscribeUpdates(this);
-
 	std::hash<std::thread::id> hash;
-	printf("%ld, Unsubscribe (repl start): %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
-
-	Error err = master_->EnumNamespaces(nses, EnumNamespacesOpts());
-	if (!err.ok()) {
-		logPrintf(LogError, "[repl:%s] EnumNamespaces error: %s%s", slave_->storagePath_, err.what(),
-				  terminate_ ? ", terminating replication"_sv : ""_sv);
-		if (err.code() == errForbidden || err.code() == errReplParams) {
-			terminate_ = true;
-		} else {
-			retryIfNetworkError(err);
-		}
-		logPrintf(LogTrace, "[repl:%s] return error", slave_->storagePath_);
-		return err;
+	if (!config_.namespaces.empty()) {
+		auto terr = master_->UnsubscribeUpdates(this);
+		printf("%ld, Unsubscribe (repl start): %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
 	}
 
 	{
@@ -267,20 +260,26 @@ Error Replicator::syncDatabase() {
 		pendedUpdates_.clear();
 	}
 
+	Error err = master_->EnumNamespaces(nses, EnumNamespacesOpts());
+	if (!err.ok()) {
+		logPrintf(LogError, "[repl:%s] EnumNamespaces error: %s%s", slave_->storagePath_, err.what(),
+				  terminate_ ? ", terminating replication"_sv : ""_sv);
+		if (err.code() == errForbidden || err.code() == errReplParams) {
+			terminate_ = true;
+		} else {
+			retryIfNetworkError(err);
+		}
+		logPrintf(LogTrace, "[repl:%s] return error", slave_->storagePath_);
+		{
+			std::lock_guard<std::mutex> lck(syncMtx_);
+			state_.store(StateInit, std::memory_order_release);
+		}
+		return err;
+	}
+
 	resyncTimer_.stop();
 	// Loop for all master namespaces
-	if (config_.namespaces.empty()) {
-		terr = master_->SubscribeUpdates(this, UpdatesFilters());
-		printf("%ld, Subscribe all: %s\n", hash(std::this_thread::get_id()), terr.what().c_str());
-	}
 	for (auto &ns : nses) {
-		if (config_.namespaces.find(ns.name) != config_.namespaces.end()) {
-			UpdatesFilters filters;
-			filters.AddFilter(ns.name, UpdatesFilters::Filter());
-			terr = master_->SubscribeUpdates(this, filters, SubscriptionOpts().IncrementSubscription());
-			printf("%ld, Subscribe %s: %s\n", hash(std::this_thread::get_id()), ns.name.c_str(), terr.what().c_str());
-		}
-
 		logPrintf(LogTrace, "[repl:%s:%s]:%d Loop for all master namespaces state=%d", ns.name, slave_->storagePath_, config_.serverId,
 				  state_.load());
 		// skip system & non enabled namespaces
@@ -288,6 +287,13 @@ Error Replicator::syncDatabase() {
 		// skip temporary namespaces (namespace from upstream slave node)
 		if (ns.isTemporary) continue;
 		if (terminate_) break;
+
+		if (config_.namespaces.find(ns.name) != config_.namespaces.end()) {
+			UpdatesFilters filters;
+			filters.AddFilter(ns.name, UpdatesFilters::Filter());
+			auto terr = master_->SubscribeUpdates(this, filters, SubscriptionOpts().IncrementSubscription());
+			printf("%ld, Subscribe %s: %s\n", hash(std::this_thread::get_id()), ns.name.c_str(), terr.what().c_str());
+		}
 
 		{
 			std::lock_guard<std::mutex> lck(syncMtx_);
@@ -792,14 +798,17 @@ void Replicator::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &
 	SyncStat stat;
 
 	try {
-		if (nsName.find("debug"_sv) != string_view::npos) {
-			std::hash<std::thread::id> hash;
-			printf("%ld, OnWalUpdate; APPLY lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), LSNs.originLSN_.Counter(), wrec.type);
-		}
 		err = applyWALRecord(LSNs, nsName, slaveNs, wrec, stat);
 	} catch (const Error &e) {
 		err = e;
 	}
+
+	if (nsName.find("debug"_sv) != string_view::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, OnWalUpdate; APPLY lsn: %ld, type: %d; err: %s\n", hash(std::this_thread::get_id()), LSNs.originLSN_.Counter(),
+			   wrec.type, err.what().c_str());
+	}
+
 	if (err.ok()) {
 		if (slaveNs && shouldUpdateLsn(wrec)) {
 			if (!LSNs.upstreamLSN_.isEmpty()) slaveNs->SetReplLSNs(LSNs, dummyCtx_);
@@ -875,6 +884,11 @@ bool Replicator::canApplyUpdate(LSNPair LSNs, string_view nsName, const WALRecor
 		} else {
 			logPrintf(LogTrace, "[repl:%s]:%d Skipping update - namespace was not synced yet, upstreamLSN %s", nsName, config_.serverId,
 					  LSNs.upstreamLSN_);
+			if (wrec.type == WalNamespaceAdd || wrec.type == WalNamespaceDrop || wrec.type == WalNamespaceRename) {
+				logPrintf(LogTrace, "[repl:%s]:%d Scheduling resync due to concurrent ns add/delete: %d", nsName, config_.serverId,
+						  int(wrec.type));
+				resync_.send();
+			}
 			return false;
 		}
 	}
