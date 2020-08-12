@@ -162,6 +162,11 @@ void UpdatesObservers::OnModifyItem(LSNPair LSNs, string_view nsName, ItemImpl *
 }
 
 void UpdatesObservers::OnWALUpdate(LSNPair LSNs, string_view nsName, const WALRecord &walRec) {
+	if (nsName.find("debug"_sv) != string_view::npos) {
+		std::hash<std::thread::id> hash;
+		printf("%ld, Handle wal update; lsn: %ld, type: %d\n", hash(std::this_thread::get_id()), LSNs.originLSN_.Counter(), walRec.type);
+	}
+
 	// Disable updates of system namespaces (it may cause recursive lock)
 	if (nsName.size() && nsName[0] == '#') return;
 

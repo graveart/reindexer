@@ -232,6 +232,11 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 Error ReindexerImpl::AddNamespace(const NamespaceDef& nsDef, const InternalRdxContext& ctx) {
 	Namespace::Ptr ns;
 	try {
+		if (nsDef.name.find("debug") != std::string::npos) {
+			std::hash<std::thread::id> hash;
+			printf("%ld, Add debug ns: %s\n", hash(std::this_thread::get_id()), nsDef.name.c_str());
+		}
+
 		WrSerializer ser;
 		const auto rdxCtx =
 			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "CREATE NAMESPACE " << nsDef.name).Slice() : ""_sv, activities_);
@@ -274,6 +279,10 @@ Error ReindexerImpl::AddNamespace(const NamespaceDef& nsDef, const InternalRdxCo
 
 Error ReindexerImpl::OpenNamespace(string_view name, const StorageOpts& storageOpts, const InternalRdxContext& ctx) {
 	try {
+		if (name.find("debug"_sv) != string_view::npos) {
+			std::hash<std::thread::id> hash;
+			printf("%ld, Open debug ns: %s\n", hash(std::this_thread::get_id()), string(name).c_str());
+		}
 		WrSerializer ser;
 		const auto rdxCtx = ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "OPEN NAMESPACE " << name).Slice() : ""_sv, activities_);
 		{
