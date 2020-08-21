@@ -12,7 +12,7 @@ namespace reindexer {
 /// WAL trakcer
 class WALTracker {
 public:
-	WALTracker(int64_t sz, const std::string &);
+	WALTracker(int64_t sz);
 	/// Initialize WAL tracker.
 	/// @param sz - Max WAL size
 	/// @param maxLSN - Current LSN counter value
@@ -71,20 +71,19 @@ public:
 	/// Get WAL size
 	/// @return count of actual records in WAL
 	int64_t size() const {
-		if (walBegin_ < 0 || walEnd_ < 0) {
+		auto walEnd = lsnCounter_ % walSize_;
+		if (!lsnCounter_) {
 			return 0;
-		} else if (walBegin_ == walEnd_) {
+		} else if (walOffset_ == walEnd) {
 			return walSize_;
-		} else if (walBegin_ < walEnd_) {
-			return walEnd_ - walBegin_;
+		} else if (walOffset_ < walEnd) {
+			return walEnd - walOffset_;
 		}
-		return walEnd_ + (int64_t(records_.size()) - walBegin_);
+		return walEnd + (int64_t(records_.size()) - walOffset_);
 	}
 	/// Get WAL heap size
 	/// @return WAL memory consumption
 	size_t heap_size() const { return heapSize_ + records_.capacity() * sizeof(PackedWALRecord); }
-
-	std::string nsName_;
 
 protected:
 	/// put WAL record into lsn position, grow ring buffer, if neccessary
@@ -106,8 +105,7 @@ protected:
 	/// Size of ring buffer
 	int64_t walSize_ = 0;
 
-	int64_t walBegin_ = -1;
-	int64_t walEnd_ = -1;
+	int64_t walOffset_ = -1;
 
 	size_t heapSize_ = 0;
 

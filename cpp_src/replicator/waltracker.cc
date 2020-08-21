@@ -3,24 +3,17 @@
 #include "tools/logger.h"
 #include "tools/serializer.h"
 
-#include <thread>
-
 #define kStorageWALPrefix "W"
 
 namespace reindexer {
 
-WALTracker::WALTracker(int64_t sz, const std::string &name) : nsName_(name), walSize_(sz) {
-	logPrintf(LogTrace, "[WALTracker] Create LSN=%ld", lsnCounter_);
-}
+WALTracker::WALTracker(int64_t sz) : walSize_(sz) { logPrintf(LogTrace, "[WALTracker] Create LSN=%ld", lsnCounter_); }
 
 int64_t WALTracker::Add(const WALRecord &rec, lsn_t oldLsn) {
 	int64_t lsn = lsnCounter_++;
-	if (walBegin_ < 0) {
-		walBegin_ = (lsnCounter_ - 1) % walSize_;
-	} else if (walBegin_ == walEnd_) {
-		walBegin_ = lsnCounter_ % walSize_;
+	if (lsnCounter_ > 1 && walOffset_ == (lsnCounter_ - 1) % walSize_) {
+		walOffset_ = lsnCounter_ % walSize_;
 	}
-	walEnd_ = lsnCounter_ % walSize_;
 
 	put(lsn, rec);
 	if (!oldLsn.isEmpty() && available(oldLsn.Counter())) {
@@ -59,11 +52,6 @@ bool WALTracker::Resize(int64_t sz) {
 		maxLSN = lsnCounter_ - 1;
 		minLSN = maxLSN - ((sz > filledSize ? filledSize : sz) - 1);
 	}
-	if (nsName_.find("debug") != std::string::npos) {
-		std::hash<std::thread::id> hash;
-		printf("%ld: %s: Resizing to %ld from %ld; Min LSN %ld, max LSN %ld; filled %ld\n", hash(std::this_thread::get_id()),
-			   nsName_.c_str(), sz, oldSz, maxLSN, minLSN, filledSize);
-	}
 
 	std::vector<PackedWALRecord> oldRecords;
 	std::swap(records_, oldRecords);
@@ -92,12 +80,6 @@ void WALTracker::put(int64_t lsn, const WALRecord &rec) {
 	int64_t pos = lsn % walSize_;
 	if (pos >= int64_t(records_.size())) {
 		records_.resize(uint64_t(pos + 1));
-	}
-
-	if (nsName_.find("debug") != std::string::npos) {
-		std::hash<std::thread::id> hash;
-		printf("%ld, %s: Put lsn %ld to pos %ld. Begin: %ld, end: %ld, counter: %ld, type: %ld\n", hash(std::this_thread::get_id()),
-			   nsName_.c_str(), lsn, pos, walBegin_, walEnd_, lsnCounter_, int64_t(rec.type));
 	}
 
 	heapSize_ -= records_[pos].heap_size();
@@ -149,22 +131,15 @@ void WALTracker::initPositions(int64_t sz, int64_t minLSN, int64_t maxLSN) {
 	walSize_ = sz;
 	records_.clear();
 	records_.resize(std::min(lsnCounter_, walSize_));
-	walEnd_ = lsnCounter_ % walSize_;
 	heapSize_ = 0;
 	if (minLSN == std::numeric_limits<int64_t>::max()) {
-		walBegin_ = -1;
+		walOffset_ = 0;
 	} else {
 		if (lsnCounter_ > walSize_ + minLSN) {
-			walBegin_ = lsnCounter_ % walSize_;
+			walOffset_ = lsnCounter_ % walSize_;
 		} else {
-			walBegin_ = minLSN % walSize_;
+			walOffset_ = minLSN % walSize_;
 		}
-	}
-
-	if (nsName_.find("debug") != std::string::npos) {
-		std::hash<std::thread::id> hash;
-		printf("%ld, %s: Init done. Begin: %ld, end: %ld, lsnCounter: %ld\n", hash(std::this_thread::get_id()), nsName_.c_str(), walBegin_,
-			   walEnd_, lsnCounter_);
 	}
 }
 

@@ -7,12 +7,14 @@
 namespace reindexer {
 
 void SelectIteratorContainer::SortByCost(int expectedIterations) {
-	h_vector<unsigned, 4> indexes;
-	h_vector<double, 4> costs;
-	indexes.reserve(container_.size());
-	costs.resize(container_.size());
+	thread_local h_vector<unsigned, 16> indexes;
+	thread_local h_vector<double, 16> costs;
+	if (indexes.size() < container_.size()) {
+		indexes.resize(container_.size());
+		costs.resize(container_.size());
+	}
 	for (size_t i = 0; i < container_.size(); ++i) {
-		indexes.push_back(i);
+		indexes[i] = i;
 	}
 	sortByCost(indexes, costs, 0, container_.size(), expectedIterations);
 	for (size_t i = 0; i < container_.size(); ++i) {
@@ -158,8 +160,8 @@ SelectKeyResults SelectIteratorContainer::processQueryEntry(const QueryEntry &qe
 	if (!tagsPath.empty()) {
 		SelectKeyResult comparisonResult;
 		fields.push_back(tagsPath);
-		comparisonResult.comparators_.push_back(
-			Comparator(qe.condition, KeyValueUndefined, qe.values, false, qe.distinct, ns.payloadType_, fields, nullptr, CollateOpts()));
+		comparisonResult.comparators_.emplace_back(qe.condition, KeyValueUndefined, qe.values, false, qe.distinct, ns.payloadType_, fields,
+												   nullptr, CollateOpts());
 		selectResults.emplace_back(std::move(comparisonResult));
 	} else if (strictMode == StrictModeNone) {
 		SelectKeyResult res;
@@ -225,6 +227,9 @@ void SelectIteratorContainer::processJoinEntry(const QueryEntry &qe, OpType op) 
 			const iterator node = lastAppendedOrClosed();
 			if (node == this->end()) throw Error(errQueryExec, "OR operator in first condition or after left join");
 			if (node->IsLeaf()) {
+				if (node->IsRef()) {
+					node->SetValue(node->Value());
+				}
 				node->Value().joinIndexes.push_back(qe.joinIndex);
 			} else {
 				newIterator = true;
@@ -246,6 +251,9 @@ void SelectIteratorContainer::processQueryEntryResults(SelectKeyResults &selectR
 				const iterator last = lastAppendedOrClosed();
 				if (last == this->end()) throw Error(errQueryExec, "OR operator in first condition or after left join ");
 				if (last->IsLeaf() && !last->Value().distinct) {
+					if (last->IsRef()) {
+						last->SetValue(last->Value());
+					}
 					SelectIterator &it = last->Value();
 					if (nonIndexField || isIndexSparse) {
 						it.Append(res);
@@ -261,7 +269,11 @@ void SelectIteratorContainer::processQueryEntryResults(SelectKeyResults &selectR
 				Append(op, SelectIterator(res, qe.distinct, qe.index, isIndexFt));
 				if (!nonIndexField && !isIndexSparse) {
 					// last appended is always a leaf
-					lastAppendedOrClosed()->Value().Bind(ns.payloadType_, qe.idxNo);
+					const auto lastAppendedIt = lastAppendedOrClosed();
+					if (lastAppendedIt->IsRef()) {
+						lastAppendedIt->SetValue(lastAppendedIt->Value());
+					}
+					lastAppendedIt->Value().Bind(ns.payloadType_, qe.idxNo);
 				}
 				break;
 			default:
@@ -280,6 +292,10 @@ void SelectIteratorContainer::processEqualPositions(const std::multimap<unsigned
 	for (auto it = eqPoses.first; it != eqPoses.second; ++it) {
 		assert(!it->second.empty());
 		const QueryEntry &firstQe(queries[it->second[0]]);
+		if (firstQe.condition == CondEmpty || (firstQe.condition == CondSet && firstQe.values.empty())) {
+			throw Error(errLogic, "Condition IN(with empty parameter list), IS NULL, IS EMPTY not allowed for equal position!");
+		}
+
 		KeyValueType type = firstQe.values.size() ? firstQe.values[0].Type() : KeyValueNull;
 		Comparator cmp(firstQe.condition, type, firstQe.values, true, firstQe.distinct, ns.payloadType_, FieldsSet({firstQe.idxNo}));
 
@@ -288,6 +304,9 @@ void SelectIteratorContainer::processEqualPositions(const std::multimap<unsigned
 				(queries.Next(*qeIdxIt) < end && queries.GetOperation(queries.Next(*qeIdxIt)) == OpOr))
 				throw Error(errLogic, "Only AND operation allowed for equal position!");
 			const QueryEntry &qe = queries[*qeIdxIt];
+			if (qe.condition == CondEmpty || (qe.condition == CondSet && qe.values.empty())) {
+				throw Error(errLogic, "Condition IN(with empty parameter list), IS NULL, IS EMPTY not allowed for equal position!");
+			}
 			if (qe.idxNo == IndexValueType::SetByJsonPath) {
 				cmp.BindEqualPosition(ns.tagsMatcher_.path2tag(qe.index), qe.values, qe.condition);
 			} else if (ns.indexes_[qe.idxNo]->Opts().IsSparse()) {
@@ -299,7 +318,7 @@ void SelectIteratorContainer::processEqualPositions(const std::multimap<unsigned
 		}
 
 		SelectIterator selectIt;
-		selectIt.comparators_.push_back(std::move(cmp));
+		selectIt.comparators_.emplace_back(std::move(cmp));
 		selectIt.distinct = false;
 		Append(OpAnd, std::move(selectIt));
 	}
@@ -314,7 +333,7 @@ void SelectIteratorContainer::PrepareIteratorsForSelectLoop(const QueryEntries &
 	for (size_t i = begin; i < end; i = queries.Next(i)) {
 		next = queries.Next(i);
 		auto op = queries.GetOperation(i);
-		if (queries.IsEntry(i)) {
+		if (queries.IsValue(i)) {
 			const QueryEntry &qe = queries[i];
 			if (qe.idxNo != IndexValueType::SetByJsonPath && isFullText(ns.indexes_[qe.idxNo]->Type()) &&
 				(op == OpOr || (i + 1 < end && queries.GetOperation(i + 1) == OpOr))) {

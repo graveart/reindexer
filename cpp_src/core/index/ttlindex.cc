@@ -3,6 +3,11 @@
 namespace reindexer {
 
 template <typename T>
+Index *TtlIndex<T>::Clone() {
+	return new TtlIndex<T>(*this);
+}
+
+template <typename T>
 TtlIndex<T>::TtlIndex(const IndexDef &idef, const PayloadType payloadType, const FieldsSet &fields)
 	: IndexOrdered<T>(idef, payloadType, fields), expireAfter_(idef.expireAfter_) {}
 

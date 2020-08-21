@@ -21,7 +21,7 @@ else()
   option (LINK_RESOURCES "Link web resources as binary data" ON)
 endif()
 
-set (REINDEXER_VERSION_DEFAULT "2.11.0")
+set (REINDEXER_VERSION_DEFAULT "2.11.1")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "RelWithDebInfo")
@@ -98,9 +98,24 @@ list(APPEND REINDEXER_LIBRARIES reindexer)
 add_library(${TARGET} STATIC ${HDRS} ${SRCS} ${VENDORS})
 add_definitions(-DREINDEX_CORE_BUILD=1)
 
+
+
 # add_definitions(-DREINDEX_FT_EXTRA_DEBUG=1)
 
 ## Dependencies
+
+find_program(python3 "python3")
+if(python3)
+    set(QUERY_SCHEMA "${PROJECT_SOURCE_DIR}/../query.json.h_")
+    add_custom_command(OUTPUT ${QUERY_SCHEMA}
+                   COMMAND ${python3} dslshemagenerator.py
+                   DEPENDS ${PROJECT_SOURCE_DIR}/../dslshemagenerator.py
+                   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/..
+                   COMMENT "Generate query.json.h"
+                   )
+    add_custom_target(query_json ALL DEPENDS ${QUERY_SCHEMA})
+    add_dependencies(${TARGET} query_json)
+endif ()
 
 # tcmalloc
 ##########

@@ -90,7 +90,7 @@ public:
 	Error GetMeta(cproto::Context &ctx, p_string ns, p_string key);
 	Error PutMeta(cproto::Context &ctx, p_string ns, p_string key, p_string data);
 	Error EnumMeta(cproto::Context &ctx, p_string ns);
-	Error SubscribeUpdates(cproto::Context &ctx, int subscribe);
+	Error SubscribeUpdates(cproto::Context &ctx, int subscribe, cproto::optional<p_string> filterJson, cproto::optional<int> options);
 
 	Error CheckAuth(cproto::Context &ctx);
 	void Logger(cproto::Context &ctx, const Error &err, const cproto::Args &ret);

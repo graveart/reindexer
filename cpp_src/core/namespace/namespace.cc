@@ -126,7 +126,6 @@ void Namespace::doRename(Namespace::Ptr dst, const std::string& newName, const s
 		dstMtx->unlock();
 	} else {
 		srcNs.name_ = newName;
-		srcNs.wal_.nsName_ = newName;
 	}
 
 	if (hadStorage) {

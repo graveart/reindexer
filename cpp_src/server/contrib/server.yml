@@ -5,7 +5,7 @@ info:
     Reindexer's goal is to provide fast search with complex queries.
     The Reindexer is compact and fast. It has not heavy dependencies. Complete reindexer docker image with all libraries and web interface size is just 15MB.
     Reindexer is fast.
-  version: "2.11.0"
+  version: "2.11.1"
   title: "Reindexer REST API"
   license:
     name: "Apache 2.0"
@@ -1673,9 +1673,9 @@ definitions:
           $ref: "#/definitions/AggregationsDef"
       equal_positions:
         type: "array"
-        description: "Array fields to be searched with equal array indexes"
+        description: "Array of array fields to be searched with equal array indexes"
         items:
-          type: "string"
+          $ref: "#/definitions/EqualPositionDef"
       explain:
         description: "Add query execution explain information"
         type: "boolean"
@@ -1692,6 +1692,15 @@ definitions:
           - "names"
           - "indexes"
         default: "names"
+
+  EqualPositionDef:
+    description: "Array fields to be searched with equal array indexes"
+    type: "object"
+    properties:
+      positions:
+        type: "array"
+        items:
+          type: "string"
 
   FilterDef:
     description: "If contains 'filters' then cannot contain 'cond', 'field' and 'value'. If not contains 'filters' then 'field' and 'cond' are required."
@@ -1771,7 +1780,9 @@ definitions:
         items: 
           $ref: "#/definitions/FilterDef"
       sort:
-        $ref: "#/definitions/SortDef"
+        type: "array"
+        items:
+          $ref: "#/definitions/SortDef"
       limit:
         type: "integer"
         description: "Maximum count of returned items"

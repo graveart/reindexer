@@ -774,6 +774,7 @@ With complex expressions (expressions with brackets) equal_position() works only
 ```sql
 SELECT * FROM Namespace WHERE (f1 >= 5 AND f2 = 100 EQUAL_POSITION(f1,f2)) OR (f3 = 3 AND f4 < 4 EQUAL_POSITION(f3,f4));
 ```
+equal_position doesn't work with the following conditions: IS NULL, IS EMPTY and IN(with empty parameter list).
 
 ### Atomic on update functions
 

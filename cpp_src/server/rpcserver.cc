@@ -753,10 +753,27 @@ Error RPCServer::EnumMeta(cproto::Context &ctx, p_string ns) {
 	return errOK;
 }
 
-Error RPCServer::SubscribeUpdates(cproto::Context &ctx, int flag) {
+Error RPCServer::SubscribeUpdates(cproto::Context &ctx, int flag, cproto::optional<p_string> filterJson, cproto::optional<int> options) {
+	UpdatesFilters filters;
+	Error ret;
+	if (filterJson.hasValue()) {
+		filters.FromJSON(giftStr(filterJson.value()));
+		if (!ret.ok()) {
+			return ret;
+		}
+	}
+	SubscriptionOpts opts;
+	if (options.hasValue()) {
+		opts.options = options.value();
+	}
+
 	auto db = getDB(ctx, kRoleDataRead);
 	auto clientData = getClientDataSafe(ctx);
-	auto ret = db.SubscribeUpdates(&clientData->pusher, flag);
+	if (flag) {
+		ret = db.SubscribeUpdates(&clientData->pusher, filters, opts);
+	} else {
+		ret = db.UnsubscribeUpdates(&clientData->pusher);
+	}
 	if (ret.ok()) clientData->subscribed = bool(flag);
 	return ret;
 }
@@ -802,7 +819,7 @@ bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop, bool enableSta
 	dispatcher_.Register(cproto::kCmdGetMeta, this, &RPCServer::GetMeta);
 	dispatcher_.Register(cproto::kCmdPutMeta, this, &RPCServer::PutMeta);
 	dispatcher_.Register(cproto::kCmdEnumMeta, this, &RPCServer::EnumMeta);
-	dispatcher_.Register(cproto::kCmdSubscribeUpdates, this, &RPCServer::SubscribeUpdates);
+	dispatcher_.Register(cproto::kCmdSubscribeUpdates, this, &RPCServer::SubscribeUpdates, true);
 	dispatcher_.Middleware(this, &RPCServer::CheckAuth);
 	dispatcher_.OnClose(this, &RPCServer::OnClose);
 	dispatcher_.OnResponse(this, &RPCServer::OnResponse);
@@ -819,7 +836,7 @@ RPCClientData::~RPCClientData() {
 	Reindexer *db = nullptr;
 	auth.GetDB(kRoleNone, &db);
 	if (subscribed && db) {
-		db->SubscribeUpdates(&pusher, false);
+		db->UnsubscribeUpdates(&pusher);
 	}
 }
 

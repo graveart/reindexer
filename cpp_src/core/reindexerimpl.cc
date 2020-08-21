@@ -703,7 +703,7 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 
 		if (q._namespace.size() && q._namespace[0] == '#') {
 			string filterNsName;
-			if (q.entries.Size() == 1 && q.entries.IsEntry(0) && q.entries[0].condition == CondEq && q.entries[0].values.size() == 1)
+			if (q.entries.Size() == 1 && q.entries.IsValue(0) && q.entries[0].condition == CondEq && q.entries[0].values.size() == 1)
 				filterNsName = q.entries[0].values[0].As<string>();
 
 			syncSystemNamespaces(q._namespace, filterNsName, rdxCtx);
@@ -711,7 +711,7 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 		// Lookup and lock namespaces_
 		mainNs->updateSelectTime();
 		locks.Add(mainNs);
-		q.WalkNested(false, true, [this, &locks, &rdxCtx](const Query q) {
+		q.WalkNested(false, true, [this, &locks, &rdxCtx](const Query& q) {
 			auto nsWrp = getNamespace(q._namespace, rdxCtx);
 			auto ns = q.IsWALQuery() ? nsWrp->awaitMainNs(rdxCtx) : nsWrp->getMainNs();
 			ns->updateSelectTime();
@@ -869,7 +869,7 @@ void ReindexerImpl::doSelect(const Query& q, QueryResults& result, NsLocker<T>& 
 		selCtx.contextCollectingMode = true;
 		selCtx.functions = &func;
 		selCtx.nsid = 0;
-		selCtx.isForceAll = !q.mergeQueries_.empty() || !q.forcedSortOrder_.empty();
+		selCtx.isForceAll = !q.mergeQueries_.empty();
 		ns->Select(result, selCtx, ctx);
 	}
 
@@ -1486,13 +1486,11 @@ void ReindexerImpl::onProfiligConfigLoad() {
 	Delete(Query(kPerfStatsNamespace), qr1);
 }
 
-Error ReindexerImpl::SubscribeUpdates(IUpdatesObserver* observer, bool subscribe) {
-	if (subscribe) {
-		return observers_.Add(observer);
-	} else {
-		return observers_.Delete(observer);
-	}
+Error ReindexerImpl::SubscribeUpdates(IUpdatesObserver* observer, const UpdatesFilters& filters, SubscriptionOpts opts) {
+	return observers_.Add(observer, filters, opts);
 }
+
+Error ReindexerImpl::UnsubscribeUpdates(IUpdatesObserver* observer) { return observers_.Delete(observer); }
 
 Error ReindexerImpl::GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string>& suggestions, const InternalRdxContext& ctx) {
 	Query query;
