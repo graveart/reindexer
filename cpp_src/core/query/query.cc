@@ -77,21 +77,8 @@ void Query::deserialize(Serializer &ser, bool &hasJoinConditions) {
 				OpType op = OpType(ser.GetVarUint());
 				qe.condition = CondType(ser.GetVarUint());
 				int cnt = ser.GetVarUint();
-				if (qe.condition == CondDWithin) {
-					if (cnt != 3) {
-						throw Error(errParseBin, "Expected point and distance for DWithin");
-					}
-					VariantArray point;
-					point.reserve(2);
-					point.emplace_back(ser.GetVariant().EnsureHold());
-					point.emplace_back(ser.GetVariant().EnsureHold());
-					qe.values.reserve(2);
-					qe.values.emplace_back(std::move(point));
-					qe.values.emplace_back(ser.GetVariant().EnsureHold());
-				} else {
-					qe.values.reserve(cnt);
-					while (cnt--) qe.values.emplace_back(ser.GetVariant().EnsureHold());
-				}
+				qe.values.reserve(cnt);
+				while (cnt--) qe.values.push_back(ser.GetVariant().EnsureHold());
 				entries.Append(op, std::move(qe));
 				break;
 			}

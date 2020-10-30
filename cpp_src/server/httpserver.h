@@ -40,7 +40,7 @@ public:
 		std::chrono::seconds txIdleTimeout;
 	};
 
-	HTTPServer(DBManager &dbMgr, const string &webRoot, LoggerWrapper logger, OptionalConfig config = OptionalConfig());
+	HTTPServer(DBManager &dbMgr, const string &webRoot, LoggerWrapper &logger, OptionalConfig config = OptionalConfig());
 
 	bool Start(const string &addr, ev::dynamic_loop &loop);
 	void Stop() { listener_->Stop(); }

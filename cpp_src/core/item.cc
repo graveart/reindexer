@@ -136,7 +136,6 @@ void Item::setLSN(int64_t lsn) { impl_->Value().SetLSN(lsn); }
 template Item::FieldRef &Item::FieldRef::operator=(span<int> arr);
 template Item::FieldRef &Item::FieldRef::operator=(span<int64_t> arr);
 template Item::FieldRef &Item::FieldRef::operator=(span<std::string> arr);
-template Item::FieldRef &Item::FieldRef::operator=(span<double>);
 
 }  // namespace reindexer
    // namespace reindexer

@@ -33,8 +33,6 @@ const (
 	EMPTY = bindings.EMPTY
 	// String like pattern
 	LIKE = bindings.LIKE
-	// Geometry DWithin
-	DWITHIN = bindings.DWITHIN
 )
 
 const (

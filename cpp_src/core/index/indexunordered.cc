@@ -4,15 +4,13 @@
 #include "core/index/string_map.h"
 #include "core/indexdef.h"
 #include "core/rdxcontext.h"
-#include "rtree/linearsplitter.h"
-#include "rtree/quadraticsplitter.h"
-#include "rtree/rtree.h"
 #include "tools/errors.h"
 #include "tools/logger.h"
 
 namespace reindexer {
 
 constexpr int kMaxIdsForDistinct = 500;
+constexpr int kMaxSelectivityPercentForIdset = 20;
 
 template <typename T>
 IndexUnordered<T>::IndexUnordered(const IndexDef &idef, const PayloadType payloadType, const FieldsSet &fields)
@@ -185,13 +183,13 @@ SelectKeyResults IndexUnordered<T>::SelectKey(const VariantArray &keys, CondType
 					for (auto key : ctx.keys) {
 						auto keyIt = ctx.i_map->find(static_cast<ref_type>(key));
 						if (keyIt != ctx.i_map->end()) {
-							res.emplace_back(keyIt->second, ctx.sortId);
+							res.push_back(SingleSelectKeyResult(keyIt->second, ctx.sortId));
 							idsCount += keyIt->second.Unsorted().size();
 						}
 					}
 					if (!ctx.opts.itemsCountInNamespace) return false;
 					// Check selectivity
-					return res.size() > 1u && (100u * idsCount / ctx.opts.itemsCountInNamespace > maxSelectivityPercentForIdset());
+					return res.size() > 1 && (100 * idsCount / ctx.opts.itemsCountInNamespace > kMaxSelectivityPercentForIdset);
 				};
 
 				bool scanWin = false;
@@ -334,9 +332,5 @@ template class IndexUnordered<str_map<Index::KeyEntry>>;
 template class IndexUnordered<payload_map<Index::KeyEntry, true>>;
 template class IndexUnordered<unordered_str_map<FtKeyEntry>>;
 template class IndexUnordered<unordered_payload_map<FtKeyEntry, true>>;
-template class IndexUnordered<GeometryMap<Index::KeyEntry, QuadraticSplitter>>;
-template class IndexUnordered<GeometryMap<Index::KeyEntryPlain, QuadraticSplitter>>;
-template class IndexUnordered<GeometryMap<Index::KeyEntry, LinearSplitter>>;
-template class IndexUnordered<GeometryMap<Index::KeyEntryPlain, LinearSplitter>>;
 
 }  // namespace reindexer

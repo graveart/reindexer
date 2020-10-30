@@ -327,48 +327,30 @@ func (pl *payloadIface) getArray(field int, startIdx int, cnt int, v reflect.Val
 		}
 	case valueDouble:
 		pi := (*[1 << 27]Cdouble)(ptr)[:l:l]
-		if v.Kind() == reflect.Array {
-			if v.Len() < cnt {
-				panic(fmt.Errorf("Can't set %d values to array of %d elements", cnt, v.Len()))
+		switch a := v.Addr().Interface().(type) {
+		case *[]float64:
+			*a = make([]float64, cnt, cnt)
+			for i := 0; i < cnt; i++ {
+				(*a)[i] = float64(pi[i])
 			}
-			switch v.Type().Elem().Kind() {
-			case reflect.Float32:
-				for i := 0; i < cnt; i++ {
-					v.Index(i).SetFloat(float64(float32(pi[i])))
-				}
-			case reflect.Float64:
-				for i := 0; i < cnt; i++ {
-					v.Index(i).SetFloat(float64(pi[i]))
-				}
-			default:
-				panic(fmt.Errorf("Can't set []double to []%s", v.Type().Elem().Kind().String()))
+		case *[]float32:
+			*a = make([]float32, cnt, cnt)
+			for i := 0; i < cnt; i++ {
+				(*a)[i] = float32(pi[i])
 			}
-		} else {
-			switch a := v.Addr().Interface().(type) {
-			case *[]float64:
-				*a = make([]float64, cnt, cnt)
-				for i := 0; i < cnt; i++ {
-					(*a)[i] = float64(pi[i])
+		default:
+			slice := reflect.MakeSlice(v.Type(), cnt, cnt)
+			for i := 0; i < cnt; i++ {
+				sv := slice.Index(i)
+				if sv.Type().Kind() == reflect.Ptr {
+					el := reflect.New(reflect.New(sv.Type().Elem()).Elem().Type())
+					el.Elem().SetFloat(float64(pi[i]))
+					sv.Set(el)
+				} else {
+					sv.SetFloat(float64(pi[i]))
 				}
-			case *[]float32:
-				*a = make([]float32, cnt, cnt)
-				for i := 0; i < cnt; i++ {
-					(*a)[i] = float32(pi[i])
-				}
-			default:
-				slice := reflect.MakeSlice(v.Type(), cnt, cnt)
-				for i := 0; i < cnt; i++ {
-					sv := slice.Index(i)
-					if sv.Type().Kind() == reflect.Ptr {
-						el := reflect.New(reflect.New(sv.Type().Elem()).Elem().Type())
-						el.Elem().SetFloat(float64(pi[i]))
-						sv.Set(el)
-					} else {
-						sv.SetFloat(float64(pi[i]))
-					}
-				}
-				v.Set(slice)
 			}
+			v.Set(slice)
 		}
 	case valueBool:
 		pb := (*[1 << 27]Cbool)(ptr)[:l:l]

@@ -6,18 +6,17 @@ const ReindexerVersion = "v2.14.0"
 
 // public go consts from type_consts.h and reindexer_ctypes.h
 const (
-	ANY     = 0
-	EQ      = 1
-	LT      = 2
-	LE      = 3
-	GT      = 4
-	GE      = 5
-	RANGE   = 6
-	SET     = 7
-	ALLSET  = 8
-	EMPTY   = 9
-	LIKE    = 10
-	DWITHIN = 11
+	ANY    = 0
+	EQ     = 1
+	LT     = 2
+	LE     = 3
+	GT     = 4
+	GE     = 5
+	RANGE  = 6
+	SET    = 7
+	ALLSET = 8
+	EMPTY  = 9
+	LIKE   = 10
 
 	ERROR   = 1
 	WARNING = 2
