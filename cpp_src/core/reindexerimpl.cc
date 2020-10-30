@@ -365,15 +365,15 @@ Error ReindexerImpl::closeNamespace(string_view nsName, const RdxContext& ctx, b
 	return errOK;
 }
 
-Error ReindexerImpl::syncDownstream(string_view nsName, bool force, const InternalRdxContext& ctx) {
+Error ReindexerImpl::forceSyncDownstream(string_view nsName, const InternalRdxContext& ctx) {
 	try {
 		WrSerializer ser;
 		const auto rdxCtx =
-			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "SYNCDOWNSTREAM " << nsName).Slice() : ""_sv, activities_);
+			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "FORCESYNCDOWNSTREAM " << nsName).Slice() : ""_sv, activities_);
 		NamespaceDef nsDef = getNamespace(nsName, rdxCtx)->GetDefinition(rdxCtx);
 		nsDef.GetJSON(ser);
-		ser.PutBool(true);
-		observers_.OnWALUpdate(LSNPair(), nsName, WALRecord(force ? WalForceSync : WalWALSync, ser.Slice()));
+		WALRecord wrec(WalForceSync, ser.Slice());
+		observers_.OnWALUpdate(LSNPair(), nsName, wrec);
 	} catch (const Error& err) {
 		return err;
 	}

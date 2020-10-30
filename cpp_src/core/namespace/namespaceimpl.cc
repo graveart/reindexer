@@ -1377,10 +1377,8 @@ void NamespaceImpl::modifyItem(Item &item, const NsContext &ctx, int mode) {
 	}
 
 	if (!repl_.temporary) {
-		// not send row with fromReplication=true and originLSN_= empty
-		if (!ctx.rdxContext.fromReplication_ || !ctx.rdxContext.LSNs_.originLSN_.isEmpty())
-			observers_->OnModifyItem(LSNPair(lsn, ctx.rdxContext.fromReplication_ ? ctx.rdxContext.LSNs_.originLSN_ : lsn), name_,
-									 item.impl_, mode, ctx.inTransaction);
+		observers_->OnModifyItem(LSNPair(lsn, ctx.rdxContext.fromReplication_ ? ctx.rdxContext.LSNs_.originLSN_ : lsn), name_, item.impl_,
+								 mode, ctx.inTransaction);
 	}
 	if (!ctx.rdxContext.fromReplication_) setReplLSNs(LSNPair(lsn_t(), lsn));
 	markUpdated();

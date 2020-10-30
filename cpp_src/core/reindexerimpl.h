@@ -162,7 +162,7 @@ protected:
 	void backgroundRoutine();
 	Error closeNamespace(string_view nsName, const RdxContext &ctx, bool dropStorage, bool enableDropSlave = false);
 
-	Error syncDownstream(string_view nsName, bool force, const InternalRdxContext &ctx = InternalRdxContext());
+	Error forceSyncDownstream(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 
 	Namespace::Ptr getNamespace(string_view nsName, const RdxContext &ctx);
 	Namespace::Ptr getNamespaceNoThrow(string_view nsName, const RdxContext &ctx);
