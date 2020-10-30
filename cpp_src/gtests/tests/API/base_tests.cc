@@ -18,7 +18,6 @@
 
 #include "core/keyvalue/p_string.h"
 #include "gason/gason.h"
-#include "server/loggerwrapper.h"
 #include "tools/serializer.h"
 
 using reindexer::Reindexer;
@@ -1322,48 +1321,6 @@ TEST_F(ReindexerApi, SchemaSuggestions) {
 		ASSERT_TRUE(err.ok()) << err.what();
 		validateSuggestions(suggestions, expected);
 	}
-}
-
-TEST_F(ReindexerApi, LoggerWriteInterruptTest) {
-	struct Logger {
-		Logger() {
-			spdlog::drop_all();
-			spdlog::set_async_mode(16384, spdlog::async_overflow_policy::discard_log_msg, nullptr, std::chrono::seconds(2));
-			spdlog::set_level(spdlog::level::trace);
-			spdlog::set_pattern("[%L%d/%m %T.%e %t] %v");
-
-			std::remove(logFile.c_str());
-			sinkPtr = std::make_shared<spdlog::sinks::fast_file_sink>(logFile);
-			spdlog::create("log", sinkPtr);
-			logger = reindexer_server::LoggerWrapper("log");
-		}
-		~Logger() { std::remove(logFile.c_str()); }
-		const string logFile = "/tmp/logtest.out";
-		reindexer_server::LoggerWrapper logger;
-		std::shared_ptr<spdlog::sinks::fast_file_sink> sinkPtr;
-	} instance;
-
-	reindexer::logInstallWriter([&](int level, char* buf) {
-		if (level <= LogTrace) {
-			instance.logger.trace(buf);
-		}
-	});
-	auto writeThread = std::thread([]() {
-		for (size_t i = 0; i < 10000; ++i) {
-			reindexer::logPrintf(LogTrace, "Detailed and amazing description of this error: [%d]!", i);
-		}
-	});
-	auto reopenThread = std::thread([&instance]() {
-		for (size_t i = 0; i < 1000; ++i) {
-			instance.sinkPtr->reopen();
-			reindexer::logPrintf(LogTrace, "REOPENED [%d]", i);
-			std::this_thread::sleep_for(std::chrono::milliseconds(3));
-		}
-	});
-	writeThread.join();
-	reopenThread.join();
-	reindexer::logPrintf(LogTrace, "FINISHED\n");
-	reindexer::logInstallWriter(nullptr);
 }
 
 TEST_F(ReindexerApi, IntToStringIndexUpdate) {

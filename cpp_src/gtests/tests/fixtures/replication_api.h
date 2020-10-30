@@ -41,7 +41,7 @@ public:
 	// get server
 	ServerControl::Interface::Ptr GetSrv(size_t id);
 	// wait sync for ns
-	void WaitSync(const std::string &ns);
+	void WaitSync(const std::string& ns);
 	// force resync
 	void ForceSync();
 	// Switch master
@@ -51,7 +51,6 @@ public:
 	//
 
 	size_t masterId_ = 0;
-	shared_timed_mutex restartMutex_;
 
 private:
 	vector<ServerControl> svc_;

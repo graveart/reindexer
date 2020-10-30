@@ -55,6 +55,7 @@ public:
 	void Upsert(const std::string &ns, ItemType &item) {
 		assert(!!item);
 		auto err = reindexer->Upsert(ns, item);
+
 		ASSERT_TRUE(err.ok()) << err.what();
 	}
 	void Upsert(const std::string &ns, ItemType &item, std::function<void(const reindexer::Error &)> cmpl) {

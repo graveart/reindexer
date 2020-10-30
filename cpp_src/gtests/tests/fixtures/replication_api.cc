@@ -41,9 +41,6 @@ void ReplicationApi::RestartServer(size_t id) {
 	std::lock_guard<std::mutex> lock(m_);
 
 	assert(id < svc_.size());
-	if (id == 0) {
-		restartMutex_.lock();
-	}
 	if (svc_[id].Get()) {
 		svc_[id].Drop();
 		size_t counter = 0;
@@ -58,9 +55,6 @@ void ReplicationApi::RestartServer(size_t id) {
 	}
 	svc_[id].InitServer(id, kDefaultRpcPort + id, kDefaultHttpPort + id, kStoragePath + "node/" + std::to_string(id),
 						"node" + std::to_string(id), true);
-	if (id == 0) {
-		restartMutex_.unlock();
-	}
 }
 
 void ReplicationApi::WaitSync(const std::string& ns) {
@@ -105,7 +99,6 @@ void ReplicationApi::ForceSync() {
 	done = true;
 	awaitForceSync.join();
 }
-
 void ReplicationApi::SwitchMaster(size_t id) {
 	if (id == masterId_) return;
 	masterId_ = id;
