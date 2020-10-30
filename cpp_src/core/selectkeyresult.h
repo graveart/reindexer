@@ -143,8 +143,11 @@ protected:
 /// following keys: 10, 11, 12, 13, ... 19).
 class SelectKeyResult : public h_vector<SingleSelectKeyResult, 1> {
 public:
-	h_vector<Comparator, 0> comparators_;
+	std::vector<Comparator> comparators_;
 
+	void ClearDistinct() {
+		for (Comparator &comp : comparators_) comp.ClearDistinct();
+	}
 	/// Returns total amount of rowIds in all
 	/// the SingleSelectKeyResult objects, i.e.
 	/// maximum amonut of possible iterations.
@@ -210,14 +213,14 @@ public:
 		push_back(SingleSelectKeyResult(mergedIds));
 		return mergedIds;
 	}
-};  // namespace reindexer
+};
 
 /// Result of selecting data for
 /// each key in a query.
 class SelectKeyResults : public h_vector<SelectKeyResult, 1> {
 public:
 	SelectKeyResults(std::initializer_list<SelectKeyResult> l) { insert(end(), l.begin(), l.end()); }
-	SelectKeyResults(const SelectKeyResult &res) { push_back(res); }
+	SelectKeyResults(SelectKeyResult &&res) { push_back(std::move(res)); }
 	SelectKeyResults() {}
 };
 

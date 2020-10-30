@@ -31,7 +31,7 @@ type Logger interface {
 }
 
 var logger Logger
-var logMtx sync.Mutex
+var logMtx sync.RWMutex
 
 var bufPool sync.Pool
 
@@ -145,7 +145,7 @@ func bool2cint(v bool) C.int {
 	return 0
 }
 
-func (binding *Builtin) Init(u *url.URL, options ...interface{}) error {
+func (binding *Builtin) Init(u []url.URL, options ...interface{}) error {
 	if binding.rx != 0 {
 		return bindings.NewError("already initialized", bindings.ErrConflict)
 	}
@@ -155,6 +155,7 @@ func (binding *Builtin) Init(u *url.URL, options ...interface{}) error {
 	cgoLimit := defCgoLimit
 	var rx uintptr
 	connectOptions := *bindings.DefaultConnectOptions()
+	connectOptions.Opts |= bindings.ConnectOptWarnVersion
 	for _, option := range options {
 		switch v := option.(type) {
 		case bindings.OptionCgoLimit:
@@ -193,7 +194,14 @@ func (binding *Builtin) Init(u *url.URL, options ...interface{}) error {
 		options: C.uint16_t(connectOptions.Opts),
 	}
 
-	return err2go(C.reindexer_connect(binding.rx, str2c(u.Path), opts))
+	return err2go(C.reindexer_connect(binding.rx, str2c(u[0].Path), opts, str2c(bindings.ReindexerVersion)))
+}
+
+func (binding *Builtin) StartWatchOnCtx(ctx context.Context) (CCtxWrapper, error) {
+	if binding.ctxWatcher != nil {
+		return binding.ctxWatcher.StartWatchOnCtx(ctx)
+	}
+	return CCtxWrapper{}, bindings.NewError("rq: builtin binding is not initialized properly", bindings.ErrNotValid)
 }
 
 func (binding *Builtin) Clone() bindings.RawBinding {
@@ -237,7 +245,7 @@ func (binding *Builtin) ModifyItem(ctx context.Context, nsHash int, namespace st
 	}
 	packedArgs := ser1.Bytes()
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +255,11 @@ func (binding *Builtin) ModifyItem(ctx context.Context, nsHash int, namespace st
 }
 
 func (binding *Builtin) ModifyItemTx(txCtx *bindings.TxCtx, format int, data []byte, mode int, precepts []string, stateToken int) error {
+	select {
+	case <-txCtx.UserCtx.Done():
+		return txCtx.UserCtx.Err()
+	default:
+	}
 
 	ser1 := cjson.NewPoolSerializer()
 	defer ser1.Close()
@@ -264,11 +277,20 @@ func (binding *Builtin) ModifyItemTx(txCtx *bindings.TxCtx, format int, data []b
 }
 
 func (binding *Builtin) DeleteQueryTx(txCtx *bindings.TxCtx, rawQuery []byte) error {
-	return err2go(C.reindexer_delete_query_tx(binding.rx, C.uintptr_t(txCtx.Id), buf2c(rawQuery)))
+	select {
+	case <-txCtx.UserCtx.Done():
+		return txCtx.UserCtx.Err()
+	default:
+		return err2go(C.reindexer_delete_query_tx(binding.rx, C.uintptr_t(txCtx.Id), buf2c(rawQuery)))
+	}
 }
 func (binding *Builtin) UpdateQueryTx(txCtx *bindings.TxCtx, rawQuery []byte) error {
-
-	return err2go(C.reindexer_update_query_tx(binding.rx, C.uintptr_t(txCtx.Id), buf2c(rawQuery)))
+	select {
+	case <-txCtx.UserCtx.Done():
+		return txCtx.UserCtx.Err()
+	default:
+		return err2go(C.reindexer_update_query_tx(binding.rx, C.uintptr_t(txCtx.Id), buf2c(rawQuery)))
+	}
 }
 
 // ModifyItemTxAsync is not implemented for builtin binding
@@ -284,7 +306,7 @@ func (binding *Builtin) OpenNamespace(ctx context.Context, namespace string, ena
 		options: C.uint16_t(storageOptions),
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -293,7 +315,7 @@ func (binding *Builtin) OpenNamespace(ctx context.Context, namespace string, ena
 	return err2go(C.reindexer_open_namespace(binding.rx, str2c(namespace), opts, ctxInfo.cCtx))
 }
 func (binding *Builtin) CloseNamespace(ctx context.Context, namespace string) error {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -303,7 +325,7 @@ func (binding *Builtin) CloseNamespace(ctx context.Context, namespace string) er
 }
 
 func (binding *Builtin) DropNamespace(ctx context.Context, namespace string) error {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -313,7 +335,7 @@ func (binding *Builtin) DropNamespace(ctx context.Context, namespace string) err
 }
 
 func (binding *Builtin) TruncateNamespace(ctx context.Context, namespace string) error {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -322,13 +344,23 @@ func (binding *Builtin) TruncateNamespace(ctx context.Context, namespace string)
 	return err2go(C.reindexer_truncate_namespace(binding.rx, str2c(namespace), ctxInfo.cCtx))
 }
 
+func (binding *Builtin) RenameNamespace(ctx context.Context, srcNs string, dstNs string) error {
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
+	if err != nil {
+		return err
+	}
+	defer binding.ctxWatcher.StopWatchOnCtx(ctxInfo)
+
+	return err2go(C.reindexer_rename_namespace(binding.rx, str2c(srcNs), str2c(dstNs), ctxInfo.cCtx))
+}
+
 func (binding *Builtin) EnableStorage(ctx context.Context, path string) error {
 	l := len(path)
 	if l > 0 && path[l-1] != '/' {
 		path += "/"
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -343,7 +375,7 @@ func (binding *Builtin) AddIndex(ctx context.Context, namespace string, indexDef
 		return err
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -353,13 +385,30 @@ func (binding *Builtin) AddIndex(ctx context.Context, namespace string, indexDef
 	return err2go(C.reindexer_add_index(binding.rx, str2c(namespace), str2c(sIndexDef), ctxInfo.cCtx))
 }
 
+func (binding *Builtin) SetSchema(ctx context.Context, namespace string, schema bindings.SchemaDef) error {
+	schemaJSON, err := json.Marshal(schema)
+	if err != nil {
+		return err
+	}
+
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
+	if err != nil {
+		return err
+	}
+	defer binding.ctxWatcher.StopWatchOnCtx(ctxInfo)
+
+	sSchemaJSON := string(schemaJSON)
+
+	return err2go(C.reindexer_set_schema(binding.rx, str2c(namespace), str2c(sSchemaJSON), ctxInfo.cCtx))
+}
+
 func (binding *Builtin) UpdateIndex(ctx context.Context, namespace string, indexDef bindings.IndexDef) error {
 	bIndexDef, err := json.Marshal(indexDef)
 	if err != nil {
 		return err
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -370,7 +419,7 @@ func (binding *Builtin) UpdateIndex(ctx context.Context, namespace string, index
 }
 
 func (binding *Builtin) DropIndex(ctx context.Context, namespace, index string) error {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -380,7 +429,7 @@ func (binding *Builtin) DropIndex(ctx context.Context, namespace, index string) 
 }
 
 func (binding *Builtin) PutMeta(ctx context.Context, namespace, key, data string) error {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -390,7 +439,7 @@ func (binding *Builtin) PutMeta(ctx context.Context, namespace, key, data string
 }
 
 func (binding *Builtin) GetMeta(ctx context.Context, namespace, key string) (bindings.RawBuffer, error) {
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +455,7 @@ func (binding *Builtin) Select(ctx context.Context, query string, asJson bool, p
 		defer func() { <-binding.cgoLimiter }()
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -437,17 +486,20 @@ func (binding *Builtin) CommitTx(txCtx *bindings.TxCtx) (bindings.RawBuffer, err
 		defer func() { <-binding.cgoLimiter }()
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(txCtx.UserCtx)
+	ctxInfo, err := binding.StartWatchOnCtx(txCtx.UserCtx)
 	if err != nil {
 		return nil, err
 	}
 	defer binding.ctxWatcher.StopWatchOnCtx(ctxInfo)
-
-	return ret2go(C.reindexer_commit_transaction(binding.rx, C.uintptr_t(txCtx.Id), ctxInfo.cCtx))
+	txID := txCtx.Id
+	txCtx.Id = 0
+	return ret2go(C.reindexer_commit_transaction(binding.rx, C.uintptr_t(txID), ctxInfo.cCtx))
 }
 
 func (binding *Builtin) RollbackTx(txCtx *bindings.TxCtx) error {
-	return err2go(C.reindexer_rollback_transaction(binding.rx, C.uintptr_t(txCtx.Id)))
+	txID := txCtx.Id
+	txCtx.Id = 0
+	return err2go(C.reindexer_rollback_transaction(binding.rx, C.uintptr_t(txID)))
 }
 
 func (binding *Builtin) SelectQuery(ctx context.Context, data []byte, asJson bool, ptVersions []int32, fetchCount int) (bindings.RawBuffer, error) {
@@ -457,7 +509,7 @@ func (binding *Builtin) SelectQuery(ctx context.Context, data []byte, asJson boo
 		defer func() { <-binding.cgoLimiter }()
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +525,7 @@ func (binding *Builtin) DeleteQuery(ctx context.Context, nsHash int, data []byte
 		defer func() { <-binding.cgoLimiter }()
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +541,7 @@ func (binding *Builtin) UpdateQuery(ctx context.Context, nsHash int, data []byte
 		defer func() { <-binding.cgoLimiter }()
 	}
 
-	ctxInfo, err := binding.ctxWatcher.StartWatchOnCtx(ctx)
+	ctxInfo, err := binding.StartWatchOnCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -505,8 +557,8 @@ func (binding *Builtin) Commit(ctx context.Context, namespace string) error {
 // CGoLogger logger function for C
 //export CGoLogger
 func CGoLogger(level int, msg string) {
-	logMtx.Lock()
-	defer logMtx.Unlock()
+	logMtx.RLock()
+	defer logMtx.RUnlock()
 	if logger != nil {
 		logger.Printf(level, "%s", msg)
 	}
@@ -526,6 +578,11 @@ func (binding *Builtin) DisableLogger() {
 	logger = nil
 }
 
+func (binding *Builtin) ReopenLogFiles() error {
+	fmt.Println("builtin binding ReopenLogFiles method is dummy")
+	return nil
+}
+
 func (binding *Builtin) Finalize() error {
 	C.destroy_reindexer(binding.rx)
 	binding.rx = 0
@@ -535,7 +592,7 @@ func (binding *Builtin) Finalize() error {
 	return binding.ctxWatcher.Finalize()
 }
 
-func (binding *Builtin) Status() (status bindings.Status) {
+func (binding *Builtin) Status(ctx context.Context) (status bindings.Status) {
 	status = bindings.Status{
 		Builtin: bindings.StatusBuiltin{
 			CGOLimit: cap(binding.cgoLimiter),

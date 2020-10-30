@@ -9,16 +9,19 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/golang-lru"
+
 	"github.com/restream/reindexer/bindings"
 	"github.com/restream/reindexer/cjson"
 	"github.com/restream/reindexer/dsl"
 )
 
 type reindexerNamespace struct {
-	cacheItems    map[int]cacheItem
+	cacheItems    *cacheItems
 	cacheLock     sync.RWMutex
 	joined        map[string][]int
 	indexes       []bindings.IndexDef
+	schema        bindings.SchemaDef
 	rtype         reflect.Type
 	deepCopyIface bool
 	name          string
@@ -39,28 +42,76 @@ type reindexerImpl struct {
 	status        error
 }
 
+type cacheItems struct {
+	// cached items
+	items *lru.Cache
+}
+
+func (ci *cacheItems) Reset() {
+	if ci.items == nil {
+		return
+	}
+	ci.items.Purge()
+}
+
+func (ci *cacheItems) Remove(key int) {
+	if ci.items == nil {
+		return
+	}
+	ci.items.Remove(key)
+}
+
+func (ci *cacheItems) Add(key int, item *cacheItem) {
+	if ci.items == nil {
+		return
+	}
+	ci.items.Add(key, item)
+}
+
+func (ci *cacheItems) Len() int {
+	if ci.items == nil {
+		return 0
+	}
+	return ci.items.Len()
+}
+
+func (ci *cacheItems) Get(key int) (*cacheItem, bool) {
+	if ci.items == nil {
+		return nil, false
+	}
+
+	item, ok := ci.items.Get(key)
+	if ok {
+		return item.(*cacheItem), ok
+	}
+	return nil, false
+}
+
 type cacheItem struct {
+	// cached data
 	item interface{}
-	// version of item, for cachins
+	// version of item
 	version int
+}
+
+func newCacheItems(count uint64) (*cacheItems, error) {
+	cache, err := lru.New(int(count))
+	if err != nil {
+		return nil, err
+	}
+	return &cacheItems{
+		items: cache,
+	}, nil
 }
 
 // NewReindexImpl Create new instanse of Reindexer DB
 // Returns pointer to created instance
-func newReindexImpl(dsn string, options ...interface{}) *reindexerImpl {
+func newReindexImpl(dsn interface{}, options ...interface{}) *reindexerImpl {
+	scheme, dsnParsed := dsnParse(dsn)
 
-	if dsn == "builtin" {
-		dsn += "://"
-	}
-
-	u, err := url.Parse(dsn)
-	if err != nil {
-		panic(fmt.Errorf("Can't parse DB DSN '%s'", dsn))
-	}
-
-	binding := bindings.GetBinding(u.Scheme)
+	binding := bindings.GetBinding(scheme)
 	if binding == nil {
-		panic(fmt.Errorf("Reindex binding '%s' is not available, can't create DB", u.Scheme))
+		panic(fmt.Errorf("Reindex binding '%s' is not available, can't create DB", scheme))
 	}
 
 	binding = binding.Clone()
@@ -69,7 +120,7 @@ func newReindexImpl(dsn string, options ...interface{}) *reindexerImpl {
 		binding: binding,
 	}
 
-	if err = binding.Init(u, options...); err != nil {
+	if err := binding.Init(dsnParsed, options...); err != nil {
 		rx.status = err
 	}
 
@@ -77,19 +128,34 @@ func newReindexImpl(dsn string, options ...interface{}) *reindexerImpl {
 		changing.OnChangeCallback(rx.resetCaches)
 	}
 
-	rx.registerNamespaceImpl(NamespacesNamespaceName, &NamespaceOptions{}, NamespaceDescription{})
-	rx.registerNamespaceImpl(PerfstatsNamespaceName, &NamespaceOptions{}, NamespacePerfStat{})
-	rx.registerNamespaceImpl(MemstatsNamespaceName, &NamespaceOptions{}, NamespaceMemStat{})
-	rx.registerNamespaceImpl(QueriesperfstatsNamespaceName, &NamespaceOptions{}, QueryPerfStat{})
-	rx.registerNamespaceImpl(ConfigNamespaceName, &NamespaceOptions{}, DBConfigItem{})
-
+	opts := &NamespaceOptions{
+		disableObjCache: true,
+	}
+	rx.registerNamespaceImpl(NamespacesNamespaceName, opts, NamespaceDescription{})
+	rx.registerNamespaceImpl(PerfstatsNamespaceName, opts, NamespacePerfStat{})
+	rx.registerNamespaceImpl(MemstatsNamespaceName, opts, NamespaceMemStat{})
+	rx.registerNamespaceImpl(QueriesperfstatsNamespaceName, opts, QueryPerfStat{})
+	rx.registerNamespaceImpl(ConfigNamespaceName, opts, DBConfigItem{})
+	rx.registerNamespaceImpl(ClientsStatsNamespaceName, opts, ClientConnectionStat{})
 	return rx
 }
 
 // getStatus will return current db status
-func (db *reindexerImpl) getStatus() bindings.Status {
-	status := db.binding.Status()
+func (db *reindexerImpl) getStatus(ctx context.Context) bindings.Status {
+	status := db.binding.Status(ctx)
 	status.Err = db.status
+
+	db.lock.RLock()
+	nsArray := make([]*reindexerNamespace, 0, len(db.ns))
+	for _, ns := range db.ns {
+		nsArray = append(nsArray, ns)
+	}
+	db.lock.RUnlock()
+
+	for _, ns := range nsArray {
+		status.Cache.CurSize += int64(ns.cacheItems.Len())
+	}
+
 	return status
 }
 
@@ -102,6 +168,10 @@ func (db *reindexerImpl) setLogger(log Logger) {
 		logger = &nullLogger{}
 		db.binding.DisableLogger()
 	}
+}
+
+func (db *reindexerImpl) reopenLogFiles() error {
+	return db.binding.ReopenLogFiles()
 }
 
 // ping checks connection with reindexer
@@ -136,6 +206,17 @@ func (db *reindexerImpl) openNamespace(ctx context.Context, namespace string, op
 		for _, indexDef := range ns.indexes {
 			if err = db.binding.AddIndex(ctx, namespace, indexDef); err != nil {
 				break
+			}
+		}
+
+		if err == nil {
+			if err = db.binding.SetSchema(ctx, namespace, ns.schema); err != nil {
+				if rerr, ok := err.(bindings.Error); ok && rerr.Code() == bindings.ErrParams {
+					// Ignore error from old server which doesn't support SetSchema
+					err = nil
+				} else {
+					break
+				}
 			}
 		}
 
@@ -182,9 +263,11 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 		return nil
 	}
 	haveDeepCopy := false
+	cacheItems := &cacheItems{}
 
 	if !opts.disableObjCache {
-		copier, haveDeepCopy := reflect.New(t).Interface().(DeepCopy)
+		var copier DeepCopy
+		copier, haveDeepCopy = reflect.New(t).Interface().(DeepCopy)
 		if haveDeepCopy {
 			cpy := copier.DeepCopy()
 			cpyType := reflect.TypeOf(reflect.Indirect(reflect.ValueOf(cpy)).Interface())
@@ -192,10 +275,14 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 				return ErrDeepCopyType
 			}
 		}
+		cacheItems, err = newCacheItems(opts.objCacheItemsCount)
+		if err != nil {
+			return err
+		}
 	}
 
 	ns := &reindexerNamespace{
-		cacheItems:    make(map[int]cacheItem, 100),
+		cacheItems:    cacheItems,
 		rtype:         t,
 		name:          namespace,
 		joined:        make(map[string][]int),
@@ -211,8 +298,11 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 	if err = validator.Validate(s); err != nil {
 		return err
 	}
-	if ns.indexes, err = parseIndex(namespace, ns.rtype, &ns.joined); err != nil {
+	if ns.indexes, err = parseIndexes(namespace, ns.rtype, &ns.joined); err != nil {
 		return err
+	}
+	if schema := parseSchema(namespace, ns.rtype); schema != nil {
+		ns.schema = *schema
 	}
 
 	db.nsHashCounter++
@@ -234,6 +324,27 @@ func (db *reindexerImpl) dropNamespace(ctx context.Context, namespace string) er
 func (db *reindexerImpl) truncateNamespace(ctx context.Context, namespace string) error {
 	namespace = strings.ToLower(namespace)
 	return db.binding.TruncateNamespace(ctx, namespace)
+}
+
+// RenameNamespace - Rename namespace. If namespace with dstNsName exists, then it is replaced.
+func (db *reindexerImpl) renameNamespace(ctx context.Context, srcNsName string, dstNsName string) error {
+	srcNsName = strings.ToLower(srcNsName)
+	dstNsName = strings.ToLower(dstNsName)
+	err := db.binding.RenameNamespace(ctx, srcNsName, dstNsName)
+	if err != nil {
+		return err
+	}
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
+	srcNs, ok := db.ns[srcNsName]
+	if ok {
+		delete(db.ns, srcNsName)
+		db.ns[dstNsName] = srcNs
+	} else {
+		delete(db.ns, dstNsName)
+	}
+	return err
 }
 
 // closeNamespace - close namespace, but keep storage
@@ -339,7 +450,7 @@ func (db *reindexerImpl) setDefaultQueryDebug(ctx context.Context, namespace str
 	}
 
 	citem = item.(*DBConfigItem)
-
+	defaultCfg := DBNamespacesConfig{}
 	found := false
 
 	if citem.Namespaces == nil {
@@ -348,13 +459,19 @@ func (db *reindexerImpl) setDefaultQueryDebug(ctx context.Context, namespace str
 	}
 
 	for i := range *citem.Namespaces {
-		if (*citem.Namespaces)[i].Namespace == namespace {
+		switch (*citem.Namespaces)[i].Namespace {
+		case namespace:
 			(*citem.Namespaces)[i].LogLevel = loglevelToString(level)
 			found = true
+		case "*":
+			defaultCfg = (*citem.Namespaces)[i]
 		}
 	}
 	if !found {
-		*citem.Namespaces = append(*citem.Namespaces, DBNamespacesConfig{Namespace: namespace, LogLevel: loglevelToString(level)})
+		nsCfg := defaultCfg
+		nsCfg.Namespace = namespace
+		nsCfg.LogLevel = loglevelToString(level)
+		*citem.Namespaces = append(*citem.Namespaces, nsCfg)
 	}
 	return db.upsert(ctx, ConfigNamespaceName, citem)
 }
@@ -442,6 +559,32 @@ func (db *reindexerImpl) queryFrom(d dsl.DSL) (*Query, error) {
 	if d.Distinct != "" {
 		q.Distinct(d.Distinct)
 	}
+
+	for _, agg := range d.Aggregations {
+		if len(agg.Fields) == 0 {
+			return nil, ErrEmptyAggFieldName
+		}
+		switch agg.AggType {
+		case AggSum:
+			q.AggregateSum(agg.Fields[0])
+		case AggAvg:
+			q.AggregateAvg(agg.Fields[0])
+		case AggFacet:
+			aggReq := q.AggregateFacet(agg.Fields...).Limit(agg.Limit).Offset(agg.Offset)
+			for _, sort := range agg.Sort {
+				aggReq.Sort(sort.Field, sort.Desc)
+			}
+		case AggMin:
+			q.AggregateMin(agg.Fields[0])
+		case AggMax:
+			q.AggregateMax(agg.Fields[0])
+		case AggDistinct:
+			q.Distinct(agg.Fields[0])
+		default:
+			return nil, ErrAggInvalid
+		}
+	}
+
 	if d.Sort.Field != "" {
 		q.Sort(d.Sort.Field, d.Sort.Desc, d.Sort.Values...)
 	}
@@ -470,6 +613,42 @@ func (db *reindexerImpl) queryFrom(d dsl.DSL) (*Query, error) {
 	}
 
 	return q, nil
+}
+
+func dsnParse(dsn interface{}) (string, []url.URL) {
+	var dsnSlice []string
+	var scheme string
+
+	switch v := dsn.(type) {
+	case string:
+		dsnSlice = []string{v}
+	case []string:
+		if len(v) == 0 {
+			panic(fmt.Errorf("Empty multi DSN config. DSN: '%#v'. ", dsn))
+		}
+		dsnSlice = v
+	default:
+		panic(fmt.Errorf("DSN format not supported. Support []string or string. DSN: '%#v'. ", dsn))
+	}
+
+	dsnParsed := make([]url.URL, 0, len(dsnSlice))
+	for i := range dsnSlice {
+		if dsnSlice[i] == "builtin" {
+			dsnSlice[i] += "://"
+		}
+
+		u, err := url.Parse(dsnSlice[i])
+		if err != nil {
+			panic(fmt.Errorf("Can't parse DB DSN '%s'", dsn))
+		}
+		if scheme != "" && scheme != u.Scheme {
+			panic(fmt.Sprintf("DSN has a different schemas. %s", dsn))
+		}
+		dsnParsed = append(dsnParsed, *u)
+		scheme = u.Scheme
+	}
+
+	return scheme, dsnParsed
 }
 
 // GetStats Get local thread reindexer usage stats

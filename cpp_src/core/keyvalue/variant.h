@@ -4,6 +4,7 @@
 #include "core/type_consts.h"
 #include "estl/h_vector.h"
 #include "tools/errors.h"
+
 namespace reindexer {
 
 class WrSerializer;
@@ -14,20 +15,22 @@ class FieldsSet;
 class VariantArray;
 class key_string;
 struct p_string;
+struct Point;
 
 class Variant {
 public:
-	Variant() : type_(KeyValueNull) {}
+	Variant() : type_(KeyValueNull), value_uint64() {}
 	explicit Variant(int v) : type_(KeyValueInt), value_int(v) {}
 	explicit Variant(bool v) : type_(KeyValueBool), value_bool(v) {}
 	explicit Variant(int64_t v) : type_(KeyValueInt64), value_int64(v) {}
 	explicit Variant(double v) : type_(KeyValueDouble), value_double(v) {}
 	explicit Variant(const char *v);
-	explicit Variant(const p_string &v, bool enableHold = true);
-	explicit Variant(const string &v);
+	explicit Variant(p_string v, bool enableHold = true);
+	explicit Variant(const std::string &v);
 	explicit Variant(const key_string &v);
 	explicit Variant(const PayloadValue &v);
 	Variant(const VariantArray &values);
+	explicit Variant(Point);
 	Variant(const Variant &other) : type_(other.type_), hold_(other.hold_) {
 		if (hold_)
 			copy(other);
@@ -63,36 +66,22 @@ public:
 		return *this;
 	}
 
-	inline static void assertKeyType(KeyValueType got, KeyValueType exp) {
-		(void)got, (void)exp;
-		assertf(exp == got, "Expected value '%s', but got '%s'", TypeName(exp), TypeName(got));
-	}
-
-	explicit operator int() const {
-		assertKeyType(type_, KeyValueInt);
-		return value_int;
-	}
-	explicit operator bool() const {
-		assertKeyType(type_, KeyValueBool);
-		return value_bool;
-	}
-
-	explicit operator int64_t() const {
-		assertKeyType(type_, KeyValueInt64);
-		return value_int64;
-	}
-	explicit operator double() const {
-		assertKeyType(type_, KeyValueDouble);
-		return value_double;
-	}
+	explicit operator int() const;
+	explicit operator bool() const;
+	explicit operator int64_t() const;
+	explicit operator double() const;
 
 	explicit operator p_string() const;
 	explicit operator string_view() const;
 	explicit operator const PayloadValue &() const;
 	explicit operator key_string() const;
+	explicit operator Point() const;
 
 	template <typename T>
 	T As() const;
+
+	template <typename T>
+	T As(const PayloadType &, const FieldsSet &) const;
 
 	bool operator==(const Variant &other) const { return Compare(other) == 0; }
 	bool operator!=(const Variant &other) const { return Compare(other) != 0; }
@@ -112,6 +101,8 @@ public:
 	Variant &convert(KeyValueType type, const PayloadType * = nullptr, const FieldsSet * = nullptr);
 	Variant convert(KeyValueType type, const PayloadType * = nullptr, const FieldsSet * = nullptr) const;
 	VariantArray getCompositeValues() const;
+
+	bool IsNullValue() const;
 
 	void Dump(WrSerializer &wrser) const;
 
@@ -142,10 +133,15 @@ protected:
 		// key_string h_value_string;
 	};
 	int relaxCompareWithString(string_view) const;
-};  // namespace reindexer
+};
 
 class VariantArray : public h_vector<Variant, 2> {
 public:
+	VariantArray() noexcept = default;
+	explicit VariantArray(Point) noexcept;
+	explicit operator Point() const;
+	void MarkArray() noexcept { isArrayValue = true; }
+	void MarkObject() noexcept { isObjectValue = true; }
 	using h_vector<Variant, 2>::h_vector;
 	using h_vector<Variant, 2>::operator==;
 	using h_vector<Variant, 2>::operator!=;
@@ -154,7 +150,15 @@ public:
 		for (size_t i = 0; i < this->size(); ++i) ret = (ret * 127) ^ this->at(i).Hash();
 		return ret;
 	}
+	bool IsArrayValue() const noexcept;
+	bool IsObjectValue() const noexcept { return isObjectValue; }
+	bool IsNullValue() const;
+	KeyValueType ArrayType() const;
 	void Dump(WrSerializer &wrser) const;
+
+private:
+	bool isArrayValue = false;
+	bool isObjectValue = false;
 };
 
 }  // namespace reindexer

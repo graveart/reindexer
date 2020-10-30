@@ -21,7 +21,10 @@ public:
 			.AddIndex("price_id", "hash", "int", IndexOpts().Array())
 			.AddIndex("location", "hash", "string", IndexOpts())
 			.AddIndex("end_time", "hash", "int", IndexOpts())
-			.AddIndex("start_time", "tree", "int", IndexOpts());
+			.AddIndex("start_time", "tree", "int", IndexOpts())
+			.AddIndex("double", "tree", "double", IndexOpts())
+			.AddIndex("point_quadratic", "rtree", "point", IndexOpts().RTreeQuadratic())
+			.AddIndex("point_linear", "rtree", "point", IndexOpts().RTreeLinear());
 	}
 
 	virtual void RegisterAllCases();
@@ -40,6 +43,10 @@ protected:
 	void GetLikeString(State& state);
 	void GetByRangeIDAndSortByHash(State& state);
 	void GetByRangeIDAndSortByTree(State& state);
+	void GetRangeTreeDouble(State& state);
+	void GetDWithinQuadraticRTreePoint(State& state);
+	void GetDWithinLinearRTreePoint(State& state);
+	void GetDWithinPointNonIndex(State& state);
 
 	void Query1Cond(State& state);
 	void Query1CondTotal(State& state);
@@ -52,6 +59,7 @@ protected:
 	void Query2CondLeftJoinTotal(State& state);
 	void Query2CondLeftJoinCachedTotal(State& state);
 	void Query0CondInnerJoinUnlimit(State& state);
+	void Query0CondInnerJoinPreResultStoreValues(benchmark::State& state);
 	void Query2CondInnerJoin(State& state);
 	void Query2CondInnerJoinTotal(State& state);
 	void Query2CondInnerJoinCachedTotal(State& state);

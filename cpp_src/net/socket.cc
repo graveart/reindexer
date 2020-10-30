@@ -15,7 +15,8 @@ int socket::bind(string_view addr) {
 	struct addrinfo *results = nullptr;
 	int ret = create(addr, &results);
 	if (!ret) {
-		if (::bind(fd_, results->ai_addr, results->ai_addrlen) != 0) {
+		assert(results != nullptr);
+		if (::bind(fd_, results->ai_addr, results->ai_addrlen) != 0) {	// -V595
 			perror("bind error");
 			close();
 		}
@@ -30,7 +31,8 @@ int socket::connect(string_view addr) {
 	struct addrinfo *results = nullptr;
 	int ret = create(addr, &results);
 	if (!ret) {
-		if (::connect(fd_, results->ai_addr, results->ai_addrlen) != 0) {
+		assert(results != nullptr);
+		if (::connect(fd_, results->ai_addr, results->ai_addrlen) != 0) {  // -V595
 			if (!would_block(last_error())) {
 				perror("connect error");
 				close();
@@ -155,13 +157,18 @@ std::string socket::addr() const {
 	struct sockaddr_storage saddr;
 	struct sockaddr *paddr = reinterpret_cast<sockaddr *>(&saddr);
 	socklen_t len = sizeof(saddr);
-	if (::getpeername(fd_, paddr, &len) != 0) {
+	if (::getpeername(fd_, paddr, &len) == 0) {
+		char buf[INET_ADDRSTRLEN] = {};
+		auto port = ntohs(reinterpret_cast<sockaddr_in *>(paddr)->sin_port);
+		if (getnameinfo(paddr, len, buf, INET_ADDRSTRLEN, NULL, 0, NI_NUMERICHOST) == 0) {
+			return std::string(buf) + ":" + std::to_string(port);
+		} else {
+			perror("getnameinfo");
+		}
+	} else {
 		perror("getpeername");
-		return {};
 	}
-	char buf[INET_ADDRSTRLEN] = {};
-	getnameinfo(paddr, len, buf, INET_ADDRSTRLEN, NULL, 0, NI_NUMERICHOST);
-	return buf;
+	return std::string();
 }
 
 socket socket::accept() {

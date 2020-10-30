@@ -3,24 +3,40 @@
 TEST_F(JoinSelectsApi, JoinsDSLTest) {
 	Query queryGenres(genres_namespace);
 	Query queryAuthors(authors_namespace);
-	Query queryBooks = Query(books_namespace, 0, 10).Where(price, CondGe, 500);
+	Query queryBooks = std::move(Query(books_namespace, 0, 10).Where(price, CondGe, 500));
 	queryBooks.OrInnerJoin(genreId_fk, genreid, CondEq, queryGenres);
 	queryBooks.LeftJoin(authorid_fk, authorid, CondEq, queryAuthors);
 
 	string dsl = queryBooks.GetJSON();
-	Query testLoadDslQuery, testLoadSQLQuery;
+	Query testLoadDslQuery;
 	Error err = testLoadDslQuery.FromJSON(dsl);
 	ASSERT_TRUE(err.ok()) << err.what();
 	ASSERT_TRUE(queryBooks == testLoadDslQuery);
 }
 
-TEST_F(JoinSelectsApi, MergedQueriesDSLTest) {
-	Query mainBooksQuery = Query(books_namespace, 0, 10).Where(price, CondGe, 500);
-	Query firstMergedQuery = Query(books_namespace, 10, 100).Where(pages, CondLe, 250);
-	Query secondMergedQuery = Query(books_namespace, 100, 50).Where(bookid, CondGe, 100);
+TEST_F(JoinSelectsApi, EqualPositionDSLTest) {
+	Query query = Query(default_namespace);
+	query.Where("f1", CondEq, 1).Where("f2", CondEq, 2).Or().Where("f3", CondEq, 2);
+	query.AddEqualPosition({"f1", "f2"});
+	query.AddEqualPosition({"f1", "f3"});
+	query.OpenBracket().Where("f4", CondEq, 4).Where("f5", CondLt, 10);
+	query.AddEqualPosition({"f4", "f5"});
+	query.CloseBracket();
 
-	mainBooksQuery.mergeQueries_.push_back(firstMergedQuery);
-	mainBooksQuery.mergeQueries_.push_back(secondMergedQuery);
+	string dsl = query.GetJSON();
+	Query testLoadDslQuery;
+	Error err = testLoadDslQuery.FromJSON(dsl);
+	ASSERT_TRUE(err.ok()) << err.what();
+	ASSERT_TRUE(query == testLoadDslQuery);
+}
+
+TEST_F(JoinSelectsApi, MergedQueriesDSLTest) {
+	Query mainBooksQuery = std::move(Query(books_namespace, 0, 10).Where(price, CondGe, 500));
+	Query firstMergedQuery = std::move(Query(books_namespace, 10, 100).Where(pages, CondLe, 250));
+	Query secondMergedQuery = std::move(Query(books_namespace, 100, 50).Where(bookid, CondGe, 100));
+
+	mainBooksQuery.mergeQueries_.emplace_back(std::move(firstMergedQuery));
+	mainBooksQuery.mergeQueries_.emplace_back(std::move(secondMergedQuery));
 
 	string dsl = mainBooksQuery.GetJSON();
 	Query testLoadDslQuery;
@@ -30,7 +46,7 @@ TEST_F(JoinSelectsApi, MergedQueriesDSLTest) {
 }
 
 TEST_F(JoinSelectsApi, AggregateFunctonsDSLTest) {
-	Query query = Query(books_namespace, 10, 100).Where(pages, CondGe, 150);
+	Query query = std::move(Query(books_namespace, 10, 100).Where(pages, CondGe, 150));
 
 	reindexer::AggregateEntry aggEntry;
 	aggEntry.fields_ = {price};
@@ -56,7 +72,7 @@ TEST_F(JoinSelectsApi, AggregateFunctonsDSLTest) {
 }
 
 TEST_F(JoinSelectsApi, SelectFilterDSLTest) {
-	Query query = Query(books_namespace, 10, 100).Where(pages, CondGe, 150);
+	Query query = std::move(Query(books_namespace, 10, 100).Where(pages, CondGe, 150));
 	query.selectFilter_.push_back(price);
 	query.selectFilter_.push_back(pages);
 	query.selectFilter_.push_back(title);
@@ -69,7 +85,7 @@ TEST_F(JoinSelectsApi, SelectFilterDSLTest) {
 }
 
 TEST_F(JoinSelectsApi, ReqTotalDSLTest) {
-	Query query = Query(books_namespace, 10, 100, ModeNoTotal).Where(pages, CondGe, 150);
+	Query query = std::move(Query(books_namespace, 10, 100, ModeNoTotal).Where(pages, CondGe, 150));
 
 	string dsl1 = query.GetJSON();
 	Query testLoadDslQuery1;
@@ -93,7 +109,7 @@ TEST_F(JoinSelectsApi, ReqTotalDSLTest) {
 }
 
 TEST_F(JoinSelectsApi, SelectFunctionsDSLTest) {
-	Query query = Query(books_namespace, 10, 100).Where(pages, CondGe, 150);
+	Query query = std::move(Query(books_namespace, 10, 100).Where(pages, CondGe, 150));
 	query.AddFunction("f1()");
 	query.AddFunction("f2()");
 	query.AddFunction("f3()");
@@ -107,7 +123,7 @@ TEST_F(JoinSelectsApi, SelectFunctionsDSLTest) {
 
 TEST_F(JoinSelectsApi, CompositeValuesDSLTest) {
 	string pagesBookidIndex = string(pages + string("+") + bookid);
-	Query query = Query(books_namespace).WhereComposite(pagesBookidIndex.c_str(), CondGe, {{Variant(500), Variant(10)}});
+	Query query = std::move(Query(books_namespace).WhereComposite(pagesBookidIndex.c_str(), CondGe, {{Variant(500), Variant(10)}}));
 	string dsl = query.GetJSON();
 	Query testLoadDslQuery;
 	Error err = testLoadDslQuery.FromJSON(dsl);
@@ -118,13 +134,12 @@ TEST_F(JoinSelectsApi, CompositeValuesDSLTest) {
 TEST_F(JoinSelectsApi, GeneralDSLTest) {
 	Query queryGenres(genres_namespace);
 	Query queryAuthors(authors_namespace);
-	Query queryBooks = Query(books_namespace, 0, 10).Where(price, CondGe, 500);
-	Query innerJoinQuery = Query(queryBooks).InnerJoin(authorid_fk, authorid, CondEq, queryAuthors);
-	Query orInnerJoinQuery = Query(innerJoinQuery).OrInnerJoin(genreId_fk, genreid, CondEq, queryGenres);
+	Query queryBooks = std::move(Query(books_namespace, 0, 10).Where(price, CondGe, 500));
+	Query innerJoinQuery = queryBooks.InnerJoin(authorid_fk, authorid, CondEq, queryAuthors);
 
-	Query testDslQuery = orInnerJoinQuery;
-	testDslQuery.mergeQueries_.push_back(queryBooks);
-	testDslQuery.mergeQueries_.push_back(innerJoinQuery);
+	Query testDslQuery = innerJoinQuery.OrInnerJoin(genreId_fk, genreid, CondEq, queryGenres);
+	testDslQuery.mergeQueries_.emplace_back(std::move(queryBooks));
+	testDslQuery.mergeQueries_.emplace_back(std::move(innerJoinQuery));
 	testDslQuery.selectFilter_.push_back(genreid);
 	testDslQuery.selectFilter_.push_back(bookid);
 	testDslQuery.selectFilter_.push_back(authorid_fk);
@@ -133,18 +148,12 @@ TEST_F(JoinSelectsApi, GeneralDSLTest) {
 
 	reindexer::AggregateEntry aggEntry;
 	aggEntry.fields_ = {bookid};
-	aggEntry.type_ = AggAvg;
+	aggEntry.type_ = AggDistinct;
 	testDslQuery.aggregations_.push_back(aggEntry);
-	aggEntry.fields_ = {genreid, title};
-	aggEntry.type_ = AggFacet;
-	aggEntry.sortingEntries_.push_back({genreid, false});
-	aggEntry.limit_ = 100;
-	aggEntry.offset_ = 10;
-	testDslQuery.aggregations_.push_back(aggEntry);
-	const string dsl1 = testDslQuery.GetJSON();
 
 	Query testLoadDslQuery;
+	const string dsl1 = testDslQuery.GetJSON();
 	Error err = testLoadDslQuery.FromJSON(dsl1);
-	ASSERT_TRUE(err.ok()) << err.what();
-	ASSERT_TRUE(testDslQuery == testLoadDslQuery);
+	EXPECT_TRUE(err.ok()) << err.what();
+	EXPECT_TRUE(testDslQuery == testLoadDslQuery);
 }

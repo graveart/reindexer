@@ -4,8 +4,11 @@
 #include "core/type_consts.h"
 #include "estl/intrusive_ptr.h"
 #include "estl/string_view.h"
+
+#ifdef REINDEX_CORE_BUILD
 #include "spdlog/fmt/bundled/printf.h"
 #include "spdlog/fmt/fmt.h"
+#endif	// REINDEX_CORE_BUILD
 
 namespace reindexer {
 
@@ -13,10 +16,12 @@ class Error {
 public:
 	Error(int code = errOK);
 	Error(int code, string_view what);
+#ifdef REINDEX_CORE_BUILD
 	template <typename... Args>
 	Error(int code, const char *fmt, const Args &... args) : Error(code, fmt::sprintf(fmt, args...)) {}
+#endif	// REINDEX_CORE_BUILD
 
-	const string &what() const;
+	const std::string &what() const;
 	int code() const;
 	bool ok() const { return !ptr_; }
 
@@ -24,14 +29,14 @@ public:
 
 protected:
 	struct payload {
-		payload(int code, const string &what) : code_(code), what_(what){};
+		payload(int code, const std::string &what) : code_(code), what_(what) {}
 		int code_;
 		std::string what_;
 	};
 	intrusive_ptr<intrusive_atomic_rc_wrapper<payload>> ptr_;
 };
 
-#ifdef NDEBUG
+#if defined(NDEBUG) || !defined(REINDEX_CORE_BUILD)
 #define assertf(...) ((void)0)
 #else
 template <typename... Args>

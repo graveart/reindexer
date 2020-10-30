@@ -14,9 +14,8 @@ WORKDIR /src
 RUN ./dependencies.sh && \
     mkdir build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo .. && \
     make -j8 reindexer_server reindexer_tool && \
-    make face swagger && \
     make install -C cpp_src/cmd/reindexer_server && \
     make install -C cpp_src/cmd/reindexer_tool && \
     cp ../cpp_src/cmd/reindexer_server/contrib/entrypoint.sh /entrypoint.sh && \
@@ -27,7 +26,7 @@ FROM alpine:latest
 
 COPY --from=build /usr/local /usr/local
 COPY --from=build /entrypoint.sh /entrypoint.sh
-RUN apk update && apk add libstdc++ libunwind snappy libexecinfo && rm -rf /var/cache/apk/*
+RUN apk update && apk add libstdc++ libunwind snappy libexecinfo leveldb && rm -rf /var/cache/apk/*
 
 ENV RX_DATABASE /db
 ENV RX_CORELOG stdout

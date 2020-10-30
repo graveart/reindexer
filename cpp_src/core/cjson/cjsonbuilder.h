@@ -2,6 +2,7 @@
 
 #include "core/keyvalue/p_string.h"
 #include "estl/span.h"
+#include "objtype.h"
 #include "tagsmatcher.h"
 
 namespace reindexer {
@@ -10,32 +11,29 @@ void copyCJsonValue(int tagType, Serializer &rdser, WrSerializer &wrser);
 
 class CJsonBuilder {
 public:
-	enum ObjType {
-		TypeObject,
-		TypeArray,
-		TypePlain,
-	};
-
-	CJsonBuilder(WrSerializer &ser, ObjType = TypeObject, TagsMatcher *tm = nullptr, int tagName = 0);
-	CJsonBuilder() : tm_(nullptr), ser_(nullptr), type_(TypePlain) {}
+	CJsonBuilder(WrSerializer &ser, ObjType = ObjType::TypeObject, const TagsMatcher *tm = nullptr, int tagName = 0);
+	CJsonBuilder() : tm_(nullptr), ser_(nullptr), type_(ObjType::TypePlain) {}
 	~CJsonBuilder();
 	CJsonBuilder(const CJsonBuilder &) = delete;
 	CJsonBuilder(CJsonBuilder &&other)
-		: tm_(other.tm_), ser_(other.ser_), type_(other.type_), savePos_(other.savePos_), count_(other.count_) {
-		other.type_ = TypePlain;
+		: tm_(other.tm_), ser_(other.ser_), type_(other.type_), savePos_(other.savePos_), count_(other.count_), itemType_(other.itemType_) {
+		other.type_ = ObjType::TypePlain;
 	}
 
 	CJsonBuilder &operator=(const CJsonBuilder &) = delete;
 	CJsonBuilder &operator=(CJsonBuilder &&) = delete;
 
-	void SetTagsMatcher(const TagsMatcher *tm);
+	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
+	void SetTagsPath(const TagsPath *) {}
 
 	/// Start new object
 	CJsonBuilder Object(int tagName);
-	CJsonBuilder Array(int tagName);
+	CJsonBuilder Array(int tagName, ObjType type = ObjType::TypeObjectArray);
 
-	CJsonBuilder Array(string_view name) { return Array(tm_->name2tag(name, true)); }
-	CJsonBuilder Object(string_view name) { return Object(tm_->name2tag(name, true)); }
+	CJsonBuilder Array(string_view name, ObjType type = ObjType::TypeObjectArray) {
+		throw Error(errLogic, "CJSON builder doesn't work with string tags [%s, %d]!", name.data(), int(type));
+	}
+	CJsonBuilder Object(std::nullptr_t) { return Object(0); }
 
 	void Array(int tagName, span<p_string> data) {
 		ser_->PutVarUint(static_cast<int>(ctag(TAG_ARRAY, tagName)));
@@ -69,12 +67,14 @@ public:
 	}
 
 	template <typename T>
-	CJsonBuilder &Put(string_view name, T arg) {
-		return Put(tm_->name2tag(name, true), arg);
+	CJsonBuilder &Put(std::nullptr_t, T arg) {
+		return Put(0, arg);
 	}
 
-	CJsonBuilder &Null(string_view name) { return Null(tm_->name2tag(name, true)); }
-	CJsonBuilder &Ref(string_view name, int type, int field) { return Ref(tm_->name2tag(name, true), type, field); }
+	void Write(string_view data) { ser_->Write(data); }
+
+	CJsonBuilder &Null(std::nullptr_t) { return Null(0); }
+	CJsonBuilder &Ref(std::nullptr_t, int type, int field) { return Ref(0, type, field); }
 
 	CJsonBuilder &Put(int tagName, bool arg);
 	CJsonBuilder &Put(int tagName, int arg);
@@ -87,16 +87,18 @@ public:
 	CJsonBuilder &Null(int tagName);
 	CJsonBuilder &Put(int tagName, const Variant &kv);
 	CJsonBuilder &Put(int tagName, const char *arg) { return Put(tagName, string_view(arg)); };
-
 	CJsonBuilder &End();
+
+	ObjType Type() const { return type_; }
 
 protected:
 	inline void putTag(int tag, int tagType);
-	TagsMatcher *tm_;
+	const TagsMatcher *tm_;
 	WrSerializer *ser_;
 	ObjType type_;
 	int savePos_ = 0;
 	int count_ = 0;
+	int itemType_ = TAG_OBJECT;
 };
 
 }  // namespace reindexer

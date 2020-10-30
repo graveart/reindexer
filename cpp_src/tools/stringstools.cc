@@ -20,6 +20,13 @@ using std::make_pair;
 
 namespace reindexer {
 
+string toLower(string_view src) {
+	string ret;
+	ret.reserve(src.size());
+	for (char ch : src) ret.push_back(tolower(ch));
+	return ret;
+}
+
 string escapeString(string_view str) {
 	string dst = "";
 	dst.reserve(str.length());
@@ -88,13 +95,13 @@ size_t calcUTf8SizeEnd(const char *end, int pos, size_t limit) {
 }
 
 void check_for_replacement(wchar_t &ch) {
-	if (ch == 0x451) {  // 'ё'
+	if (ch == 0x451) {	// 'ё'
 		ch = 0x435;		// 'е'
 	}
 }
 
 void check_for_replacement(uint32_t &ch) {
-	if (ch == 0x451) {  // 'ё'
+	if (ch == 0x451) {	// 'ё'
 		ch = 0x435;		// 'е'
 	}
 }
@@ -113,7 +120,7 @@ void split(string_view str, string &buf, vector<const char *> &words, const stri
 	for (auto it = str.begin(); it != str.end();) {
 		auto ch = utf8::unchecked::next(it);
 
-		while (it != str.end() && !IsAlpha(ch) && !IsDigit(ch)) {
+		while (it != str.end() && extraWordSymbols.find(ch) == string::npos && !IsAlpha(ch) && !IsDigit(ch)) {
 			ch = utf8::unchecked::next(it);
 		}
 
@@ -147,7 +154,7 @@ std::pair<int, int> word2Pos(string_view str, int wordPos, int endPos, const str
 	for (; it != str.end();) {
 		auto ch = utf8::unchecked::next(it);
 
-		while (it != str.end() && !IsAlpha(ch) && !IsDigit(ch)) {
+		while (it != str.end() && extraWordSymbols.find(ch) == string::npos && !IsAlpha(ch) && !IsDigit(ch)) {
 			wordStartIt = it;
 			ch = utf8::unchecked::next(it);
 		}
@@ -198,7 +205,7 @@ std::pair<int, int> Word2PosHelper::convert(int wordPos, int endPos) {
 	ret.first += lastOffset_;
 	ret.second += lastOffset_;
 	lastOffset_ = ret.first;
-	lastWordPos_ += wordPos;
+	lastWordPos_ = wordPos;
 	return ret;
 }
 
@@ -235,11 +242,17 @@ bool iequals(string_view lhs, string_view rhs) {
 	return true;
 }
 
-bool checkIfStartsWith(string_view src, string_view pattern) {
+bool checkIfStartsWith(string_view src, string_view pattern, bool casesensitive) {
 	if (src.empty() || pattern.empty()) return false;
 	if (src.length() > pattern.length()) return false;
-	for (size_t i = 0; i < src.length(); ++i) {
-		if (tolower(src[i]) != tolower(pattern[i])) return false;
+	if (casesensitive) {
+		for (size_t i = 0; i < src.length(); ++i) {
+			if (src[i] != pattern[i]) return false;
+		}
+	} else {
+		for (size_t i = 0; i < src.length(); ++i) {
+			if (tolower(src[i]) != tolower(pattern[i])) return false;
+		}
 	}
 	return true;
 }
@@ -420,6 +433,27 @@ LogLevel logLevelFromString(const string &strLogLevel) {
 	return LogNone;
 }
 
+static std::unordered_map<string, StrictMode> strictModes = {
+	{"", StrictModeNotSet}, {"none", StrictModeNone}, {"names", StrictModeNames}, {"indexes", StrictModeIndexes}};
+
+StrictMode strictModeFromString(const string &strStrictMode) {
+	auto configModeIt = strictModes.find(strStrictMode);
+	if (configModeIt != strictModes.end()) {
+		return configModeIt->second;
+	}
+	return StrictModeNotSet;
+}
+
+string_view strictModeToString(StrictMode mode) {
+	for (auto &it : strictModes) {
+		if (it.second == mode) {
+			return it.first;
+		}
+	}
+	static string_view empty = ""_sv;
+	return empty;
+}
+
 bool isPrintable(string_view str) {
 	if (str.length() > 256) {
 		return false;
@@ -474,27 +508,39 @@ std::string randStringAlph(size_t len) {
 }
 
 template <bool isUtf8>
+void toNextCh(string_view::iterator &it, const string_view &str) {
+	if (isUtf8) {
+		utf8::next(it, str.end());
+	} else {
+		++it;
+	}
+}
+
+template <bool isUtf8>
+void toPrevCh(string_view::iterator &it, const string_view &str) {
+	if (isUtf8) {
+		utf8::previous(it, str.begin());
+	} else {
+		--it;
+	}
+}
+
+template <bool isUtf8>
 Error getBytePosInMultilineString(string_view str, const size_t line, const size_t charPos, size_t &bytePos) {
 	auto it = str.begin();
 	size_t currLine = 0, currCharPos = 0;
-	for (; it != str.end();) {
-		if (*it == '\n')
+	for (size_t i = 0; it != str.end() && ((currLine != line) || (currCharPos != charPos)); toNextCh<isUtf8>(it, str), ++i) {
+		if (*it == '\n') {
 			++currLine;
-		else if (currLine == line) {
-			if (currCharPos == charPos) break;
+		} else if (currLine == line) {
 			++currCharPos;
-		}
-		if (isUtf8) {
-			utf8::next(it, str.end());
-		} else {
-			++it;
 		}
 	}
 	if ((currLine == line) && (charPos == currCharPos)) {
-		bytePos = it - str.begin();
+		bytePos = it - str.begin() - 1;
 		return errOK;
 	}
-	return Error(errNotValid, "Wrong cursor position: line=%d, pos=&d", line, charPos);
+	return Error(errNotValid, "Wrong cursor position: line=%d, pos=%d", line, charPos);
 }
 
 Error cursosPosToBytePos(string_view str, size_t line, size_t charPos, size_t &bytePos) {

@@ -2,7 +2,7 @@
 #include "core/item.h"
 #include "core/itemimpl.h"
 #include "core/keyvalue/p_string.h"
-#include "core/namespace.h"
+#include "core/namespace/namespace.h"
 #include "core/rdxcontext.h"
 
 namespace reindexer {
@@ -95,10 +95,14 @@ Item::~Item() {
 	delete impl_;
 }
 
-Error Item::FromJSON(const string_view &slice, char **endp, bool pkOnly) { return impl_->FromJSON(slice, endp, pkOnly); }
-Error Item::FromCJSON(const string_view &slice, bool pkOnly) { return impl_->FromCJSON(slice, pkOnly); }
+Error Item::FromJSON(string_view slice, char **endp, bool pkOnly) { return impl_->FromJSON(slice, endp, pkOnly); }
+Error Item::FromCJSON(string_view slice, bool pkOnly) { return impl_->FromCJSON(slice, pkOnly); }
 string_view Item::GetCJSON() { return impl_->GetCJSON(); }
 string_view Item::GetJSON() { return impl_->GetJSON(); }
+Error Item::FromMsgPack(string_view buf, size_t &offset) { return impl_->FromMsgPack(buf, offset); }
+Error Item::FromProtobuf(string_view sbuf) { return impl_->FromProtobuf(sbuf); }
+Error Item::GetMsgPack(WrSerializer &wrser) { return impl_->GetMsgPack(wrser); }
+Error Item::GetProtobuf(WrSerializer &wrser) { return impl_->GetProtobuf(wrser); }
 
 int Item::NumFields() { return impl_->Type().NumFields(); }
 Item::FieldRef Item::operator[](int field) const {
@@ -106,7 +110,7 @@ Item::FieldRef Item::operator[](int field) const {
 	return FieldRef(field, impl_);
 }
 
-Item::FieldRef Item::operator[](string_view name) {
+Item::FieldRef Item::operator[](string_view name) const {
 	int field = 0;
 	if (impl_->Type().FieldByName(name, field)) {
 		return FieldRef(field, impl_);
@@ -115,6 +119,7 @@ Item::FieldRef Item::operator[](string_view name) {
 	}
 }
 
+int Item::GetFieldTag(string_view name) const { return impl_->NameTag(name); }
 FieldsSet Item::PkFields() const { return impl_->PkFields(); }
 void Item::SetPrecepts(const vector<string> &precepts) { impl_->SetPrecepts(precepts); }
 bool Item::IsTagsUpdated() { return impl_->tagsMatcher().isUpdated(); }
@@ -131,6 +136,7 @@ void Item::setLSN(int64_t lsn) { impl_->Value().SetLSN(lsn); }
 template Item::FieldRef &Item::FieldRef::operator=(span<int> arr);
 template Item::FieldRef &Item::FieldRef::operator=(span<int64_t> arr);
 template Item::FieldRef &Item::FieldRef::operator=(span<std::string> arr);
+template Item::FieldRef &Item::FieldRef::operator=(span<double>);
 
 }  // namespace reindexer
    // namespace reindexer

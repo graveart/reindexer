@@ -6,12 +6,20 @@
 #include "core/item.h"
 #include "core/keyvalue/key_string.h"
 #include "core/keyvalue/variant.h"
+#include "core/queryresults/joinresults.h"
 #include "core/reindexer.h"
 #include "tools/fsops.h"
 #include "tools/logger.h"
 #include "tools/stringstools.h"
 
 #include <deque>
+#include <thread>
+#include "debug/backtrace.h"
+
+#include "core/keyvalue/p_string.h"
+#include "gason/gason.h"
+#include "server/loggerwrapper.h"
+#include "tools/serializer.h"
 
 using reindexer::Reindexer;
 
@@ -41,12 +49,272 @@ TEST_F(ReindexerApi, AddExistingNamespace) {
 	ASSERT_FALSE(err.ok()) << err.what();
 }
 
+TEST_F(ReindexerApi, RenameNamespace) {
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
+	ASSERT_TRUE(err.ok());
+	for (int i = 0; i < 10; ++i) {
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = i;
+		item["column1"] = i + 100;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+
+	const std::string renameNamespace("rename_namespace");
+	const std::string existingNamespace("existing_namespace");
+
+	err = rt.reindexer->OpenNamespace(existingNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	auto testInList = [&](const std::string& testNamespaceName, bool inList) {
+		vector<reindexer::NamespaceDef> namespacesList;
+		err = rt.reindexer->EnumNamespaces(namespacesList, reindexer::EnumNamespacesOpts());
+		ASSERT_TRUE(err.ok()) << err.what();
+		auto r = std::find_if(namespacesList.begin(), namespacesList.end(),
+							  [testNamespaceName](const reindexer::NamespaceDef& d) { return d.name == testNamespaceName; });
+		if (inList) {
+			ASSERT_FALSE(r == namespacesList.end()) << testNamespaceName << " not exist";
+		} else {
+			ASSERT_TRUE(r == namespacesList.end()) << testNamespaceName << " exist";
+		}
+	};
+
+	auto getRowsInJSON = [&](const std::string& namespaceName, std::vector<std::string>& resStrings) {
+		QueryResults result;
+		rt.reindexer->Select(Query(namespaceName), result);
+		resStrings.clear();
+		for (auto it = result.begin(); it != result.end(); ++it) {
+			reindexer::WrSerializer sr;
+			it.GetJSON(sr, false);
+			reindexer::string_view sv = sr.Slice();
+			resStrings.emplace_back(sv.data(), sv.size());
+		}
+	};
+
+	std::vector<std::string> resStrings;
+	std::vector<std::string> resStringsBeforeTest;
+	getRowsInJSON(default_namespace, resStringsBeforeTest);
+
+	// ok
+	err = rt.reindexer->RenameNamespace(default_namespace, renameNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	testInList(default_namespace, false);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to equal name
+	err = rt.reindexer->RenameNamespace(renameNamespace, renameNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to empty namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, "");
+	ASSERT_FALSE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to system namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, "#rename_namespace");
+	ASSERT_FALSE(err.ok()) << err.what();
+	testInList(renameNamespace, true);
+	getRowsInJSON(renameNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+
+	// rename to existing namespace
+	err = rt.reindexer->RenameNamespace(renameNamespace, existingNamespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+	testInList(renameNamespace, false);
+	testInList(existingNamespace, true);
+	getRowsInJSON(existingNamespace, resStrings);
+	ASSERT_TRUE(resStrings == resStringsBeforeTest) << "Data in namespace changed";
+}
+
 TEST_F(ReindexerApi, AddIndex) {
 	Error err = rt.reindexer->OpenNamespace(default_namespace);
 	ASSERT_TRUE(err.ok()) << err.what();
 
 	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
 	ASSERT_TRUE(err.ok()) << err.what();
+}
+
+TEST_F(ReindexerApi, DistinctDiffType) {
+	reindexer::p_string stringVal("abc");
+	std::hash<reindexer::p_string> hashStr;
+	size_t vString = hashStr(stringVal);
+	std::hash<size_t> hashInt;
+	auto vInt = hashInt(vString);
+	ASSERT_TRUE(vString == vInt) << "hash not equals";
+
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 1;
+		item["column1"] = int64_t(vInt);
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 2;
+		item["column1"] = stringVal;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item(rt.reindexer->NewItem(default_namespace));
+		ASSERT_TRUE(!!item);
+		ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item["id"] = 3;
+		item["column1"] = stringVal;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		ASSERT_TRUE(err.ok()) << err.what();
+	}
+
+	QueryResults result;
+	err = rt.reindexer->Select("select column1, distinct(column1) from test_namespace;", result);
+	ASSERT_TRUE(err.ok()) << err.what();
+	ASSERT_EQ(result.Count(), 2);
+	std::set<std::string> BaseVals = {"{\"column1\":" + std::to_string(int64_t(vInt)) + "}", "{\"column1\":\"abc\"}"};
+	std::set<std::string> Vals;
+	for (auto r : result) {
+		reindexer::WrSerializer ser;
+		auto err = r.GetJSON(ser, false);
+		ASSERT_TRUE(err.ok()) << err.what();
+		Vals.insert(ser.c_str());
+	}
+	ASSERT_TRUE(bool(BaseVals == Vals));
+}
+
+TEST_F(ReindexerApi, DistinctCompositeIndex) {
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, {"id", "hash", "int", IndexOpts().PK()});
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	reindexer::IndexDef indexDeclr;
+	indexDeclr.name_ = "v1+v2";
+	indexDeclr.indexType_ = "hash";
+	indexDeclr.fieldType_ = "composite";
+	indexDeclr.opts_ = IndexOpts();
+	indexDeclr.jsonPaths_ = reindexer::JsonPaths({"v1", "v2"});
+	err = rt.reindexer->AddIndex(default_namespace, indexDeclr);
+	EXPECT_TRUE(err.ok()) << err.what();
+
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 1;
+		item["v1"] = 2;
+		item["v2"] = 3;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 2;
+		item["v1"] = 2;
+		item["v2"] = 3;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+
+	Query q;
+	q._namespace = default_namespace;
+	q.Distinct("v1+v2");
+	{
+		QueryResults qr;
+		err = rt.reindexer->Select(q, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 1);
+	}
+
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 3;
+		item["v1"] = 3;
+		item["v2"] = 2;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		QueryResults qr;
+		err = rt.reindexer->Select(q, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 2);
+	}
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 4;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 5;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		QueryResults qr;
+		err = rt.reindexer->Select(q, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 3);
+	}
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 6;
+		item["v1"] = 3;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 7;
+		item["v1"] = 3;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		QueryResults qr;
+		err = rt.reindexer->Select(q, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 4);
+	}
+	{
+		Item item = NewItem(default_namespace);
+		item["id"] = 8;
+		item["v1"] = 4;
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+	{
+		QueryResults qr;
+		err = rt.reindexer->Select(q, qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 5);
+	}
 }
 
 TEST_F(ReindexerApi, AddIndex_CaseInsensitive) {
@@ -265,9 +533,9 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 	EXPECT_TRUE(err.ok()) << err.what();
 
 	const std::vector<string> possibleValues = {
-		"apple",	 "arrangment", "agreement", "banana",   "bull",  "beech", "crocodile", "crucifix", "coat",	 "day",
-		"dog",		 "deer",	   "easter",	"ear",		"eager", "fair",  "fool",	  "foot",	 "genes",	"genres",
-		"greatness", "hockey",	 "homeless",  "homocide", "key",   "kit",   "knockdown", "motion",   "monument", "movement"};
+		"apple",	 "arrangment", "agreement", "banana",	"bull",	 "beech", "crocodile", "crucifix", "coat",	   "day",
+		"dog",		 "deer",	   "easter",	"ear",		"eager", "fair",  "fool",	   "foot",	   "genes",	   "genres",
+		"greatness", "hockey",	   "homeless",	"homocide", "key",	 "kit",	  "knockdown", "motion",   "monument", "movement"};
 
 	int sameOldValue = 0;
 	int stringValuedIdx = 0;
@@ -296,7 +564,7 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 	const size_t limit = 61;
 
 	QueryResults qr;
-	Query query = Query(default_namespace, offset, limit).Sort("column1", true).Sort("column2", false).Sort("column3", false);
+	Query query = std::move(Query(default_namespace, offset, limit).Sort("column1", true).Sort("column2", false).Sort("column3", false));
 	err = rt.reindexer->Select(query, qr);
 	EXPECT_TRUE(err.ok()) << err.what();
 	EXPECT_TRUE(qr.Count() == limit) << qr.Count();
@@ -312,7 +580,7 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 
 		for (size_t j = 0; j < query.sortingEntries_.size(); ++j) {
 			const reindexer::SortingEntry& sortingEntry(query.sortingEntries_[j]);
-			Variant sortedValue = item[sortingEntry.column];
+			Variant sortedValue = item[sortingEntry.expression];
 			if (lastValues[j].Type() != KeyValueNull) {
 				cmpRes[j] = lastValues[j].Compare(sortedValue);
 				bool needToVerify = true;
@@ -328,7 +596,7 @@ TEST_F(ReindexerApi, SortByMultipleColumns) {
 					bool sortOrderSatisfied =
 						(sortingEntry.desc && cmpRes[j] >= 0) || (!sortingEntry.desc && cmpRes[j] <= 0) || (cmpRes[j] == 0);
 					EXPECT_TRUE(sortOrderSatisfied)
-						<< "\nSort order is incorrect for column: " << sortingEntry.column << "; rowID: " << item[1].As<int>();
+						<< "\nSort order is incorrect for column: " << sortingEntry.expression << "; rowID: " << item[1].As<int>();
 				}
 			}
 		}
@@ -379,7 +647,7 @@ TEST_F(ReindexerApi, SortByMultipleColumnsWithLimits) {
 	const size_t limit = 3;
 
 	QueryResults qr;
-	Query query = Query(default_namespace, offset, limit).Sort("f1", false).Sort("f2", false);
+	Query query = std::move(Query(default_namespace, offset, limit).Sort("f1", false).Sort("f2", false));
 	err = rt.reindexer->Select(query, qr);
 	EXPECT_TRUE(err.ok()) << err.what();
 	EXPECT_TRUE(qr.Count() == limit) << qr.Count();
@@ -456,7 +724,7 @@ TEST_F(ReindexerApi, SortByUnorderedIndexes) {
 	const unsigned limit = 30;
 
 	QueryResults sortByIntQr;
-	Query sortByIntQuery = Query(default_namespace, offset, limit).Sort("valueInt", descending);
+	Query sortByIntQuery = std::move(Query(default_namespace, offset, limit).Sort("valueInt", descending));
 	err = rt.reindexer->Select(sortByIntQuery, sortByIntQr);
 	EXPECT_TRUE(err.ok()) << err.what();
 
@@ -470,10 +738,10 @@ TEST_F(ReindexerApi, SortByUnorderedIndexes) {
 	EXPECT_TRUE(std::equal(allIntValues.begin() + offset, allIntValues.begin() + offset + limit, selectedIntValues.begin()));
 
 	QueryResults sortByStrQr, sortByASCIIStrQr, sortByNumericStrQr, sortByUTF8StrQr;
-	Query sortByStrQuery = Query(default_namespace).Sort("valueString", !descending);
-	Query sortByASSCIIStrQuery = Query(default_namespace).Sort("valueStringASCII", !descending);
-	Query sortByNumericStrQuery = Query(default_namespace).Sort("valueStringNumeric", !descending);
-	Query sortByUTF8StrQuery = Query(default_namespace).Sort("valueStringUTF8", !descending);
+	Query sortByStrQuery = std::move(Query(default_namespace).Sort("valueString", !descending));				// -V547
+	Query sortByASSCIIStrQuery = std::move(Query(default_namespace).Sort("valueStringASCII", !descending));		// -V547
+	Query sortByNumericStrQuery = std::move(Query(default_namespace).Sort("valueStringNumeric", !descending));	// -V547
+	Query sortByUTF8StrQuery = std::move(Query(default_namespace).Sort("valueStringUTF8", !descending));		// -V547
 
 	err = rt.reindexer->Select(sortByStrQuery, sortByStrQr);
 	EXPECT_TRUE(err.ok()) << err.what();
@@ -579,15 +847,15 @@ TEST_F(ReindexerApi, SortByUnorderedIndexWithJoins) {
 	const unsigned limit = 40;
 
 	Query querySecondNamespace = Query(secondNamespace);
-	Query sortQuery = Query(default_namespace, offset, limit).Sort("id", descending);
-	Query joinQuery = sortQuery.InnerJoin("fk", "pk", CondEq, querySecondNamespace);
+	Query joinQuery = std::move(Query(default_namespace, offset, limit).Sort("id", descending));
+	joinQuery.InnerJoin("fk", "pk", CondEq, querySecondNamespace);
 
 	QueryResults queryResult;
 	err = rt.reindexer->Select(joinQuery, queryResult);
 	EXPECT_TRUE(err.ok()) << err.what();
 
 	for (auto it : queryResult) {
-		auto itemIt = it.GetJoinedItemsIterator();
+		auto itemIt = it.GetJoined();
 		EXPECT_TRUE(itemIt.getJoinedItemsCount() > 0);
 	}
 }
@@ -599,144 +867,211 @@ void TestDSLParseCorrectness(const string& testDsl) {
 }
 
 TEST_F(ReindexerApi, DslFieldsTest) {
-	TestDSLParseCorrectness(R"xxx({"join_queries": [{
-                                    "type": "inner",
-                                    "op": "AND",
-                                    "namespace": "test1",
-                                    "filters": [{
-                                        "Op": "",
-                                        "Field": "id",
-                                        "Cond": "SET",
-                                        "Value": [81204872, 101326571, 101326882]
-                                    }],
-                                    "sort": {
-                                        "field": "test1",
-                                        "desc": true
-                                    },
-                                    "limit": 3,
-                                    "offset": 0,
-                                    "on": [{
-                                            "left_field": "joined",
-                                            "right_field": "joined",
-                                            "cond": "lt",
-                                            "op": "OR"
-                                        },
-                                        {
-                                            "left_field": "joined2",
-                                            "right_field": "joined2",
-                                            "cond": "gt",
-                                            "op": "AND"
-                                        }
-                                    ]
-                                },
-                                {
-                                    "type": "left",
-                                    "op": "OR",
-                                    "namespace": "test2",
-                                    "filters": [{
-                                        "filters": [{
-                                                "Op": "And",
-                                                "Filters": [{
-                                                        "Op": "Not",
-                                                        "Field": "id2",
-                                                        "Cond": "SET",
-                                                        "Value": [81204872, 101326571, 101326882]
-                                                    },
-                                                    {
-                                                        "Op": "Or",
-                                                        "Field": "id2",
-                                                        "Cond": "SET",
-                                                        "Value": [81204872, 101326571, 101326882]
-                                                    },
-                                                    {
-                                                        "Op": "And",
-                                                        "filters": [{
-                                                                "Op": "Not",
-                                                                "Field": "id2",
-                                                                "Cond": "SET",
-                                                                "Value": [81204872, 101326571, 101326882]
-                                                            },
-                                                            {
-                                                                "Op": "Or",
-                                                                "Field": "id2",
-                                                                "Cond": "SET",
-                                                                "Value": [81204872, 101326571, 101326882]
-                                                            }
-                                                        ]
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "Op": "Not",
-                                                "Field": "id2",
-                                                "Cond": "SET",
-                                                "Value": [81204872, 101326571, 101326882]
-                                            }
-                                        ]
-                                    }],
-                                    "sort": {
-                                        "field": "test2",
-                                        "desc": true
-                                    },
-                                    "limit": 4,
-                                    "offset": 5,
-                                    "on": [{
-                                            "left_field": "joined1",
-                                            "right_field": "joined1",
-                                            "cond": "le",
-                                            "op": "AND"
-                                        },
-                                        {
-                                            "left_field": "joined2",
-                                            "right_field": "joined2",
-                                            "cond": "ge",
-                                            "op": "OR"
-                                        }
-                                    ]
-                                }
-                            ]
-                        })xxx");
+	TestDSLParseCorrectness(R"xxx({
+		"namespace": "test_ns"
+		"filters": [
+			{
+				"op": "AND",
+				"join_query": {
+					"type": "inner",
+					"namespace": "test1",
+					"filters": [
+						{
+							"Op": "OR",
+							"Field": "id",
+							"Cond": "EMPTY"
+						}
+					],
+					"sort": {
+						"field": "test1",
+						"desc": true
+					},
+					"limit": 3,
+					"offset": 0,
+					"on": [
+						{
+							"left_field": "joined",
+							"right_field": "joined",
+							"cond": "lt",
+							"op": "OR"
+						},
+						{
+							"left_field": "joined2",
+							"right_field": "joined2",
+							"cond": "gt",
+							"op": "AND"
+						}
+					]
+				}
+			},
+		   {
+			"op": "OR",
+			"join_query": {
+				"type": "left",
+				"namespace": "test2",
+				"filters": [
+					{
+						"filters": [
+							{
+								"Op": "And",
+								"Filters": [
+									{
+										"Op": "Not",
+										"Field": "id2",
+										"Cond": "SET",
+										"Value": [
+											81204872,
+											101326571,
+											101326882
+										]
+									},
+									{
+										"Op": "Or",
+										"Field": "id2",
+										"Cond": "SET",
+										"Value": [
+											81204872,
+											101326571,
+											101326882
+										]
+									},
+									{
+										"Op": "And",
+										"filters": [
+											{
+												"Op": "Not",
+												"Field": "id2",
+												"Cond": "SET",
+												"Value": [
+													81204872,
+													101326571,
+													101326882
+												]
+											},
+											{
+												"Op": "Or",
+												"Field": "id2",
+												"Cond": "SET",
+												"Value": [
+													81204872,
+													101326571,
+													101326882
+												]
+											}
+										]
+									}
+								]
+							},
+							{
+								"Op": "Not",
+								"Field": "id2",
+								"Cond": "SET",
+								"Value": [
+									81204872,
+									101326571,
+									101326882
+								]
+							}
+						]
+					}
+				],
+				"sort": {
+					"field": "test2",
+					"desc": true
+				},
+				"limit": 4,
+				"offset": 5,
+				"on": [
+					{
+						"left_field": "joined1",
+						"right_field": "joined1",
+						"cond": "le",
+						"op": "AND"
+					},
+					{
+						"left_field": "joined2",
+						"right_field": "joined2",
+						"cond": "ge",
+						"op": "OR"
+					}
+				]
+				}
+			}
 
-	TestDSLParseCorrectness(R"xxx({"merge_queries": [{
-                                    "namespace": "services",
-                                    "offset": 0,
-                                    "limit": 3,
-                                    "distinct": "",
-                                    "sort": {
-                                        "field": "",
-                                        "desc": true
-                                    },
-                                    "filters": [{
-                                        "Op": "",
-                                        "Field": "id",
-                                        "Cond": "SET",
-                                        "Value": [81204872, 101326571, 101326882]
-                                    }]
-                                },
-                                {
-                                    "namespace": "services",
-                                    "offset": 1,
-                                    "limit": 5,
-                                    "distinct": "",
-                                    "sort": {
-                                        "field": "field1",
-                                        "desc": false
-                                    },
-                                    "filters": [{
-                                        "Op": "not",
-                                        "Field": "id",
-                                        "Cond": "ge",
-                                        "Value": 81204872
-                                    }]
-                                }
-                            ]
-                        })xxx");
-	TestDSLParseCorrectness(R"xxx({"select_filter": ["f1", "f2", "f3", "f4", "f5"]})xxx");
-	TestDSLParseCorrectness(R"xxx({"select_functions": ["f1()", "f2()", "f3()", "f4()", "f5()"]})xxx");
-	TestDSLParseCorrectness(R"xxx({"req_total":"cached"})xxx");
-	TestDSLParseCorrectness(R"xxx({"req_total":"enabled"})xxx");
-	TestDSLParseCorrectness(R"xxx({"req_total":"disabled"})xxx");
-	TestDSLParseCorrectness(R"xxx({"aggregations":[{"field":"field1", "type":"sum"}, {"field":"field2", "type":"avg"}]})xxx");
+		]
+	})xxx");
+
+	TestDSLParseCorrectness(R"xxx({
+										"namespace": "test_ns",
+										"merge_queries": [{
+											"namespace": "services",
+											"offset": 0,
+											"limit": 3,
+											"sort": {
+												"field": "",
+												"desc": true
+											},
+											"filters": [{
+												"Op": "or",
+												"Field": "id",
+												"Cond": "SET",
+												"Value": [81204872, 101326571, 101326882]
+											}]
+										},
+										{
+											"namespace": "services",
+											"offset": 1,
+											"limit": 5,
+											"sort": {
+												"field": "field1",
+												"desc": false
+											},
+											"filters": [{
+												"Op": "not",
+												"Field": "id",
+												"Cond": "ge",
+												"Value": 81204872
+											}]
+										}
+									]
+								})xxx");
+
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1","select_filter": ["f1", "f2", "f3", "f4", "f5"]})xxx");
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1","select_functions": ["f1()", "f2()", "f3()", "f4()", "f5()"]})xxx");
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1","req_total":"cached"})xxx");
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1","req_total":"enabled"})xxx");
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1","req_total":"disabled"})xxx");
+	TestDSLParseCorrectness(
+		R"xxx({"namespace": "test1","aggregations":[{"fields":["field1"], "type":"sum"}, {"fields":["field2"], "type":"avg"}]})xxx");
+	TestDSLParseCorrectness(R"xxx({"namespace": "test1", "strict_mode":"indexes"})xxx");
+}
+
+TEST_F(ReindexerApi, DistinctQueriesEncodingTest) {
+	const string sql = "select distinct(country), distinct(city) from clients;";
+
+	Query q1;
+	q1.FromSQL(sql);
+	EXPECT_EQ(q1.entries.Size(), 0);
+	ASSERT_EQ(q1.aggregations_.size(), 2);
+	EXPECT_EQ(q1.aggregations_[0].type_, AggDistinct);
+	ASSERT_EQ(q1.aggregations_[0].fields_.size(), 1);
+	EXPECT_EQ(q1.aggregations_[0].fields_[0], "country");
+	EXPECT_EQ(q1.aggregations_[1].type_, AggDistinct);
+	ASSERT_EQ(q1.aggregations_[1].fields_.size(), 1);
+	EXPECT_EQ(q1.aggregations_[1].fields_[0], "city");
+
+	string dsl = q1.GetJSON();
+	Query q2;
+	q2.FromJSON(dsl);
+	EXPECT_TRUE(q1 == q2);
+
+	Query q3 = std::move(Query(default_namespace).Distinct("name").Distinct("city").Where("id", CondGt, static_cast<int64_t>(10)));
+	string sql2 = q3.GetSQL();
+
+	Query q4;
+	q4.FromSQL(sql2);
+	EXPECT_TRUE(q3 == q4);
+	EXPECT_TRUE(sql2 == q4.GetSQL());
 }
 
 TEST_F(ReindexerApi, ContextCancelingTest) {
@@ -765,7 +1100,7 @@ TEST_F(ReindexerApi, ContextCancelingTest) {
 
 	// Canceled delete
 	vector<reindexer::NamespaceDef> namespaces;
-	err = rt.reindexer->WithContext(&canceledCtx).EnumNamespaces(namespaces, true);
+	err = rt.reindexer->WithContext(&canceledCtx).EnumNamespaces(namespaces, reindexer::EnumNamespacesOpts());
 	ASSERT_TRUE(err.code() == errCanceled);
 
 	// Canceled select
@@ -833,4 +1168,281 @@ TEST_F(ReindexerApi, ContextCancelingTest) {
 	err = rt.reindexer->Select(Query(default_namespace), qr);
 	ASSERT_TRUE(err.ok()) << err.what();
 	ASSERT_EQ(qr.Count(), 0);
+}
+
+TEST_F(ReindexerApi, JoinConditionsSqlParserTest) {
+	Query query;
+	const string sql = "SELECT * FROM ns WHERE a > 0 AND  INNER JOIN (SELECT * FROM ns2 WHERE b > 10 AND c = 1) ON ns2.id = ns.fk_id";
+	query.FromSQL(sql);
+	ASSERT_TRUE(query.GetSQL() == sql);
+}
+
+TEST_F(ReindexerApi, UpdateWithBoolParserTest) {
+	Query query;
+	const string sql = "UPDATE ns SET flag1 = true,flag2 = false WHERE id > 100";
+	query.FromSQL(sql);
+	ASSERT_TRUE(query.UpdateFields().size() == 2);
+	ASSERT_TRUE(query.UpdateFields().front().column == "flag1");
+	ASSERT_TRUE(query.UpdateFields().front().mode == FieldModeSet);
+	ASSERT_TRUE(query.UpdateFields().front().values.size() == 1);
+	ASSERT_TRUE(query.UpdateFields().front().values.front().Type() == KeyValueBool &&
+				query.UpdateFields().front().values.front().As<bool>() == true);
+	ASSERT_TRUE(query.UpdateFields().back().column == "flag2");
+	ASSERT_TRUE(query.UpdateFields().back().mode == FieldModeSet);
+	ASSERT_TRUE(query.UpdateFields().back().values.size() == 1);
+	ASSERT_TRUE(query.UpdateFields().back().values.front().Type() == KeyValueBool &&
+				query.UpdateFields().back().values.front().As<bool>() == false);
+	ASSERT_TRUE(query.GetSQL() == sql) << query.GetSQL();
+}
+
+TEST_F(ReindexerApi, EqualPositionsSqlParserTest) {
+	const string sql =
+		"SELECT * FROM ns WHERE (f1 = 1 AND f2 = 2 OR f3 = 3 equal_position(f1,f2) equal_position(f1,f3)) OR (f4 = 4 AND f5 > 5 "
+		"equal_position(f4,f5))";
+
+	Query query;
+	query.FromSQL(sql);
+	EXPECT_TRUE(query.equalPositions_.size() == 3);
+
+	auto rangeBracket1 = query.equalPositions_.equal_range(0);
+	EXPECT_TRUE(rangeBracket1.first != query.equalPositions_.end());
+	EXPECT_TRUE(std::next(rangeBracket1.first) != query.equalPositions_.end());
+
+	const reindexer::EqualPosition& ep1 = rangeBracket1.first->second;
+	EXPECT_TRUE(ep1.size() == 2) << ep1.size();
+	EXPECT_TRUE(ep1[0] == 1) << ep1[0];
+	EXPECT_TRUE(ep1[1] == 2) << ep1[1];
+
+	const reindexer::EqualPosition& ep2 = std::next(rangeBracket1.first)->second;
+	EXPECT_TRUE(ep2.size() == 2) << ep2.size();
+	EXPECT_TRUE(ep2[0] == 1) << ep2[0];
+	EXPECT_TRUE(ep2[1] == 3) << ep2[1];
+
+	auto rangeBracket2 = query.equalPositions_.equal_range(4);
+	EXPECT_TRUE(rangeBracket2.first != query.equalPositions_.end());
+	EXPECT_TRUE(std::next(rangeBracket2.first) == query.equalPositions_.end());
+	const reindexer::EqualPosition& ep3 = rangeBracket2.first->second;
+	EXPECT_TRUE(ep3.size() == 2) << ep3.size();
+	EXPECT_TRUE(ep3[0] == 5) << ep3[0];
+	EXPECT_TRUE(ep3[1] == 6) << ep3[1];
+
+	EXPECT_TRUE(query.GetSQL() == sql);
+}
+
+TEST_F(ReindexerApi, SchemaSuggestions) {
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	// clang-format off
+    const std::string jsonschema = R"xxx(
+    {
+      "required": [
+        "Countries",
+        "Nest_fake",
+        "nested"
+      ],
+      "properties": {
+        "Countries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "Nest_fake": {
+          "type": "number"
+        },
+        "nested": {
+          "required": [
+            "Name",
+            "Naame",
+            "Age"
+          ],
+          "properties": {
+            "Name": {
+              "type": "string"
+            },
+            "Naame": {
+              "type": "string"
+            },
+            "Age": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    })xxx";
+	// clang-format on
+
+	err = rt.reindexer->SetSchema(default_namespace, jsonschema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	auto validateSuggestions = [](const std::vector<std::string>& actual, const std::unordered_set<std::string>& expected) {
+		ASSERT_EQ(actual.size(), expected.size());
+		for (auto& sugg : actual) {
+			EXPECT_TRUE(expected.find(sugg) != expected.end()) << "Unexpected suggestion: " << sugg;
+		}
+	};
+
+	{
+		std::unordered_set<std::string> expected = {"Nest_fake", "nested"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where ne";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected;
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected = {".Name", ".Naame", ".Age"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested.";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+
+	{
+		std::unordered_set<std::string> expected = {".Name", ".Naame"};
+		std::vector<std::string> suggestions;
+		reindexer::string_view query = "select * from test_namespace where nested.Na";
+		err = rt.reindexer->GetSqlSuggestions(query, query.size() - 1, suggestions);
+		ASSERT_TRUE(err.ok()) << err.what();
+		validateSuggestions(suggestions, expected);
+	}
+}
+
+TEST_F(ReindexerApi, LoggerWriteInterruptTest) {
+	struct Logger {
+		Logger() {
+			spdlog::drop_all();
+			spdlog::set_async_mode(16384, spdlog::async_overflow_policy::discard_log_msg, nullptr, std::chrono::seconds(2));
+			spdlog::set_level(spdlog::level::trace);
+			spdlog::set_pattern("[%L%d/%m %T.%e %t] %v");
+
+			std::remove(logFile.c_str());
+			sinkPtr = std::make_shared<spdlog::sinks::fast_file_sink>(logFile);
+			spdlog::create("log", sinkPtr);
+			logger = reindexer_server::LoggerWrapper("log");
+		}
+		~Logger() { std::remove(logFile.c_str()); }
+		const string logFile = "/tmp/logtest.out";
+		reindexer_server::LoggerWrapper logger;
+		std::shared_ptr<spdlog::sinks::fast_file_sink> sinkPtr;
+	} instance;
+
+	reindexer::logInstallWriter([&](int level, char* buf) {
+		if (level <= LogTrace) {
+			instance.logger.trace(buf);
+		}
+	});
+	auto writeThread = std::thread([]() {
+		for (size_t i = 0; i < 10000; ++i) {
+			reindexer::logPrintf(LogTrace, "Detailed and amazing description of this error: [%d]!", i);
+		}
+	});
+	auto reopenThread = std::thread([&instance]() {
+		for (size_t i = 0; i < 1000; ++i) {
+			instance.sinkPtr->reopen();
+			reindexer::logPrintf(LogTrace, "REOPENED [%d]", i);
+			std::this_thread::sleep_for(std::chrono::milliseconds(3));
+		}
+	});
+	writeThread.join();
+	reopenThread.join();
+	reindexer::logPrintf(LogTrace, "FINISHED\n");
+	reindexer::logInstallWriter(nullptr);
+}
+
+TEST_F(ReindexerApi, IntToStringIndexUpdate) {
+	const string kFieldId = "id";
+	const string kFieldNumeric = "numeric";
+
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, {kFieldId, "hash", "int", IndexOpts().PK()});
+	EXPECT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, {kFieldNumeric, "tree", "int", IndexOpts()});
+	EXPECT_TRUE(err.ok()) << err.what();
+
+	for (int i = 0; i < 100; ++i) {
+		Item item(rt.reindexer->NewItem(default_namespace));
+		EXPECT_TRUE(item.Status().ok()) << item.Status().what();
+
+		item[kFieldId] = i;
+		item[kFieldNumeric] = i * 2;
+
+		err = rt.reindexer->Upsert(default_namespace, item);
+		EXPECT_TRUE(err.ok()) << err.what();
+	}
+
+	err = rt.reindexer->UpdateIndex(default_namespace, {kFieldNumeric, "tree", "string", IndexOpts()});
+	EXPECT_FALSE(err.ok());
+	EXPECT_TRUE(err.what() == "Cannot convert key from type int to string") << err.what();
+
+	QueryResults qr;
+	err = rt.reindexer->Select(Query(default_namespace), qr);
+	EXPECT_TRUE(err.ok()) << err.what();
+
+	for (auto it : qr) {
+		Item item = it.GetItem();
+		Variant v = item[kFieldNumeric];
+		EXPECT_TRUE(v.Type() == KeyValueInt) << v.Type();
+	}
+}
+
+TEST_F(ReindexerApi, SelectFilterWithAggregationConstraints) {
+	Query q;
+
+	string sql = "select id, distinct(year) from test_namespace";
+	EXPECT_NO_THROW(q.FromSQL(sql));
+	Error status = Query().FromJSON(q.GetJSON());
+	EXPECT_TRUE(status.ok()) << status.what();
+
+	q = Query();
+	q.selectFilter_.emplace_back("id");
+	EXPECT_NO_THROW(q.Aggregate(AggDistinct, {"year"}, {}));
+
+	sql = "select id, max(year) from test_namespace";
+	EXPECT_THROW(q.FromSQL(sql), Error);
+	q = Query(default_namespace);
+	q.selectFilter_.emplace_back("id");
+	q.aggregations_.emplace_back(reindexer::AggregateEntry{AggMax, {"year"}});
+	status = Query().FromJSON(q.GetJSON());
+	EXPECT_FALSE(status.ok());
+	EXPECT_TRUE(status.what() == string(reindexer::kAggregationWithSelectFieldsMsgError));
+	EXPECT_THROW(q.Aggregate(AggMax, {"price"}, {}), Error);
+
+	sql = "select facet(year), id, name from test_namespace";
+	EXPECT_THROW(q.FromSQL(sql), Error);
+	q = Query(default_namespace);
+	q.selectFilter_.emplace_back("id");
+	q.selectFilter_.emplace_back("name");
+	EXPECT_THROW(q.Aggregate(AggFacet, {"year"}, {}), Error);
+	q = Query(default_namespace);
+	EXPECT_NO_THROW(q.Aggregate(AggFacet, {"year"}, {}));
+	q.selectFilter_.emplace_back("id");
+	q.selectFilter_.emplace_back("name");
+	status = Query().FromJSON(q.GetJSON());
+	EXPECT_FALSE(status.ok());
+	EXPECT_TRUE(status.what() == string(reindexer::kAggregationWithSelectFieldsMsgError));
+
+	EXPECT_THROW(Query().FromSQL("select max(id), * from test_namespace"), Error);
+	EXPECT_THROW(Query().FromSQL("select *, max(id) from test_namespace"), Error);
+	EXPECT_NO_THROW(Query().FromSQL("select *, count(*) from test_namespace"));
+	EXPECT_NO_THROW(Query().FromSQL("select count(*), * from test_namespace"));
 }

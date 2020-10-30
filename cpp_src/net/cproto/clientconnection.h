@@ -64,21 +64,65 @@ protected:
 	friend class ClientConnection;
 };
 
+struct CommandParams {
+	CommandParams(CmdCode c, seconds n, milliseconds e, const IRdxCancelContext *ctx)
+		: cmd(c), netTimeout(n), execTimeout(e), cancelCtx(ctx) {}
+	CmdCode cmd;
+	seconds netTimeout;
+	milliseconds execTimeout;
+	const IRdxCancelContext *cancelCtx;
+};
+
 class ClientConnection : public ConnectionMT {
 public:
-	ClientConnection(ev::dynamic_loop &loop, const httpparser::UrlParser *uri, seconds loginTimeout = seconds(0),
-					 seconds requestTimeout = seconds(0));
-	~ClientConnection();
 	typedef std::function<void(RPCAnswer &&ans, ClientConnection *conn)> Completion;
+	typedef std::function<bool(int)> ConnectionFailCallback;
+	struct Options {
+		Options()
+			: loginTimeout(0),
+			  keepAliveTimeout(0),
+			  createDB(false),
+			  hasExpectedClusterID(false),
+			  expectedClusterID(-1),
+			  reconnectAttempts(),
+			  enableCompression(false) {}
+		Options(seconds _loginTimeout, seconds _keepAliveTimeout, bool _createDB, bool _hasExpectedClusterID, int _expectedClusterID,
+				int _reconnectAttempts, bool _enableCompression, std::string _appName)
+			: loginTimeout(_loginTimeout),
+			  keepAliveTimeout(_keepAliveTimeout),
+			  createDB(_createDB),
+			  hasExpectedClusterID(_hasExpectedClusterID),
+			  expectedClusterID(_expectedClusterID),
+			  reconnectAttempts(_reconnectAttempts),
+			  enableCompression(_enableCompression),
+			  appName(std::move(_appName)) {}
 
-	struct CommandParams {
-		CommandParams(CmdCode c, seconds n, milliseconds e, const IRdxCancelContext *ctx = nullptr)
-			: cmd(c), netTimeout(n), execTimeout(e), cancelCtx(ctx) {}
-		CmdCode cmd;
-		seconds netTimeout;
-		milliseconds execTimeout;
-		const IRdxCancelContext *cancelCtx;
+		seconds loginTimeout;
+		seconds keepAliveTimeout;
+		bool createDB;
+		bool hasExpectedClusterID;
+		int expectedClusterID;
+		int reconnectAttempts;
+		bool enableCompression;
+		std::string appName;
 	};
+	struct ConnectData {
+		struct Entry {
+			httpparser::UrlParser uri;
+			Options opts;
+			std::atomic<int> connectAttempts = {0};
+		};
+		bool ThereAreReconnectOptions() const;
+		bool CurrDsnFailed(int failedDsnIdx) const;
+		int GetNextDsnIndex() const;
+		std::vector<Entry> entries;
+		std::atomic<int> validEntryIdx = {0};
+		int lastFailedEntryIdx = {-1};
+	};
+
+	ClientConnection(ev::dynamic_loop &loop, ConnectData *connectData,
+					 ConnectionFailCallback connectionFailCallback = ConnectionFailCallback());
+	~ClientConnection();
 
 	template <typename... Argss>
 	void Call(const Completion &cmpl, const CommandParams &opts, Argss... argss) {
@@ -103,9 +147,7 @@ public:
 			opts, args, argss...);
 		std::unique_lock<std::mutex> lck(mtx_);
 		bufWait_++;
-		while (!set) {  // -V776
-			bufCond_.wait(lck);
-		}
+		bufCond_.wait(lck, [&set]() { return set.load(); });
 		bufWait_--;
 
 		return ret;
@@ -121,19 +163,20 @@ public:
 		delete cur;
 	}
 	seconds Now() const { return seconds(now_); }
+	Error CheckConnection();
+
+	void Reconnect();
 
 protected:
+	enum State { ConnInit, ConnConnecting, ConnConnected, ConnFailed, ConnClosing };
+
 	void connect_async_cb(ev::async &) { connectInternal(); }
-	void keep_alive_cb(ev::periodic &, int) {
-		if (!terminate_.load(std::memory_order_acquire)) {
-			call([](RPCAnswer &&, ClientConnection *) {}, {kCmdPing, keepAliveTimeout_, milliseconds(0)}, {});
-			callback(io_, ev::WRITE);
-		}
-	}
+	void keep_alive_cb(ev::periodic &, int);
 	void deadline_check_cb(ev::timer &, int);
 
-	void connectInternal();
+	void connectInternal() noexcept;
 	void failInternal(const Error &error);
+	void disconnect();
 
 	template <typename... Argss>
 	inline void call(const Completion &cmpl, const CommandParams &opts, Args &args, const string_view &val, Argss... argss) {
@@ -152,7 +195,6 @@ protected:
 	}
 
 	void call(Completion cmpl, const CommandParams &opts, const Args &args);
-
 	chunk packRPC(CmdCode cmd, uint32_t seq, const Args &args, const Args &ctxArgs);
 
 	void onRead() override;
@@ -169,26 +211,27 @@ protected:
 		const reindexer::IRdxCancelContext *cancelCtx;
 	};
 
-	enum State { ConnInit, ConnConnecting, ConnConnected, ConnFailed };
-
 	State state_;
 	// Lock free map seq -> completion
 	vector<RPCCompletion> completions_;
-	std::condition_variable connectCond_, bufCond_;
+	std::condition_variable connectCond_, bufCond_, closingCond_;
 	std::atomic<uint32_t> seq_;
 	std::atomic<int32_t> bufWait_;
 	std::mutex mtx_;
 	std::thread::id loopThreadID_;
 	Error lastError_;
-	const httpparser::UrlParser *uri_;
 	ev::async connect_async_;
 	atomic_unique_ptr<Completion> updatesHandler_;
 	ev::periodic keep_alive_;
 	ev::periodic deadlineTimer_;
 	std::atomic<uint32_t> now_;
-	const seconds loginTimeout_;
-	const seconds keepAliveTimeout_;
 	std::atomic<bool> terminate_;
+	ConnectionFailCallback onConnectionFailed_;
+	ConnectData *connectData_;
+	int currDsnIdx_, actualDsnIdx_;
+	ev::async reconnect_;
+	std::atomic<bool> enableSnappy_;
+	std::atomic<bool> enableCompression_;
 };
 }  // namespace cproto
 }  // namespace net

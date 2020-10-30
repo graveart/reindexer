@@ -58,6 +58,7 @@ enum HttpMethod : int {
 	kMethodHEAD,
 	kMethodPUT,
 	kMethodDELETE,
+	kMethodPATCH,
 	kMaxMethod,
 };
 
@@ -65,14 +66,13 @@ typedef string_view UrlParam;
 
 struct HttpStatus {
 	HttpStatus() { code = StatusOK; }
-	HttpStatus(HttpStatusCode httpcode, const string &httpwhat) : code(httpcode), what(httpwhat) {}
+	HttpStatus(HttpStatusCode httpcode, string httpwhat) : code(httpcode), what(std::move(httpwhat)) {}
 	explicit HttpStatus(const Error &err) : what(err.what()) { code = errCodeToHttpStatus(err.code()); }
 
 	HttpStatusCode code;
 	string what;
 
-private:
-	HttpStatusCode errCodeToHttpStatus(int errCode);
+	static HttpStatusCode errCodeToHttpStatus(int errCode);
 };
 
 struct Header {
@@ -140,15 +140,15 @@ public:
 	virtual ~Reader() = default;
 };
 
-class ClientData {
-public:
-	typedef std::shared_ptr<ClientData> Ptr;
+struct ClientData {
 	virtual ~ClientData() = default;
 };
 
 struct Context {
 	int JSON(int code, string_view slice);
 	int JSON(int code, chunk &&chunk);
+	int MSGPACK(int code, chunk &&chunk);
+	int Protobuf(int code, chunk &&chunk);
 	int String(int code, string_view slice);
 	int String(int code, chunk &&chunk);
 	int File(int code, string_view path, string_view data = string_view());
@@ -157,7 +157,7 @@ struct Context {
 	Request *request;
 	Writer *writer;
 	Reader *body;
-	ClientData::Ptr clientData;
+	std::unique_ptr<ClientData> clientData;
 
 	Stat stat;
 };
@@ -208,6 +208,14 @@ public:
 	template <class K, int (K::*func)(Context &)>
 	void PUT(const char *path, K *object) {
 		addRoute<K, func>(kMethodPUT, path, object);
+	}
+	/// Add handler for http PATCH method.
+	/// @param path - URI pattern
+	/// @param object - handler class object
+	/// @tparam func - handler
+	template <class K, int (K::*func)(Context &)>
+	void PATCH(const char *path, K *object) {
+		addRoute<K, func>(kMethodPATCH, path, object);
 	}
 	/// Add handler for http HEAD method.
 	/// @param path - URI pattern

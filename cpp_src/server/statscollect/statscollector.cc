@@ -58,8 +58,9 @@ void StatsCollector::OnClientDisconnected(const std::string& db, string_view sou
 	}
 }
 
-void StatsCollector::collectStats(DBManager& dbMngr) noexcept {
+void StatsCollector::collectStats(DBManager& dbMngr) {
 	auto dbNames = dbMngr.EnumDatabases();
+	NSMap collectedDBs;
 	for (auto& dbName : dbNames) {
 		auto ctx = MakeSystemAuthContext();
 		auto status = dbMngr.OpenDatabase(dbName, ctx, false);
@@ -73,8 +74,20 @@ void StatsCollector::collectStats(DBManager& dbMngr) noexcept {
 		assert(db);
 		(void)status;
 
+		{
+			vector<NamespaceDef> nsDefs;
+			status = db->EnumNamespaces(nsDefs, EnumNamespacesOpts().OnlyNames().WithClosed());
+			if (!status.ok()) {
+				collectedDBs.emplace(dbName, vector<NamespaceDef>());
+				continue;
+			}
+			collectedDBs.emplace(dbName, std::move(nsDefs));
+		}
+
+		constexpr static auto kPerfstatsNs = "#perfstats"_sv;
+		constexpr static auto kMemstatsNs = "#memstats"_sv;
 		QueryResults qr;
-		status = db->Select(Query("#perfstats"), qr);
+		status = db->Select(Query(string(kPerfstatsNs)), qr);
 		if (status.ok() && qr.Count()) {
 			for (auto it = qr.begin(); it != qr.end(); ++it) {
 				auto item = it.GetItem();
@@ -88,7 +101,7 @@ void StatsCollector::collectStats(DBManager& dbMngr) noexcept {
 			}
 		}
 		qr.Clear();
-		status = db->Select(Query("#memstats"), qr);
+		status = db->Select(Query(string(kMemstatsNs)), qr);
 		if (status.ok() && qr.Count()) {
 			for (auto it = qr.begin(); it != qr.end(); ++it) {
 				auto item = it.GetItem();
@@ -114,7 +127,7 @@ void StatsCollector::collectStats(DBManager& dbMngr) noexcept {
 		alloc_ext::mallctl("stats.allocated", &memoryConsumationBytes, &sz, NULL, 0);
 		prometheus_->RegisterAllocatedMemory(memoryConsumationBytes);
 	}
-#endif  // REINDEX_WITH_JEMALLOC
+#endif	// REINDEX_WITH_JEMALLOC
 
 	{
 		std::lock_guard<std::mutex> lck(mtx_);
@@ -128,9 +141,11 @@ void StatsCollector::collectStats(DBManager& dbMngr) noexcept {
 			}
 		}
 	}
+
+	prometheus_->NextEpoch();
 }
 
-StatsCollector::DBCounters& StatsCollector::getCounters(const std::string& db, string_view source) noexcept {
+StatsCollector::DBCounters& StatsCollector::getCounters(const std::string& db, string_view source) {
 	for (auto& el : counters_) {
 		if (string_view(el.first) == source) {
 			return el.second[db];

@@ -25,7 +25,7 @@ protected:
 	/// Sql parser context
 	struct SqlParsingCtx {
 		struct SuggestionData {
-			SuggestionData(string tok, int tokType) : token(tok), tokenType(tokType) {}
+			SuggestionData(string tok, int tokType) : token(std::move(tok)), tokenType(tokType) {}
 			string token;
 			int tokenType = 0;
 			std::vector<string> variants;
@@ -65,6 +65,12 @@ protected:
 	/// @return always returns zero.
 	int selectParse(tokenizer &parser);
 
+	/// Parses filter part of sql query and gets suggestions from nested SQLParser
+	/// @param parser - nested parser object instance.
+	/// @param tok - tokenizer object instance.
+	/// @return always returns zero.
+	int nestedSelectParse(SQLParser &parser, tokenizer &tok);
+
 	/// Parses filter part of sql delete query.
 	/// @param parser - tokenizer object instance.
 	/// @return always returns zero.
@@ -91,6 +97,12 @@ protected:
 
 	/// Parse join entries
 	void parseJoinEntries(tokenizer &parser, const string &mainNs, JoinedQuery &jquery);
+
+	/// Parse equal_positions
+	void parseEqualPositions(tokenizer &parser);
+
+	Point parseGeomFromText(tokenizer &parser) const;
+	void parseDWithin(tokenizer &parser, OpType nextOp);
 
 	/// Parse update field entries
 	UpdateEntry parseUpdateField(tokenizer &parser);

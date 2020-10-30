@@ -1,14 +1,11 @@
 #pragma once
-#include <set>
 #include "core/query/query.h"
 #include "core/queryresults/queryresults.h"
 #include "ctx/basefunctionctx.h"
 #include "nsselectfuncinterface.h"
 
-#include <unordered_set>
-
 namespace reindexer {
-class Namespace;
+class NamespaceImpl;
 
 /// Represents sql function in a query
 /// (like avg(x) or sum(x)).
@@ -52,7 +49,7 @@ public:
 	/// @param force - forces to create SelectFunction object
 	/// even if the list of sql-functions in this query is empty.
 	/// @return pointer to SelectFunction object or nullptr in case of error.
-	SelectFunction::Ptr AddNamespace(const Query& q, const Namespace& nm, bool force);
+	SelectFunction::Ptr AddNamespace(const Query& q, const NamespaceImpl& nm, bool force);
 	/// Processing of results of an executed query.
 	/// @param res - results of query execution.
 	void Process(QueryResults& res);
@@ -61,6 +58,6 @@ private:
 	/// Indicates if object is empty and was created wuth flag force = true.
 	bool force_only_ = true;
 	/// Container of sql functions for every namespace.
-	unique_ptr<fast_hash_map<string, SelectFunction::Ptr>> querys_;
+	std::unique_ptr<fast_hash_map<string, SelectFunction::Ptr>> querys_;
 };
 }  // namespace reindexer

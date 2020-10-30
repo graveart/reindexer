@@ -10,8 +10,8 @@ using std::min;
 using std::max;
 
 SelectIterator::SelectIterator() {}
-SelectIterator::SelectIterator(const SelectKeyResult &res, bool dist, const string &n, bool forcedFirst)
-	: SelectKeyResult(res), distinct(dist), name(n), forcedFirst_(forcedFirst), type_(Forward) {}
+SelectIterator::SelectIterator(const SelectKeyResult &res, bool dist, string n, bool forcedFirst)
+	: SelectKeyResult(res), distinct(dist), name(std::move(n)), forcedFirst_(forcedFirst), type_(Forward) {}
 
 void SelectIterator::Bind(PayloadType type, int field) {
 	for (Comparator &cmp : comparators_) cmp.Bind(type, field);
@@ -74,6 +74,7 @@ void SelectIterator::Start(bool reverse) {
 		type_ = OnlyComparator;
 		lastVal_ = isReverse_ ? INT_MIN : INT_MAX;
 	}
+	ClearDistinct();
 }
 
 // Generic next implementation
@@ -232,10 +233,13 @@ bool SelectIterator::nextUnsorted() {
 
 bool SelectIterator::nextUnbuiltSortOrders() { return begin()->indexForwardIter_->Next(); }
 
-void SelectIterator::ExcludeLastSet() {
+void SelectIterator::ExcludeLastSet(const PayloadValue &value, IdType rowId, IdType properRowId) {
+	for (auto &comp : comparators_) comp.ExcludeDistinct(value, properRowId);
 	if (type_ == UnbuiltSortOrdersIndex) {
-		begin()->indexForwardIter_->ExcludeLastSet();
-	} else if (!End() && lastIt_ != end()) {
+		if (begin()->indexForwardIter_->Value() == rowId) {
+			begin()->indexForwardIter_->ExcludeLastSet();
+		}
+	} else if (!End() && lastIt_ != end() && lastVal_ == rowId) {
 		assert(!lastIt_->isRange_);
 		if (lastIt_->useBtree_) {
 			lastIt_->itset_ = lastIt_->setend_;
@@ -248,17 +252,21 @@ void SelectIterator::ExcludeLastSet() {
 }
 
 void SelectIterator::Append(SelectKeyResult &other) {
-	for (auto &r : other) push_back(std::move(r));
+	reserve(size() + other.size());
+	for (auto &r : other) emplace_back(std::move(r));
+	comparators_.reserve(comparators_.size() + other.comparators_.size());
 	for (auto &c : other.comparators_) {
-		comparators_.push_back(std::move(c));
+		comparators_.emplace_back(std::move(c));
 	}
 }
 
 void SelectIterator::AppendAndBind(SelectKeyResult &other, PayloadType type, int field) {
-	for (auto &r : other) push_back(std::move(r));
+	reserve(size() + other.size());
+	for (auto &r : other) emplace_back(std::move(r));
+	comparators_.reserve(comparators_.size() + other.comparators_.size());
 	for (auto &c : other.comparators_) {
 		c.Bind(type, field);
-		comparators_.push_back(std::move(c));
+		comparators_.emplace_back(std::move(c));
 	}
 }
 
@@ -271,7 +279,7 @@ double SelectIterator::Cost(int expectedIterations) const {
 	} else if (empty()) {
 		result += GetMaxIterations();
 	}
-	return result + static_cast<double>(GetMaxIterations()) * size();
+	return result + static_cast<double>(distinct ? 1 : GetMaxIterations()) * size();
 }
 
 int SelectIterator::Val() const {

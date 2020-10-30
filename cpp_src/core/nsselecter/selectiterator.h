@@ -21,7 +21,7 @@ public:
 	};
 
 	SelectIterator();
-	SelectIterator(const SelectKeyResult &res, bool distinct, const string &name, bool forcedFirst = false);
+	SelectIterator(const SelectKeyResult &res, bool distinct, string name, bool forcedFirst = false);
 
 	/// Starts iteration process: prepares
 	/// object for further work.
@@ -100,7 +100,7 @@ public:
 
 	/// Excludes last set of ids from each result
 	/// to remove duplicated keys
-	void ExcludeLastSet();
+	void ExcludeLastSet(const PayloadValue &, IdType rowId, IdType properRowId);
 
 	/// Appends result to an existing set.
 	/// @param other - results to add.

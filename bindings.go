@@ -65,9 +65,7 @@ func (db *reindexerImpl) modifyItem(ctx context.Context, namespace string, ns *r
 
 		resultp := rdSer.readRawtItemParams()
 
-		ns.cacheLock.Lock()
-		delete(ns.cacheItems, resultp.id)
-		ns.cacheLock.Unlock()
+		ns.cacheItems.Remove(resultp.id)
 
 		if len(precepts) > 0 && (resultp.cptr != 0 || resultp.data != nil) && reflect.TypeOf(item).Kind() == reflect.Ptr {
 			nsArrEntry := nsArrayEntry{ns, ns.cjsonState.Copy()}
@@ -138,19 +136,16 @@ func (db *reindexerImpl) getMeta(ctx context.Context, namespace, key string) ([]
 }
 
 func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool, nonCacheableData bool, item interface{}) (interface{}, error) {
-	useCache := item == nil && (ns.deepCopyIface || allowUnsafe) && !nonCacheableData && ns.cacheItems != nil
+	useCache := item == nil && (ns.deepCopyIface || allowUnsafe) && !nonCacheableData
 	needCopy := ns.deepCopyIface && !allowUnsafe
 	var err error
 
-	if useCache {
-		ns.cacheLock.RLock()
-		if citem, ok := ns.cacheItems[params.id]; ok && citem.version == params.version {
+	if useCache && ns.cacheItems != nil {
+		if citem, ok := ns.cacheItems.Get(params.id); ok && citem.version == params.version {
 			item = citem.item
-			ns.cacheLock.RUnlock()
 		} else {
-			ns.cacheLock.RUnlock()
 			item = reflect.New(ns.rtype).Interface()
-			dec := ns.localCjsonState.NewDecoder(item)
+			dec := ns.localCjsonState.NewDecoder(item, logger)
 			if params.cptr != 0 {
 				err = dec.DecodeCPtr(params.cptr, item)
 			} else if params.data != nil {
@@ -161,15 +156,22 @@ func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool,
 			if err != nil {
 				return item, err
 			}
-			ns.cacheLock.Lock()
-			ns.cacheItems[params.id] = cacheItem{item: item, version: params.version}
-			ns.cacheLock.Unlock()
+
+			if citem, ok := ns.cacheItems.Get(params.id); ok {
+				if citem.version == params.version {
+					item = citem.item
+				} else if citem.version < params.version {
+					ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version})
+				}
+			} else {
+				ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version})
+			}
 		}
 	} else {
 		if item == nil {
 			item = reflect.New(ns.rtype).Interface()
 		}
-		dec := ns.localCjsonState.NewDecoder(item)
+		dec := ns.localCjsonState.NewDecoder(item, logger)
 		if params.cptr != 0 {
 			err = dec.DecodeCPtr(params.cptr, item)
 		} else if params.data != nil {
@@ -374,19 +376,14 @@ func (db *reindexerImpl) deleteQuery(ctx context.Context, q *Query) (int, error)
 	// skip total count
 	rawQueryParams := ser.readRawQueryParams()
 
-	ns.cacheLock.Lock()
 	for i := 0; i < rawQueryParams.count; i++ {
 		params := ser.readRawtItemParams()
 		if (rawQueryParams.flags&bindings.ResultsWithJoined) != 0 && ser.GetVarUInt() != 0 {
 			panic("Internal error: joined items in delete query result")
 		}
 		// Update cache
-		if _, ok := ns.cacheItems[params.id]; ok {
-			delete(ns.cacheItems, params.id)
-		}
-
+		ns.cacheItems.Remove(params.id)
 	}
-	ns.cacheLock.Unlock()
 	if !ser.Eof() {
 		panic("Internal error: data after end of delete query result")
 	}
@@ -413,19 +410,15 @@ func (db *reindexerImpl) updateQuery(ctx context.Context, q *Query) *Iterator {
 		ns.cjsonState.ReadPayloadType(&ser.Serializer)
 	})
 
-	ns.cacheLock.Lock()
 	for i := 0; i < rawQueryParams.count; i++ {
 		params := ser.readRawtItemParams()
 		if (rawQueryParams.flags&bindings.ResultsWithJoined) != 0 && ser.GetVarUInt() != 0 {
 			panic("Internal error: joined items in update query result")
 		}
 		// Update cache
-		if _, ok := ns.cacheItems[params.id]; ok {
-			delete(ns.cacheItems, params.id)
-		}
-
+		ns.cacheItems.Remove(params.id)
 	}
-	ns.cacheLock.Unlock()
+
 	if !ser.Eof() {
 		panic("Internal error: data after end of update query result")
 	}
@@ -458,11 +451,7 @@ func (db *reindexerImpl) resetCachesCtx(ctx context.Context) {
 	}
 	db.lock.RUnlock()
 	for _, ns := range nsArray {
-		ns.cacheLock.Lock()
-		if ns.cacheItems != nil {
-			ns.cacheItems = make(map[int]cacheItem)
-		}
-		ns.cacheLock.Unlock()
+		ns.cacheItems.Reset()
 		ns.cjsonState.Reset()
 		db.query(ns.name).Limit(0).ExecCtx(ctx).Close()
 	}
@@ -490,4 +479,16 @@ func WithServerConfig(startupTimeout time.Duration, serverConfig *config.ServerC
 
 func WithTimeouts(loginTimeout time.Duration, requestTimeout time.Duration) interface{} {
 	return bindings.OptionTimeouts{loginTimeout, requestTimeout}
+}
+
+func WithCreateDBIfMissing() interface{} {
+	return bindings.OptionConnect{CreateDBIfMissing: true}
+}
+
+func WithNetCompression() interface{} {
+	return bindings.OptionCompression{EnableCompression: true}
+}
+
+func WithAppName(appName string) interface{} {
+	return bindings.OptionAppName{AppName: appName}
 }

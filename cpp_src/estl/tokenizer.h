@@ -21,7 +21,7 @@ public:
 	token(token &&other) : type(other.type), text_(std::move(other.text_)) {
 		text_.reserve(other.text_.size() + 1);
 		*(text_.begin() + text_.size()) = 0;
-	};
+	}
 	token &operator=(token &&other) {
 		if (&other != this) {
 			type = other.type;
@@ -30,7 +30,7 @@ public:
 			*(text_.begin() + text_.size()) = 0;
 		}
 		return *this;
-	};
+	}
 
 	string_view text() const { return string_view(text_.data(), text_.size()); }
 
@@ -40,14 +40,16 @@ public:
 
 class tokenizer {
 public:
-	tokenizer(const string_view &query);
+	tokenizer(string_view query);
 	token next_token(bool to_lower = true, bool treatSignAsToken = false);
 	token peek_token(bool to_lower = true, bool treatSignAsToken = false);
 	void skip_space();
 	bool end() const;
+	size_t getPos() const;
+	void setPos(size_t pos);
 	string where() const;
-	size_t pos() const;
 	size_t length() const;
+	const char *begin() const;
 
 protected:
 	string_view q_;

@@ -1,8 +1,10 @@
 #include "jsondecoder.h"
 #include "cjsonbuilder.h"
+#include "cjsontools.h"
 #include "tagsmatcher.h"
 #include "tools/json2kv.h"
 #include "tools/serializer.h"
+#include "vendor/gason/gason.h"
 
 namespace reindexer {
 
@@ -11,8 +13,8 @@ JsonDecoder::JsonDecoder(TagsMatcher &tagsMatcher, const FieldsSet *filter) : ta
 
 Error JsonDecoder::Decode(Payload *pl, WrSerializer &wrser, const gason::JsonValue &v) {
 	try {
-		wrser.Reset();
-		CJsonBuilder builder(wrser, CJsonBuilder::TypePlain, &tagsMatcher_);
+		tagsPath_.clear();
+		CJsonBuilder builder(wrser, ObjType::TypePlain, &tagsMatcher_);
 		decodeJson(pl, builder, v, 0, true);
 	}
 
@@ -95,18 +97,52 @@ void JsonDecoder::decodeJson(Payload *pl, CJsonBuilder &builder, const gason::Js
 			builder.Null(tagName);
 			break;
 		case gason::JSON_ARRAY: {
-			auto arrNode = builder.Array(tagName);
+			ObjType type;
+			if (gason::isHomogeneousArray(v)) {
+				type = ObjType::TypeArray;
+			} else {
+				type = ObjType::TypeObjectArray;
+			}
+			auto arrNode = builder.Array(tagName, type);
 			for (auto elem : v) {
 				decodeJson(pl, arrNode, elem->value, 0, match);
 			}
 			break;
 		}
 		case gason::JSON_OBJECT: {
-			auto node = builder.Object(tagName);
-			decodeJsonObject(pl, node, v, match);
+			auto objNode = builder.Object(tagName);
+			if (pl) {
+				decodeJsonObject(pl, objNode, v, match);
+			} else {
+				decodeJsonObject(v, objNode);
+			}
 			break;
 		}
 	}
+}
+
+class TagsPathGuard {
+public:
+	TagsPathGuard(TagsPath &tagsPath, int tagName) : tagsPath_(tagsPath) { tagsPath_.push_back(tagName); }
+	~TagsPathGuard() { tagsPath_.pop_back(); }
+
+public:
+	TagsPath &tagsPath_;
+};
+
+void JsonDecoder::decodeJsonObject(const gason::JsonValue &root, CJsonBuilder &builder) {
+	for (auto elem : root) {
+		int tagName = tagsMatcher_.name2tag(elem->key, true);
+		TagsPathGuard tagsPathGuard(tagsPath_, tagName);
+		decodeJson(nullptr, builder, elem->value, tagName, true);
+	}
+}
+
+void JsonDecoder::Decode(string_view json, CJsonBuilder &builder, const TagsPath &fieldPath) {
+	tagsPath_ = fieldPath;
+	gason::JsonParser jsonParser;
+	gason::JsonNode root = jsonParser.Parse(json);
+	decodeJsonObject(root.value, builder);
 }
 
 }  // namespace reindexer

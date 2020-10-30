@@ -54,11 +54,13 @@ int main(int argc, char* argv[]) {
 									Options::Single | Options::Global);
 	args::ValueFlag<string> outFileName(progOptions, "FILENAME", "send query results to file", {'o', "output"}, "",
 										Options::Single | Options::Global);
-	args::ValueFlag<int> connPoolSize(progOptions, "INT", "Number of simulateonous connections to db", {'C', "connections"}, 1,
+	args::ValueFlag<int> connPoolSize(progOptions, "INT", "Number of simulatenous connections to db", {'C', "connections"}, 1,
 									  Options::Single | Options::Global);
 
 	args::ValueFlag<int> connThreads(progOptions, "INT", "Number of threads used by db connector", {'t', "threads"}, 1,
 									 Options::Single | Options::Global);
+
+	args::Flag createDBF(progOptions, "", "Enable created database if missed", {"createdb"});
 
 	args::Positional<string> dbName(progOptions, "DB name", "Name of a database to get connected to", Options::Single);
 
@@ -69,10 +71,14 @@ int main(int argc, char* argv[]) {
 
 	args::GlobalOptions globals(parser, progOptions);
 
+	args::ValueFlag<string> appName(progOptions, "Application name", "Application name which will be used in login info", {'a', "appname"},
+									"reindexer_tool", Options::Single | Options::Global);
+
 	try {
 		parser.ParseCLI(argc, argv);
 	} catch (const args::Help&) {
 		std::cout << parser;
+		return 2;
 	} catch (const args::Error& e) {
 		std::cerr << "ERROR: " << e.what() << std::endl;
 		std::cout << parser.Help() << std::endl;
@@ -96,7 +102,11 @@ int main(int argc, char* argv[]) {
 			std::cerr << "Error: --dsn either database name should be set as a first argument" << std::endl;
 			return 2;
 		}
-		dsn = "cproto://reindexer:reindexer@127.0.0.1:6534/" + db;
+		if (db.substr(0, 9) == "cproto://" || db.substr(0, 10) == "builtin://") {
+			dsn = db;
+		} else {
+			dsn = "cproto://reindexer:reindexer@127.0.0.1:6534/" + db;
+		}
 	}
 
 	if (repair && args::get(repair)) {
@@ -115,16 +125,18 @@ int main(int argc, char* argv[]) {
 	reindexer::client::ReindexerConfig config;
 	config.ConnPoolSize = args::get(connPoolSize);
 	config.WorkerThreads = 1;  // args::get(connThreads);
+	config.EnableCompression = true;
+	config.AppName = args::get(appName);
 	if (dsn.compare(0, 9, "cproto://") == 0) {
 		CommandsProcessor<reindexer::client::Reindexer> commandsProcessor(args::get(outFileName), args::get(fileName), args::get(command),
 																		  config.ConnPoolSize, args::get(connThreads), config);
-		err = commandsProcessor.Connect(dsn);
+		err = commandsProcessor.Connect(dsn, reindexer::client::ConnectOpts().CreateDBIfMissing(createDBF && args::get(createDBF)));
 		if (err.ok()) ok = commandsProcessor.Run();
 	} else if (dsn.compare(0, 10, "builtin://") == 0) {
 		reindexer::Reindexer db;
 		CommandsProcessor<reindexer::Reindexer> commandsProcessor(args::get(outFileName), args::get(fileName), args::get(command),
 																  config.ConnPoolSize, args::get(connThreads));
-		err = commandsProcessor.Connect(dsn);
+		err = commandsProcessor.Connect(dsn, ConnectOpts().DisableReplication());
 		if (err.ok()) ok = commandsProcessor.Run();
 	} else {
 		std::cerr << "Invalid DSN format: " << dsn << " Must begin from cproto:// or builtin://" << std::endl;

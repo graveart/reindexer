@@ -1,9 +1,47 @@
 #pragma once
 
 #include "replication_api.h"
+#include "replicator/updatesobserver.h"
+#include "vendor/hopscotch/hopscotch_map.h"
 
 class ReplicationLoadApi : public ReplicationApi {
 public:
+	class UpdatesReciever : public IUpdatesObserver {
+	public:
+		void OnWALUpdate(LSNPair, string_view nsName, const WALRecord &) override final {
+			std::lock_guard<std::mutex> lck(mtx_);
+			auto found = updatesCounters_.find(nsName);
+			if (found != updatesCounters_.end()) {
+				++(found.value());
+			} else {
+				updatesCounters_.emplace(string(nsName), 1);
+			}
+		}
+		void OnConnectionState(const Error &) override final {}
+
+		using map = tsl::hopscotch_map<std::string, size_t, nocase_hash_str, nocase_equal_str>;
+
+		map Counters() const {
+			std::lock_guard<std::mutex> lck(mtx_);
+			return updatesCounters_;
+		}
+		void Reset() {
+			std::lock_guard<std::mutex> lck(mtx_);
+			updatesCounters_.clear();
+		}
+		void Dump() const {
+			std::cerr << "Reciever dump: " << std::endl;
+			auto counters = Counters();
+			for (auto &it : counters) {
+				std::cerr << it.first << ": " << it.second << std::endl;
+			}
+		}
+
+	private:
+		map updatesCounters_;
+		mutable std::mutex mtx_;
+	};
+
 	void InitNs() {
 		counter_ = 0;
 		auto opt = StorageOpts().Enabled(true).LazyLoad(true);
@@ -34,6 +72,8 @@ public:
 		// untill we use shared ptr it will be not destroyed
 		auto srv = GetSrv(masterId_);
 		auto &api = srv->api;
+
+		shared_lock<shared_timed_mutex> lk(restartMutex_);
 		std::atomic<size_t> completed(0);
 
 		for (size_t i = 0; i < count; ++i) {
@@ -58,18 +98,18 @@ public:
 			auto item1 = new typename BaseApi::ItemType(api.NewItem("some1"));
 			// clang-format off
 
-			err = item1->FromJSON(
-				"{\n"
-				"\"id\":" +
-				std::to_string(counter_) +
-				",\n"
-				"\"int\":" +
-				std::to_string(rand()) +
-				",\n"
-				"\"string\":\"" +
-				api.RandString() +
-				"\"\n" 
-				"}");
+						err = item1->FromJSON(
+							"{\n"
+							"\"id\":" +
+							std::to_string(counter_) +
+							",\n"
+							"\"int\":" +
+							std::to_string(rand()) +
+							",\n"
+							"\"string\":\"" +
+							api.RandString() +
+							"\"\n"
+							"}");
 			// clang-format on
 
 			counter_++;
@@ -79,7 +119,7 @@ public:
 				delete item1;
 			});
 		}
-		while (completed < count * 2) {  // -V776
+		while (completed < count * 2) {	 // -V776
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		api.Commit("some");
@@ -92,7 +132,6 @@ public:
 		auto &api = srv->api;
 
 		auto err = api.reindexer->Select(qr, res);
-
 		EXPECT_TRUE(err.ok()) << err.what();
 
 		return res;
@@ -112,7 +151,7 @@ public:
 		StopServer(num);
 		StartServer(num);
 	}
-	void SetServerConfig(size_t num, const ReplicationConfig &config) {
+	void SetServerConfig(size_t num, const ReplicationConfigTest &config) {
 		auto srv = GetSrv(num);
 		if (num) {
 			srv->MakeSlave(0, config);
@@ -120,13 +159,13 @@ public:
 			srv->MakeMaster(config);
 		}
 	}
-	void CheckSlaveConfigFile(size_t num, const ReplicationConfig &config) {
+	void CheckSlaveConfigFile(size_t num, const ReplicationConfigTest &config) {
 		assert(num);
 		auto srv = GetSrv(num);
 		auto curConfig = srv->GetServerConfig(ServerControl::ConfigType::File);
 		EXPECT_TRUE(config == curConfig);
 	}
-	void CheckSlaveConfigNamespace(size_t num, const ReplicationConfig &config, std::chrono::seconds awaitTime) {
+	void CheckSlaveConfigNamespace(size_t num, const ReplicationConfigTest &config, std::chrono::seconds awaitTime) {
 		assert(num);
 		auto srv = GetSrv(num);
 		for (int i = 0; i < awaitTime.count(); ++i) {

@@ -11,22 +11,24 @@ const (
 	NamespacesNamespaceName       = "#namespaces"
 	PerfstatsNamespaceName        = "#perfstats"
 	QueriesperfstatsNamespaceName = "#queriesperfstats"
+	ClientsStatsNamespaceName     = "#clientsstats"
 )
 
 // Map from cond name to index type
 var queryTypes = map[string]int{
-	"EQ":     EQ,
-	"GT":     GT,
-	"LT":     LT,
-	"GE":     GE,
-	"LE":     LE,
-	"SET":    SET,
-	"RANGE":  RANGE,
-	"ANY":    ANY,
-	"EMPTY":  EMPTY,
-	"ALLSET": ALLSET,
-	"MATCH":  EQ,
-	"LIKE":   LIKE,
+	"EQ":      EQ,
+	"GT":      GT,
+	"LT":      LT,
+	"GE":      GE,
+	"LE":      LE,
+	"SET":     SET,
+	"RANGE":   RANGE,
+	"ANY":     ANY,
+	"EMPTY":   EMPTY,
+	"ALLSET":  ALLSET,
+	"MATCH":   EQ,
+	"LIKE":    LIKE,
+	"DWITHIN": DWITHIN,
 }
 
 func GetCondType(name string) (int, error) {
@@ -40,16 +42,17 @@ func GetCondType(name string) (int, error) {
 
 // Map from index type to cond name
 var queryNames = map[int]string{
-	EQ:    "EQ",
-	GT:    "GT",
-	LT:    "LT",
-	GE:    "GE",
-	LE:    "LE",
-	SET:   "SET",
-	RANGE: "RANGE",
-	ANY:   "ANY",
-	EMPTY: "EMPTY",
-	LIKE:  "LIKE",
+	EQ:      "EQ",
+	GT:      "GT",
+	LT:      "LT",
+	GE:      "GE",
+	LE:      "LE",
+	SET:     "SET",
+	RANGE:   "RANGE",
+	ANY:     "ANY",
+	EMPTY:   "EMPTY",
+	LIKE:    "LIKE",
+	DWITHIN: "DWITHIN",
 }
 
 type IndexDescription struct {
@@ -78,6 +81,26 @@ type CacheMemStat struct {
 	HitCountLimit int64 `json:"hit_count_limit"`
 }
 
+//Operation counter and server id
+type LsnT struct {
+	// Operation counter
+	Counter int64 `json:"counter"`
+	// Node identifyer
+	ServerId int `json:"server_id"`
+}
+
+// MasterReplicationState information about reindexer-master state
+type MasterReplicationState struct {
+	// Last Log Sequence Number (LSN) of applied namespace modification
+	LastLSN LsnT `json:"last_upstream_lsn"`
+	// Hashsum of all records in namespace
+	DataHash uint64 `json:"data_hash"`
+	// Data updated timestamp
+	UpdatedUnixNano int64 `json:"updated_unix_nano"`
+	// Items count in master namespace
+	DataCount int64 `json:"data_count"`
+}
+
 // NamespaceMemStat information about reindexer's namespace memory statisctics
 // and located in '#memstats' system namespace
 type NamespaceMemStat struct {
@@ -89,6 +112,8 @@ type NamespaceMemStat struct {
 	StoragePath string `json:"storage_path"`
 	// Status of disk storage
 	StorageOK bool `json:"storage_ok"`
+	// Background indexes optimization has been completed
+	OptimizationCompleted bool `json:"optimization_completed"`
 	// Total count of documents in namespace
 	ItemsCount int64 `json:"items_count,omitempty"`
 	// Count of emopy(unused) slots in namespace
@@ -107,22 +132,41 @@ type NamespaceMemStat struct {
 	// Replication status of namespace
 	Replication struct {
 		// Last Log Sequence Number (LSN) of applied namespace modification
-		LastLSN int64 `json:"last_lsn"`
-		// Cluster ID - must be same for client and for master
-		ClusterID int64 `json:"cluster_id"`
+		LastLSN LsnT `json:"last_lsn_v2"`
 		// If true, then namespace is in slave mode
 		SlaveMode bool `json:"slave_mode"`
+		// True enable replication
+		ReplicatorEnabled bool `json:"replicator_enabled"`
+		// Temporary namespace flag
+		Temporary bool `json:"temporary"`
 		// Number of storage's master <-> slave switches
 		IncarnationCounter int64 `json:"incarnation_counter"`
 		// Hashsum of all records in namespace
 		DataHash uint64 `json:"data_hash"`
+		// Data count
+		DataCount int `json:"data_count"`
 		// Write Ahead Log (WAL) records count
 		WalCount int64 `json:"wal_count"`
 		// Total memory consumption of Write Ahead Log (WAL)
 		WalSize int64 `json:"wal_size"`
 		// Data updated timestamp
 		UpdatedUnixNano int64 `json:"updated_unix_nano"`
+		// Current replication status
+		Status string `json:"status"`
+		// Origin LSN of last replication operation
+		OriginLSN LsnT `json:"origin_lsn"`
+		// Last LSN of api operation (not from replication)
+		LastSelfLSN LsnT `json:"last_self_lsn"`
+		// Last Log Sequence Number (LSN) of applied namespace modification
+		LastUpstreamLSN LsnT `json:"last_upstream_lsn"`
+		// Last replication error code
+		ErrorCode int64 `json:"error_code"`
+		// Last replication error message
+		ErrorMessage string `json:"error_message"`
+		// Master's state
+		MasterState MasterReplicationState `json:"master_state"`
 	} `json:"replication"`
+
 	// Indexes memory statistic
 	Indexes []struct {
 		// Name of index. There are special index with name `-tuple`. It's stores original document's json structure with non indexe fields
@@ -170,6 +214,38 @@ type PerfStat struct {
 	LatencyStddev int64 `json:"latency_stddev"`
 }
 
+// TxPerfStat is information about transactions performance statistics
+type TxPerfStat struct {
+	// Total transactions count for namespace
+	TotalCount int64 `json:"total_count"`
+	// Total namespace copy operations
+	TotalCopyCount int64 `json:"total_copy_count"`
+	// Average steps count in transactions for this namespace
+	AvgStepsCount int64 `json:"avg_steps_count"`
+	// Minimum steps count in transactions for this namespace
+	MinStepsCount int64 `json:"min_steps_count"`
+	// Maximum steps count in transactions for this namespace
+	MaxStepsCount int64 `json:"max_steps_count"`
+	// Average transaction preparation time usec
+	AvgPrepareTimeUs int64 `json:"avg_prepare_time_us"`
+	// Minimum transaction preparation time usec
+	MinPrepareTimeUs int64 `json:"min_prepare_time_us"`
+	// Maximum transaction preparation time usec
+	MaxPrepareTimeUs int64 `json:"max_prepare_time_us"`
+	// Average transaction commit time usec
+	AvgCommitTimeUs int64 `json:"avg_commit_time_us"`
+	// Minimum transaction commit time usec
+	MinCommitTimeUs int64 `json:"min_commit_time_us"`
+	// Maximum transaction commit time usec
+	MaxCommitTimeUs int64 `json:"max_commit_time_us"`
+	// Average namespace copy time usec
+	AvgCopyTimeUs int64 `json:"avg_copy_time_us"`
+	// Maximum namespace copy time usec
+	MinCopyTimeUs int64 `json:"min_copy_time_us"`
+	// Minimum namespace copy time usec
+	MaxCopyTimeUs int64 `json:"max_copy_time_us"`
+}
+
 // NamespacePerfStat is information about namespace's performance statistics
 // and located in '#perfstats' system namespace
 type NamespacePerfStat struct {
@@ -179,6 +255,59 @@ type NamespacePerfStat struct {
 	Updates PerfStat `json:"updates"`
 	// Performance statistics for select operations
 	Selects PerfStat `json:"selects"`
+	// Performance statistics for transactions
+	Transactions TxPerfStat `json:"transactions"`
+}
+
+// ClientConnectionStat is information about client connection
+type ClientConnectionStat struct {
+	// Connection identifier
+	ConnectionId int64 `json:"connection_id"`
+	// client ip address
+	Ip string `json:"ip"`
+	// User name
+	UserName string `json:"user_name"`
+	// User right
+	UserRights string `json:"user_rights"`
+	// Database name
+	DbName string `json:"db_name"`
+	// Current activity
+	CurrentActivity string `json:"current_activity"`
+	// Server start time in unix timestamp
+	StartTime int64 `json:"start_time"`
+	// Receive bytes
+	RecvBytes int64 `json:"recv_bytes"`
+	// Sent bytes
+	SentBytes int64 `json:"sent_bytes"`
+	// Client version string
+	ClientVersion string `json:"client_version"`
+	// Send buffer size
+	SendBufBytes int64 `json:"send_buf_bytes"`
+	// Pended updates count
+	PendedUpdates int64 `json:"pended_updates"`
+	// Timestamp of last send operation (ms)
+	LastSendTs int64 `json:"last_send_ts"`
+	// Timestamp of last recv operation (ms)
+	LastRecvTs int64 `json:"last_recv_ts"`
+	// Current send rate (bytes/s)
+	SendRate int `json:"send_rate"`
+	// Current recv rate (bytes/s)
+	RecvRate int `json:"recv_rate"`
+	// Active transactions count
+	TxCount int `json:"tx_count"`
+	// Status of updates subscription
+	IsSubscribed bool `json:"is_subscribed"`
+	// Updates filter for this client
+	UpdatesFilter struct {
+		Namespaces []struct {
+			// Namespace name
+			Name string `json:"name"`
+			// Filtering conditions set
+			Filters []struct {
+				// Empty
+			} `json:"filters"`
+		} `json:"namespaces"`
+	} `json:"updates_filter"`
 }
 
 // QueryPerfStat is information about query's performance statistics
@@ -220,14 +349,18 @@ type DBNamespacesConfig struct {
 	Lazyload bool `json:"lazyload"`
 	// Unload namespace data from RAM after this idle timeout in seconds. If 0, then data should not be unloaded
 	UnloadIdleThreshold int `json:"unload_idle_threshold"`
-	// Copy namespce policts will start only after item's count become greater in this param
-	StartCopyPoliticsCount int `json:"start_copy_politics_count"`
-	// Merge write namespace after get thi count of operations
-	MergeLimitCount int `json:"merge_limit_count"`
+	// Enable namespace copying for transaction with steps count greater than this value (if copy_politics_multiplier also allows this)
+	StartCopyPolicyTxSize int `json:"start_copy_policy_tx_size"`
+	// Disables copy policy if namespace size is greater than copy_policy_multiplier * start_copy_policy_tx_size
+	CopyPolicyMultiplier int `json:"copy_policy_multiplier"`
+	// Force namespace copying for transaction with steps count greater than this value
+	TxSizeToAlwaysCopy int `json:"tx_size_to_always_copy"`
 	// Timeout before background indexes optimization start after last update. 0 - disable optimizations
 	OptimizationTimeout int `json:"optimization_timeout_ms"`
 	// Maximum number of background threads of sort indexes optimization. 0 - disable sort optimizations
 	OptimizationSortWorkers int `json:"optimization_sort_workers"`
+	// Maximum WAL size for this namespace (maximum count of WAL records)
+	WALSize int64 `json:"wal_size"`
 }
 
 // DBReplicationConfig is part of reindexer configuration contains replication options

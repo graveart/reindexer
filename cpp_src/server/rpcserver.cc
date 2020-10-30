@@ -2,16 +2,25 @@
 #include <sys/stat.h>
 #include <sstream>
 #include "core/cjson/jsonbuilder.h"
+#include "core/iclientsstats.h"
 #include "core/transactionimpl.h"
 #include "net/cproto/cproto.h"
 #include "net/cproto/serverconnection.h"
 #include "net/listener.h"
 #include "reindexer_version.h"
+#include "vendor/msgpack/msgpack.h"
 
 namespace reindexer_server {
+const reindexer::SemVersion kMinUnknownReplSupportRxVersion("2.6.0");
+const size_t kMaxTxCount = 1024;
 
-RPCServer::RPCServer(DBManager &dbMgr, LoggerWrapper logger, bool allocDebug, IStatsWatcher *statsCollector)
-	: dbMgr_(dbMgr), logger_(logger), allocDebug_(allocDebug), statsWatcher_(statsCollector), startTs_(std::chrono::system_clock::now()) {}
+RPCServer::RPCServer(DBManager &dbMgr, LoggerWrapper &logger, IClientsStats *clientsStats, bool allocDebug, IStatsWatcher *statsCollector)
+	: dbMgr_(dbMgr),
+	  logger_(logger),
+	  allocDebug_(allocDebug),
+	  statsWatcher_(statsCollector),
+	  clientsStats_(clientsStats),
+	  startTs_(std::chrono::system_clock::now()) {}
 
 RPCServer::~RPCServer() {}
 
@@ -22,66 +31,118 @@ Error RPCServer::Ping(cproto::Context &) {
 
 static std::atomic<int> connCounter;
 
-Error RPCServer::Login(cproto::Context &ctx, p_string login, p_string password, p_string db) {
+Error RPCServer::Login(cproto::Context &ctx, p_string login, p_string password, p_string db, cproto::optional<bool> createDBIfMissing,
+					   cproto::optional<bool> checkClusterID, cproto::optional<int> expectedClusterID,
+					   cproto::optional<p_string> clientRxVersion, cproto::optional<p_string> appName) {
 	if (ctx.GetClientData()) {
 		return Error(errParams, "Already logged in");
 	}
 
-	auto clientData = std::make_shared<RPCClientData>();
+	std::unique_ptr<RPCClientData> clientData(new RPCClientData);
 
 	clientData->connID = connCounter.fetch_add(1, std::memory_order_relaxed);
 	clientData->pusher.SetWriter(ctx.writer);
 	clientData->subscribed = false;
-
 	clientData->auth = AuthContext(login.toString(), password.toString());
+	clientData->txStats = std::make_shared<reindexer::TxStats>();
 
 	auto dbName = db.toString();
+	if (checkClusterID.hasValue() && checkClusterID.value()) {
+		assert(expectedClusterID.hasValue());
+		clientData->auth.SetExpectedClusterID(expectedClusterID.value());
+	}
 	auto status = dbMgr_.Login(dbName, clientData->auth);
 	if (!status.ok()) {
 		return status;
 	}
-	ctx.SetClientData(clientData);
+
+	if (clientRxVersion.hasValue()) {
+		clientData->rxVersion = SemVersion(string_view(clientRxVersion.value()));
+	} else {
+		clientData->rxVersion = SemVersion();
+	}
+	if (clientData->rxVersion < kMinUnknownReplSupportRxVersion) {
+		clientData->pusher.SetFilter([](WALRecord &rec) {
+			if (rec.type == WalCommitTransaction || rec.type == WalInitTransaction || rec.type == WalSetSchema) {
+				return true;
+			}
+			rec.inTransaction = false;
+			return false;
+		});
+	}
+
+	if (clientsStats_) {
+		reindexer::ClientConnectionStat conn;
+		conn.connectionStat = ctx.writer->GetConnectionStat();
+		conn.ip = string(ctx.clientAddr);
+		conn.userName = clientData->auth.Login();
+		conn.dbName = clientData->auth.DBName();
+		conn.userRights = string(UserRoleName(clientData->auth.UserRights()));
+		conn.clientVersion = clientData->rxVersion.StrippedString();
+		conn.appName = appName.hasValue() ? appName.value().toString() : string();
+		conn.txStats = clientData->txStats;
+		conn.updatesPusher = &clientData->pusher;
+		clientsStats_->AddConnection(clientData->connID, std::move(conn));
+	}
+
+	ctx.SetClientData(std::move(clientData));
 	if (statsWatcher_) {
 		statsWatcher_->OnClientConnected(dbName, statsSourceName());
 	}
 	int64_t startTs = std::chrono::duration_cast<std::chrono::seconds>(startTs_.time_since_epoch()).count();
 	static string_view version = REINDEX_VERSION;
 
-	ctx.Return({cproto::Arg(p_string(&version)), cproto::Arg(startTs)});
+	status = db.length() ? OpenDatabase(ctx, db, createDBIfMissing) : errOK;
+	if (status.ok()) {
+		ctx.Return({cproto::Arg(p_string(&version)), cproto::Arg(startTs)}, status);
+	}
 
-	return db.length() ? OpenDatabase(ctx, db) : 0;
+	return status;
 }
 
-Error RPCServer::OpenDatabase(cproto::Context &ctx, p_string db) {
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+static RPCClientData *getClientDataUnsafe(cproto::Context &ctx) { return dynamic_cast<RPCClientData *>(ctx.GetClientData()); }
+
+static RPCClientData *getClientDataSafe(cproto::Context &ctx) {
+	auto ret = dynamic_cast<RPCClientData *>(ctx.GetClientData());
+	if (!ret) std::abort();	 // It should be set by middleware
+	return ret;
+}
+
+Error RPCServer::OpenDatabase(cproto::Context &ctx, p_string db, cproto::optional<bool> createDBIfMissing) {
+	auto *clientData = getClientDataSafe(ctx);
 	if (clientData->auth.HaveDB()) {
 		return Error(errParams, "Database already opened");
 	}
-	return dbMgr_.OpenDatabase(db.toString(), clientData->auth, true);
+	auto status = dbMgr_.OpenDatabase(db.toString(), clientData->auth, createDBIfMissing.hasValue() && createDBIfMissing.value());
+	if (!status.ok()) {
+		clientData->auth.ResetDB();
+	}
+	return status;
 }
 
 Error RPCServer::CloseDatabase(cproto::Context &ctx) {
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto clientData = getClientDataSafe(ctx);
 	clientData->auth.ResetDB();
-	return 0;
+	return errOK;
 }
 Error RPCServer::DropDatabase(cproto::Context &ctx) {
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto clientData = getClientDataSafe(ctx);
 	return dbMgr_.DropDatabase(clientData->auth);
 }
 
 Error RPCServer::CheckAuth(cproto::Context &ctx) {
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	cproto::ClientData *ptr = ctx.GetClientData();
+	auto clientData = dynamic_cast<RPCClientData *>(ptr);
 
 	if (ctx.call->cmd == cproto::kCmdLogin || ctx.call->cmd == cproto::kCmdPing) {
-		return 0;
+		return errOK;
 	}
 
 	if (!clientData) {
 		return Error(errForbidden, "You should login");
 	}
 
-	return 0;
+	return errOK;
 }
 
 void RPCServer::OnClose(cproto::Context &ctx, const Error &err) {
@@ -89,18 +150,21 @@ void RPCServer::OnClose(cproto::Context &ctx, const Error &err) {
 	(void)err;
 
 	if (statsWatcher_) {
-		auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+		auto clientData = getClientDataUnsafe(ctx);
 		if (clientData) {
 			statsWatcher_->OnClientDisconnected(clientData->auth.DBName(), statsSourceName());
 		}
+	}
+	if (clientsStats_) {
+		auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData());
+		if (clientData) clientsStats_->DeleteConnection(clientData->connID);
 	}
 	logger_.info("RPC: Client disconnected");
 }
 
 void RPCServer::OnResponse(cproto::Context &ctx) {
 	if (statsWatcher_) {
-		auto clientDataRaw = ctx.GetClientData();
-		auto clientData = dynamic_cast<RPCClientData *>(clientDataRaw.get());
+		auto clientData = getClientDataUnsafe(ctx);
 		auto dbName = (clientData != nullptr) ? clientData->auth.DBName() : "<unknown>";
 		statsWatcher_->OnOutputTraffic(dbName, statsSourceName(), ctx.stat.sizeStat.respSizeBytes);
 		if (ctx.stat.sizeStat.respSizeBytes) {
@@ -111,7 +175,7 @@ void RPCServer::OnResponse(cproto::Context &ctx) {
 }
 
 void RPCServer::Logger(cproto::Context &ctx, const Error &err, const cproto::Args &ret) {
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto clientData = getClientDataUnsafe(ctx);
 	WrSerializer ser;
 
 	if (clientData) {
@@ -160,6 +224,10 @@ Error RPCServer::DropNamespace(cproto::Context &ctx, p_string ns) {
 
 Error RPCServer::TruncateNamespace(cproto::Context &ctx, p_string ns) { return getDB(ctx, kRoleDBAdmin).TruncateNamespace(ns); }
 
+Error RPCServer::RenameNamespace(cproto::Context &ctx, p_string srcNsName, p_string dstNsName) {
+	return getDB(ctx, kRoleDBAdmin).RenameNamespace(srcNsName, dstNsName.toString());
+}
+
 Error RPCServer::CloseNamespace(cproto::Context &ctx, p_string ns) {
 	// Do not close.
 	// TODO: add reference counters
@@ -167,9 +235,13 @@ Error RPCServer::CloseNamespace(cproto::Context &ctx, p_string ns) {
 	return getDB(ctx, kRoleDataRead).Commit(ns);
 }
 
-Error RPCServer::EnumNamespaces(cproto::Context &ctx) {
+Error RPCServer::EnumNamespaces(cproto::Context &ctx, cproto::optional<int> opts, cproto::optional<p_string> filter) {
 	vector<NamespaceDef> nsDefs;
-	auto err = getDB(ctx, kRoleDataRead).EnumNamespaces(nsDefs, true);
+	EnumNamespacesOpts eopts;
+	if (opts.hasValue()) eopts.options_ = opts.value();
+	if (filter.hasValue()) eopts.filter_ = filter.value();
+
+	auto err = getDB(ctx, kRoleDataRead).EnumNamespaces(nsDefs, eopts);
 	if (!err.ok()) {
 		return err;
 	}
@@ -183,7 +255,7 @@ Error RPCServer::EnumNamespaces(cproto::Context &ctx) {
 	auto resSlice = ser.Slice();
 
 	ctx.Return({cproto::Arg(p_string(&resSlice))});
-	return 0;
+	return errOK;
 }
 
 Error RPCServer::EnumDatabases(cproto::Context &ctx) {
@@ -223,23 +295,23 @@ Error RPCServer::DropIndex(cproto::Context &ctx, p_string ns, p_string index) {
 	return getDB(ctx, kRoleDBAdmin).DropIndex(ns, idef);
 }
 
+Error RPCServer::SetSchema(cproto::Context &ctx, p_string ns, p_string schema) {
+	return getDB(ctx, kRoleDBAdmin).SetSchema(ns, string_view(schema));
+}
+
 Error RPCServer::StartTransaction(cproto::Context &ctx, p_string nsName) {
-	auto db = getDB(ctx, kRoleDataWrite);
-	auto tr = db.NewTransaction(nsName);
-	if (!tr.Status().ok()) {
-		return tr.Status();
+	int64_t id = -1;
+	try {
+		id = addTx(ctx, nsName);
+	} catch (reindexer::Error &e) {
+		return e;
 	}
-
-	auto id = addTx(ctx, std::move(tr));
-
 	ctx.Return({cproto::Arg(id)});
 	return errOK;
 }
 
 Error RPCServer::AddTxItem(cproto::Context &ctx, int format, p_string itemData, int mode, p_string perceptsPack, int stateToken,
 						   int64_t txID) {
-	auto db = getDB(ctx, kRoleDataWrite);
-
 	Transaction &tr = getTx(ctx, txID);
 
 	auto item = tr.NewItem();
@@ -248,20 +320,14 @@ Error RPCServer::AddTxItem(cproto::Context &ctx, int format, p_string itemData, 
 		return item.Status();
 	}
 
-	switch (format) {
-		case FormatJson:
-			err = item.FromJSON(itemData, nullptr, mode == ModeDelete);
-			break;
-		case FormatCJson:
-			if (item.GetStateToken() != stateToken) {
-				err = Error(errStateInvalidated, "stateToken mismatch:  %08X, need %08X. Can't process item", stateToken,
-							item.GetStateToken());
-			} else {
-				err = item.FromCJSON(itemData, mode == ModeDelete);
-			}
-			break;
-		default:
-			err = Error(-1, "Invalid source item format %d", format);
+	err = processTxItem(static_cast<DataFormat>(format), itemData, item, static_cast<ItemModifyMode>(mode), stateToken);
+	if (err.code() == errTagsMissmatch) {
+		item = getDB(ctx, kRoleDataWrite).NewItem(tr.GetName());
+		if (item.Status().ok()) {
+			err = processTxItem(static_cast<DataFormat>(format), itemData, item, static_cast<ItemModifyMode>(mode), stateToken);
+		} else {
+			return item.Status();
+		}
 	}
 	if (!err.ok()) {
 		return err;
@@ -269,11 +335,11 @@ Error RPCServer::AddTxItem(cproto::Context &ctx, int format, p_string itemData, 
 
 	if (perceptsPack.length()) {
 		Serializer ser(perceptsPack);
-		unsigned preceptsCount = ser.GetVarUint();
+		uint64_t preceptsCount = ser.GetVarUint();
 		vector<string> precepts;
+		precepts.reserve(preceptsCount);
 		for (unsigned prIndex = 0; prIndex < preceptsCount; prIndex++) {
-			string precept(ser.GetVString());
-			precepts.push_back(precept);
+			precepts.emplace_back(ser.GetVString());
 		}
 		item.SetPrecepts(precepts);
 	}
@@ -306,29 +372,27 @@ Error RPCServer::UpdateQueryTx(cproto::Context &ctx, p_string queryBin, int64_t 
 	return errOK;
 }
 
-Error RPCServer::CommitTx(cproto::Context &ctx, int64_t txId) {
+Error RPCServer::CommitTx(cproto::Context &ctx, int64_t txId, cproto::optional<int> flagsOpts) {
 	auto db = getDB(ctx, kRoleDataWrite);
 
 	Transaction &tr = getTx(ctx, txId);
-	auto err = db.CommitTransaction(tr);
+	QueryResults qres;
+	auto err = db.CommitTransaction(tr, qres);
 	if (err.ok()) {
-		QueryResults qres;
-		bool tmUpdated = false;
-
-		for (auto &step : tr.GetSteps()) {
-			if (!step.query_) {
-				qres.AddItem(step.item_);
-				if (!tmUpdated) tmUpdated = step.item_.IsTagsUpdated();
-			}
-		}
 		int32_t ptVers = -1;
 		ResultFetchOpts opts;
-		if (tmUpdated) {
-			opts = ResultFetchOpts{kResultsWithItemID | kResultsWithPayloadTypes, span<int32_t>(&ptVers, 1), 0, INT_MAX};
+		int flags;
+		if (flagsOpts.hasValue()) {
+			flags = flagsOpts.value();
 		} else {
-			opts = ResultFetchOpts{kResultsWithItemID, {}, 0, INT_MAX};
+			flags = kResultsWithItemID;
+			if (tr.IsTagsUpdated()) flags |= kResultsWithPayloadTypes;
 		}
-
+		if (tr.IsTagsUpdated()) {
+			opts = ResultFetchOpts{flags, span<int32_t>(&ptVers, 1), 0, INT_MAX};
+		} else {
+			opts = ResultFetchOpts{flags, {}, 0, INT_MAX};
+		}
 		err = sendResults(ctx, qres, -1, opts);
 	}
 	clearTx(ctx, txId);
@@ -378,6 +442,11 @@ Error RPCServer::ModifyItem(cproto::Context &ctx, p_string ns, int format, p_str
 				err = item.Unsafe().FromCJSON(itemData, mode == ModeDelete);
 			}
 			break;
+		case FormatMsgPack: {
+			size_t offset = 0;
+			err = item.FromMsgPack(itemData, offset);
+			break;
+		}
 		default:
 			err = Error(-1, "Invalid source item format %d", format);
 	}
@@ -423,12 +492,18 @@ Error RPCServer::ModifyItem(cproto::Context &ctx, p_string ns, int format, p_str
 	} else {
 		opts = ResultFetchOpts{kResultsWithItemID, {}, 0, INT_MAX};
 	}
-	if (sendItemBack) opts.flags |= kResultsCJson;
+	if (sendItemBack) {
+		if (format == FormatMsgPack) {
+			opts.flags |= kResultsMsgPack;
+		} else {
+			opts.flags |= kResultsCJson;
+		}
+	}
 
 	return sendResults(ctx, qres, -1, opts);
 }
 
-Error RPCServer::DeleteQuery(cproto::Context &ctx, p_string queryBin) {
+Error RPCServer::DeleteQuery(cproto::Context &ctx, p_string queryBin, cproto::optional<int> flagsOpts) {
 	Query query;
 	Serializer ser(queryBin.data(), queryBin.size());
 	query.Deserialize(ser);
@@ -439,11 +514,15 @@ Error RPCServer::DeleteQuery(cproto::Context &ctx, p_string queryBin) {
 	if (!err.ok()) {
 		return err;
 	}
-	ResultFetchOpts opts{0, {}, 0, INT_MAX};
+	int flags = kResultsWithItemID;
+	if (flagsOpts.hasValue()) {
+		flags = flagsOpts.value();
+	}
+	ResultFetchOpts opts{flags, {}, 0, INT_MAX};
 	return sendResults(ctx, qres, -1, opts);
 }
 
-Error RPCServer::UpdateQuery(cproto::Context &ctx, p_string queryBin) {
+Error RPCServer::UpdateQuery(cproto::Context &ctx, p_string queryBin, cproto::optional<int> flagsOpts) {
 	Query query;
 	Serializer ser(queryBin.data(), queryBin.size());
 	query.Deserialize(ser);
@@ -456,13 +535,16 @@ Error RPCServer::UpdateQuery(cproto::Context &ctx, p_string queryBin) {
 	}
 
 	int32_t ptVersion = -1;
-	ResultFetchOpts opts{kResultsCJson | kResultsWithPayloadTypes, {&ptVersion, 1}, 0, INT_MAX};
+	int flags = kResultsWithItemID | kResultsWithPayloadTypes | kResultsCJson;
+	if (flagsOpts.hasValue()) flags = flagsOpts.value();
+	ResultFetchOpts opts{flags, {&ptVersion, 1}, 0, INT_MAX};
 	return sendResults(ctx, qres, -1, opts);
 }
 
 Reindexer RPCServer::getDB(cproto::Context &ctx, UserRole role) {
-	if (ctx.GetClientData().get()) {
-		auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto rawClientData = ctx.GetClientData();
+	if (rawClientData) {
+		auto clientData = dynamic_cast<RPCClientData *>(rawClientData);
 		if (clientData) {
 			Reindexer *db = nullptr;
 			auto status = clientData->auth.GetDB(role, &db);
@@ -470,32 +552,49 @@ Reindexer RPCServer::getDB(cproto::Context &ctx, UserRole role) {
 				throw status;
 			}
 			if (db != nullptr) {
-				return db->NeedTraceActivity()
-						   ? db->WithTimeout(ctx.call->execTimeout_).WithActivityTracer(ctx.clientAddr, clientData->auth.Login())
-						   : db->WithTimeout(ctx.call->execTimeout_);
+				return db->NeedTraceActivity() ? db->WithTimeout(ctx.call->execTimeout_)
+													 .WithActivityTracer(ctx.clientAddr, clientData->auth.Login(), clientData->connID)
+											   : db->WithTimeout(ctx.call->execTimeout_);
 			}
 		}
 	}
-	throw Error(errParams, "Database is not openeded, you should open it first");
+	throw Error(errParams, "Database is not opened, you should open it first");
 }
 
 Error RPCServer::sendResults(cproto::Context &ctx, QueryResults &qres, int reqId, const ResultFetchOpts &opts) {
 	WrResultSerializer rser(opts);
-
 	bool doClose = rser.PutResults(&qres);
-
 	if (doClose && reqId >= 0) {
 		freeQueryResults(ctx, reqId);
 		reqId = -1;
 	}
-
 	string_view resSlice = rser.Slice();
 	ctx.Return({cproto::Arg(p_string(&resSlice)), cproto::Arg(int(reqId))});
-	return 0;
+	return errOK;
+}
+
+Error RPCServer::processTxItem(DataFormat format, string_view itemData, Item &item, ItemModifyMode mode, int stateToken) const noexcept {
+	switch (format) {
+		case FormatJson:
+			return item.FromJSON(itemData, nullptr, mode == ModeDelete);
+		case FormatCJson:
+			if (item.GetStateToken() != stateToken) {
+				return Error(errStateInvalidated, "stateToken mismatch:  %08X, need %08X. Can't process item", stateToken,
+							 item.GetStateToken());
+			} else {
+				return item.FromCJSON(itemData, mode == ModeDelete);
+			}
+		case FormatMsgPack: {
+			size_t offset = 0;
+			return item.FromMsgPack(itemData, offset);
+		}
+		default:
+			return Error(-1, "Invalid source item format %d", format);
+	}
 }
 
 QueryResults &RPCServer::getQueryResults(cproto::Context &ctx, int &id) {
-	auto data = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto data = getClientDataSafe(ctx);
 
 	if (id < 0) {
 		for (id = 0; id < int(data->results.size()); id++) {
@@ -517,35 +616,53 @@ QueryResults &RPCServer::getQueryResults(cproto::Context &ctx, int &id) {
 }
 
 Transaction &RPCServer::getTx(cproto::Context &ctx, int64_t id) {
-	auto data = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto data = getClientDataSafe(ctx);
 
-	if (size_t(id) >= data->txs.size()) {
+	if (size_t(id) >= data->txs.size() || data->txs[id].IsFree()) {
 		throw Error(errLogic, "Invalid tx id");
 	}
 	return data->txs[id];
 }
 
-int64_t RPCServer::addTx(cproto::Context &ctx, Transaction &&tr) {
-	auto data = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+int64_t RPCServer::addTx(cproto::Context &ctx, string_view nsName) {
+	auto db = getDB(ctx, kRoleDataWrite);
+	int64_t id = -1;
+	auto data = getClientDataSafe(ctx);
 	for (size_t i = 0; i < data->txs.size(); ++i) {
 		if (data->txs[i].IsFree()) {
-			data->txs[i] = std::move(tr);
-			return i;
+			id = i;
+			break;
 		}
+	}
+	if (data->txs.size() >= kMaxTxCount && id < 0) {
+		throw Error(errForbidden, "Too many active transactions");
+	}
+
+	auto tr = db.NewTransaction(nsName);
+	if (!tr.Status().ok()) {
+		throw tr.Status();
+	}
+	assert(data->txStats);
+	data->txStats->txCount += 1;
+	if (id >= 0) {
+		data->txs[id] = std::move(tr);
+		return id;
 	}
 	data->txs.emplace_back(std::move(tr));
 	return int64_t(data->txs.size() - 1);
 }
 void RPCServer::clearTx(cproto::Context &ctx, uint64_t txId) {
-	auto data = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto data = getClientDataSafe(ctx);
 	if (txId >= data->txs.size()) {
-		throw Error(errLogic, "Invalid tx id");
+		throw Error(errLogic, "Invalid tx id %d", txId);
 	}
+	assert(data->txStats);
+	data->txStats->txCount -= 1;
 	data->txs[txId] = Transaction();
 }
 
 void RPCServer::freeQueryResults(cproto::Context &ctx, int id) {
-	auto data = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
+	auto data = getClientDataSafe(ctx);
 	if (id >= int(data->results.size()) || id < 0) {
 		throw Error(errLogic, "Invalid query id");
 	}
@@ -565,6 +682,11 @@ Error RPCServer::Select(cproto::Context &ctx, p_string queryBin, int flags, int 
 	Query query;
 	Serializer ser(queryBin);
 	query.Deserialize(ser);
+
+	if (query.IsWALQuery()) {
+		auto data = getClientDataSafe(ctx);
+		query.Where(string("#slave_version"_sv), CondEq, data->rxVersion.StrippedString());
+	}
 
 	int id = -1;
 	QueryResults &qres = getQueryResults(ctx, id);
@@ -607,7 +729,6 @@ Error RPCServer::CloseResults(cproto::Context &ctx, int reqId) {
 }
 
 Error RPCServer::fetchResults(cproto::Context &ctx, int reqId, const ResultFetchOpts &opts) {
-	cproto::Args ret;
 	QueryResults &qres = getQueryResults(ctx, reqId);
 
 	return sendResults(ctx, qres, reqId, opts);
@@ -636,7 +757,7 @@ Error RPCServer::GetMeta(cproto::Context &ctx, p_string ns, p_string key) {
 	}
 
 	ctx.Return({cproto::Arg(data)});
-	return 0;
+	return errOK;
 }
 
 Error RPCServer::PutMeta(cproto::Context &ctx, p_string ns, p_string key, p_string data) {
@@ -657,42 +778,61 @@ Error RPCServer::EnumMeta(cproto::Context &ctx, p_string ns) {
 	return errOK;
 }
 
-Error RPCServer::SubscribeUpdates(cproto::Context &ctx, int flag) {
+Error RPCServer::SubscribeUpdates(cproto::Context &ctx, int flag, cproto::optional<p_string> filterJson, cproto::optional<int> options) {
+	UpdatesFilters filters;
+	Error ret;
+	if (filterJson.hasValue()) {
+		filters.FromJSON(giftStr(filterJson.value()));
+		if (!ret.ok()) {
+			return ret;
+		}
+	}
+	SubscriptionOpts opts;
+	if (options.hasValue()) {
+		opts.options = options.value();
+	}
+
 	auto db = getDB(ctx, kRoleDataRead);
-	auto clientData = dynamic_cast<RPCClientData *>(ctx.GetClientData().get());
-	auto ret = db.SubscribeUpdates(&clientData->pusher, flag);  // -V522 this thing is handled in midleware (within CheckAuth)
+	auto clientData = getClientDataSafe(ctx);
+	if (flag) {
+		ret = db.SubscribeUpdates(&clientData->pusher, filters, opts);
+	} else {
+		ret = db.UnsubscribeUpdates(&clientData->pusher);
+	}
 	if (ret.ok()) clientData->subscribed = bool(flag);
 	return ret;
 }
 
-bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop) {
+bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop, bool enableStat) {
 	dispatcher_.Register(cproto::kCmdPing, this, &RPCServer::Ping);
-	dispatcher_.Register(cproto::kCmdLogin, this, &RPCServer::Login);
-	dispatcher_.Register(cproto::kCmdOpenDatabase, this, &RPCServer::OpenDatabase);
+	dispatcher_.Register(cproto::kCmdLogin, this, &RPCServer::Login, true);
+	dispatcher_.Register(cproto::kCmdOpenDatabase, this, &RPCServer::OpenDatabase, true);
 	dispatcher_.Register(cproto::kCmdCloseDatabase, this, &RPCServer::CloseDatabase);
 	dispatcher_.Register(cproto::kCmdDropDatabase, this, &RPCServer::DropDatabase);
 	dispatcher_.Register(cproto::kCmdOpenNamespace, this, &RPCServer::OpenNamespace);
 	dispatcher_.Register(cproto::kCmdDropNamespace, this, &RPCServer::DropNamespace);
 	dispatcher_.Register(cproto::kCmdTruncateNamespace, this, &RPCServer::TruncateNamespace);
+	dispatcher_.Register(cproto::kCmdRenameNamespace, this, &RPCServer::RenameNamespace);
 	dispatcher_.Register(cproto::kCmdCloseNamespace, this, &RPCServer::CloseNamespace);
-	dispatcher_.Register(cproto::kCmdEnumNamespaces, this, &RPCServer::EnumNamespaces);
+	dispatcher_.Register(cproto::kCmdEnumNamespaces, this, &RPCServer::EnumNamespaces, true);
 	dispatcher_.Register(cproto::kCmdEnumDatabases, this, &RPCServer::EnumDatabases);
 
 	dispatcher_.Register(cproto::kCmdAddIndex, this, &RPCServer::AddIndex);
 	dispatcher_.Register(cproto::kCmdUpdateIndex, this, &RPCServer::UpdateIndex);
 	dispatcher_.Register(cproto::kCmdDropIndex, this, &RPCServer::DropIndex);
+	dispatcher_.Register(cproto::kCmdSetSchema, this, &RPCServer::SetSchema);
 	dispatcher_.Register(cproto::kCmdCommit, this, &RPCServer::Commit);
 
 	dispatcher_.Register(cproto::kCmdStartTransaction, this, &RPCServer::StartTransaction);
 	dispatcher_.Register(cproto::kCmdAddTxItem, this, &RPCServer::AddTxItem);
 	dispatcher_.Register(cproto::kCmdDeleteQueryTx, this, &RPCServer::DeleteQueryTx);
 	dispatcher_.Register(cproto::kCmdUpdateQueryTx, this, &RPCServer::UpdateQueryTx);
-	dispatcher_.Register(cproto::kCmdCommitTx, this, &RPCServer::CommitTx);
+	dispatcher_.Register(cproto::kCmdCommitTx, this, &RPCServer::CommitTx, true);
 	dispatcher_.Register(cproto::kCmdRollbackTx, this, &RPCServer::RollbackTx);
 
 	dispatcher_.Register(cproto::kCmdModifyItem, this, &RPCServer::ModifyItem);
-	dispatcher_.Register(cproto::kCmdDeleteQuery, this, &RPCServer::DeleteQuery);
-	dispatcher_.Register(cproto::kCmdUpdateQuery, this, &RPCServer::UpdateQuery);
+	dispatcher_.Register(cproto::kCmdDeleteQuery, this, &RPCServer::DeleteQuery, true);
+	dispatcher_.Register(cproto::kCmdUpdateQuery, this, &RPCServer::UpdateQuery, true);
 
 	dispatcher_.Register(cproto::kCmdSelect, this, &RPCServer::Select);
 	dispatcher_.Register(cproto::kCmdSelectSQL, this, &RPCServer::SelectSQL);
@@ -704,7 +844,7 @@ bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop) {
 	dispatcher_.Register(cproto::kCmdGetMeta, this, &RPCServer::GetMeta);
 	dispatcher_.Register(cproto::kCmdPutMeta, this, &RPCServer::PutMeta);
 	dispatcher_.Register(cproto::kCmdEnumMeta, this, &RPCServer::EnumMeta);
-	dispatcher_.Register(cproto::kCmdSubscribeUpdates, this, &RPCServer::SubscribeUpdates);
+	dispatcher_.Register(cproto::kCmdSubscribeUpdates, this, &RPCServer::SubscribeUpdates, true);
 	dispatcher_.Middleware(this, &RPCServer::CheckAuth);
 	dispatcher_.OnClose(this, &RPCServer::OnClose);
 	dispatcher_.OnResponse(this, &RPCServer::OnResponse);
@@ -713,7 +853,7 @@ bool RPCServer::Start(const string &addr, ev::dynamic_loop &loop) {
 		dispatcher_.Logger(this, &RPCServer::Logger);
 	}
 
-	listener_.reset(new Listener(loop, cproto::ServerConnection::NewFactory(dispatcher_)));
+	listener_.reset(new Listener(loop, cproto::ServerConnection::NewFactory(dispatcher_, enableStat)));
 	return listener_->Bind(addr);
 }
 
@@ -721,7 +861,7 @@ RPCClientData::~RPCClientData() {
 	Reindexer *db = nullptr;
 	auth.GetDB(kRoleNone, &db);
 	if (subscribed && db) {
-		db->SubscribeUpdates(&pusher, false);
+		db->UnsubscribeUpdates(&pusher);
 	}
 }
 

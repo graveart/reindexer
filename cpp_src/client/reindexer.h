@@ -4,6 +4,7 @@
 #include "client/item.h"
 #include "client/queryresults.h"
 #include "client/reindexerconfig.h"
+#include "client/transaction.h"
 #include "core/namespacedef.h"
 #include "core/query/query.h"
 
@@ -11,6 +12,7 @@
 
 namespace reindexer {
 class IUpdatesObserver;
+class UpdatesFilters;
 
 namespace client {
 using std::vector;
@@ -37,10 +39,16 @@ public:
 	~Reindexer();
 	Reindexer(const Reindexer &) = delete;
 	Reindexer(Reindexer &&) noexcept;
+	Reindexer &operator=(const Reindexer &) = delete;
+	Reindexer &operator=(Reindexer &&) noexcept;
 
 	/// Connect - connect to reindexer server
 	/// @param dsn - uri of server and database, like: `cproto://user@password:127.0.0.1:6534/dbname`
-	Error Connect(const string &dsn);
+	/// @param opts - Connect options. May contaion any of <br>
+	Error Connect(const string &dsn, const client::ConnectOpts &opts = client::ConnectOpts());
+	/// Connect - connect to reindexer server
+	/// @param connectData - list of server dsn + it's ConnectOpts
+	Error Connect(const vector<pair<string, client::ConnectOpts>> &connectData);
 	/// Stop - shutdown connector
 	Error Stop();
 	/// Open or create namespace
@@ -62,6 +70,10 @@ public:
 	/// Delete all items in namespace
 	/// @param nsName - Name of namespace
 	Error TruncateNamespace(string_view nsName);
+	/// Rename namespace. If namespace with dstNsName exists, then it is replaced.
+	/// @param srcNsName  - Name of namespace
+	/// @param dstNsName  - desired name of namespace
+	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName);
 	/// Add index to namespace
 	/// @param nsName - Name of namespace
 	/// @param index - IndexDef with index name and parameters
@@ -74,10 +86,14 @@ public:
 	/// @param nsName - Name of namespace
 	/// @param index - index name
 	Error DropIndex(string_view nsName, const IndexDef &index);
+	/// Set fields schema for namespace
+	/// @param nsName - Name of namespace
+	/// @param schema - JSON in JsonSchema format
+	Error SetSchema(string_view nsName, string_view schema);
 	/// Get list of all available namespaces
 	/// @param defs - std::vector of NamespaceDef of available namespaves
-	/// @param bEnumAll - Also include currenty not opened, but exists on disk namespaces
-	Error EnumNamespaces(vector<NamespaceDef> &defs, bool bEnumAll);
+	/// @param opts - Enumerartion options
+	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts);
 	/// Gets a list of available databases for a certain server.
 	/// @param dbList - list of DB names
 	Error EnumDatabases(vector<string> &dbList);
@@ -144,13 +160,29 @@ public:
 	Error EnumMeta(string_view nsName, vector<string> &keys);
 	/// Subscribe to updates of database
 	/// @param observer - Observer interface, which will receive updates
-	/// @param subscribe - true: subscribe, false: unsubscribe
-	Error SubscribeUpdates(IUpdatesObserver *observer, bool subscribe);
+	/// @param filters - Subscription filters set
+	/// @param opts - Subscription options (allows to either add new filters or reset them)
+	Error SubscribeUpdates(IUpdatesObserver *observer, const UpdatesFilters &filters, SubscriptionOpts opts = SubscriptionOpts());
+	/// Unsubscribe from updates of database
+	/// Cancelation context doesn't affect this call
+	/// @param observer - Observer interface, which will be unsubscribed updates
+	Error UnsubscribeUpdates(IUpdatesObserver *observer);
 	/// Get possible suggestions for token (set by 'pos') in Sql query.
 	/// @param sqlQuery - sql query.
 	/// @param pos - position in sql query for suggestions.
 	/// @param suggestions - all the suggestions for 'pos' position in query.
 	Error GetSqlSuggestions(const string_view sqlQuery, int pos, vector<string> &suggestions);
+	/// Get curret connection status
+	Error Status();
+	/// Allocate new transaction for namespace
+	/// @param nsName - Name of namespace
+	Transaction NewTransaction(string_view nsName);
+	/// Commit transaction - transaction will be deleted after commit
+	/// @param tr - transaction to commit
+	Error CommitTransaction(Transaction &tr);
+	/// RollBack transaction - transaction will be deleted after rollback
+	/// @param tr - transaction to rollback
+	Error RollBackTransaction(Transaction &tr);
 
 	/// Add cancelable context
 	/// @param cancelCtx - context pointer
@@ -168,7 +200,6 @@ public:
 
 private:
 	Reindexer(RPCClient *impl, InternalRdxContext &&ctx) : impl_(impl), owner_(false), ctx_(std::move(ctx)) {}
-
 	RPCClient *impl_;
 	bool owner_;
 	InternalRdxContext ctx_;

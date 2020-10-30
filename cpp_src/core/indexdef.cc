@@ -20,6 +20,7 @@ struct IndexInfo {
 const vector<string> condsUsual = {"SET", "EQ", "ANY", "EMPTY", "LT", "LE", "GT", "GE", "RANGE"};
 const vector<string> condsText = {"MATCH"};
 const vector<string> condsBool = {"SET", "EQ", "ANY", "EMPTY"};
+const vector<string> condsGeom = {"DWITHIN"};
 
 // clang-format off
 std::unordered_map<IndexType, IndexInfo, std::hash<int>, std::equal_to<int> > availableIndexes = {
@@ -42,6 +43,7 @@ std::unordered_map<IndexType, IndexInfo, std::hash<int>, std::equal_to<int> > av
 	{IndexCompositeFuzzyFT,	{"composite", "fuzzytext",	condsText,	CapComposite | CapFullText}},
 	{IndexFastFT,			{"string", "text",			condsText,	CapFullText}},
 	{IndexFuzzyFT,			{"string", "fuzzytext",		condsText,	CapFullText}},
+	{IndexRTree,			{"point", "rtree",			condsGeom,	0}},
 };
 
 std::unordered_map<CollateMode, const string, std::hash<int>, std::equal_to<int> > availableCollates = {
@@ -78,9 +80,15 @@ bool IndexDef::IsEqual(const IndexDef &other, bool skipConfig) const {
 IndexType IndexDef::Type() const {
 	string iType = indexType_;
 	if (iType == "") {
-		if (fieldType_ == "double") iType = "tree";
-		if (fieldType_ != "double") iType = "hash";
-		if (fieldType_ == "bool") iType = "-";
+		if (fieldType_ == "double") {
+			iType = "tree";
+		} else if (fieldType_ == "bool") {
+			iType = "-";
+		} else if (fieldType_ == "point") {
+			iType = "rtree";
+		} else {
+			iType = "hash";
+		}
 	}
 	for (auto &it : availableIndexes) {
 		if (fieldType_ == it.second.fieldType && iType == it.second.indexType) return it.first;
@@ -118,6 +126,10 @@ Error IndexDef::FromJSON(span<char> json) {
 
 void IndexDef::FromJSON(const gason::JsonNode &root) {
 	name_ = root["name"].As<string>();
+	jsonPaths_.clear();
+	for (auto &subElem : root["json_paths"]) {
+		jsonPaths_.push_back(subElem.As<string>());
+	}
 	fieldType_ = root["field_type"].As<string>();
 	indexType_ = root["index_type"].As<string>();
 	expireAfter_ = root["expire_after"].As<int64_t>();
@@ -125,11 +137,8 @@ void IndexDef::FromJSON(const gason::JsonNode &root) {
 	opts_.Array(root["is_array"].As<bool>());
 	opts_.Dense(root["is_dense"].As<bool>());
 	opts_.Sparse(root["is_sparse"].As<bool>());
+	opts_.RTreeLinear(root["is_linear"].As<bool>());
 	opts_.SetConfig(stringifyJson(root["config"]));
-	jsonPaths_.clear();
-	for (auto &subElem : root["json_paths"]) {
-		jsonPaths_.push_back(subElem.As<string>());
-	}
 
 	auto collateStr = root["collate_mode"].As<string_view>();
 	if (!collateStr.empty()) {
@@ -153,8 +162,11 @@ void IndexDef::GetJSON(WrSerializer &ser, int formatFlags) const {
 		.Put("is_pk", opts_.IsPK())
 		.Put("is_array", opts_.IsArray())
 		.Put("is_dense", opts_.IsDense())
-		.Put("is_sparse", opts_.IsSparse())
-		.Put("collate_mode", getCollateMode())
+		.Put("is_sparse", opts_.IsSparse());
+	if (indexType_ == "rtree" || fieldType_ == "point") {
+		builder.Put("is_linear", opts_.IsRTreeLinear());
+	}
+	builder.Put("collate_mode", getCollateMode())
 		.Put("sort_order_letters", opts_.collateOpts_.sortOrderTable.GetSortOrderCharacters())
 		.Put("expire_after", expireAfter_)
 		.Raw("config", opts_.hasConfig() ? opts_.config : "{}");

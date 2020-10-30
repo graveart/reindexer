@@ -37,5 +37,11 @@ enum SqlTokenType {
 	JoinedFieldNameSqlToken,
 	DeleteConditionsStart,
 	SetSqlToken,
+	UpdateOptionsSqlToken,
+	EqualPositionSqlToken,
+	JoinTypesSqlToken,
+	ST_DWithinSqlToken,
+	ST_GeomFromTextSqlToken,
+	GeomFieldSqlToken,
 };
 }

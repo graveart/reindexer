@@ -1,6 +1,7 @@
 
 #include "sqlsuggester.h"
 #include "core/namespacedef.h"
+#include "core/schema.h"
 #include "sqltokentype.h"
 
 #include <set>
@@ -12,9 +13,11 @@ bool checkIfTokenStartsWith(const string_view &src, const string_view &pattern) 
 	return checkIfStartsWith(src, pattern) && src.length() < pattern.length();
 }
 
-vector<string> SQLSuggester::GetSuggestions(const string_view &q, size_t pos, const Namespaces &namespaces) {
+vector<string> SQLSuggester::GetSuggestions(string_view q, size_t pos, EnumNamespacesF enumNamespaces, GetSchemaF getSchema) {
 	ctx_.suggestionsPos = pos;
 	ctx_.autocompleteMode = true;
+	enumNamespaces_ = std::move(enumNamespaces);
+	getSchema_ = std::move(getSchema);
 
 	try {
 		Parse(q);
@@ -22,24 +25,29 @@ vector<string> SQLSuggester::GetSuggestions(const string_view &q, size_t pos, co
 	}
 
 	for (SqlParsingCtx::SuggestionData &item : ctx_.suggestions) {
-		checkForTokenSuggestions(item, ctx_, namespaces);
+		checkForTokenSuggestions(item);
 	}
 
-	if (ctx_.suggestions.size() > 0) return ctx_.suggestions.front().variants;
+	for (auto &it : ctx_.suggestions) {
+		if (!it.variants.empty()) {
+			return it.variants;
+		}
+	}
 	return std::vector<string>();
 }
 
 std::unordered_map<int, std::set<string>> sqlTokenMatchings = {
 	{Start, {"explain", "select", "delete", "update", "truncate"}},
 	{StartAfterExplain, {"select", "delete", "update"}},
-	{AggregationSqlToken, {"sum", "avg", "max", "min", "facet", "count", "distinct"}},
-	{SelectConditionsStart, {"where", "limit", "offset", "order", "join", "left", "inner", "merge", "or", ";"}},
+	{AggregationSqlToken, {"sum", "avg", "max", "min", "facet", "count", "distinct", "rank"}},
+	{SelectConditionsStart, {"where", "limit", "offset", "order", "join", "left", "inner", "equal_position", "merge", "or", ";"}},
 	{ConditionSqlToken, {">", ">=", "<", "<=", "<>", "in", "range", "is", "==", "="}},
 	{WhereFieldValueSqlToken, {"null", "empty", "not"}},
 	{WhereFieldNegateValueSqlToken, {"null", "empty"}},
 	{OpSqlToken, {"and", "or"}},
-	{WhereOpSqlToken, {"and", "or", "order"}},
+	{WhereOpSqlToken, {"and", "or", "order", "equal_position"}},
 	{SortDirectionSqlToken, {"asc", "desc"}},
+	{JoinTypesSqlToken, {"join", "left", "inner"}},
 	{LeftSqlToken, {"join"}},
 	{InnerSqlToken, {"join"}},
 	{SelectSqlToken, {"select"}},
@@ -52,32 +60,58 @@ std::unordered_map<int, std::set<string>> sqlTokenMatchings = {
 	{WhereSqlToken, {"where"}},
 	{AllFieldsToken, {"*"}},
 	{DeleteConditionsStart, {"where", "limit", "offset", "order"}},
+	{UpdateOptionsSqlToken, {"set", "drop"}},
+	{EqualPositionSqlToken, {"equal_position"}},
+	{ST_DWithinSqlToken, {"ST_DWithin"}},
+	{ST_GeomFromTextSqlToken, {"ST_GeomFromText"}},
 };
 
-void getMatchingTokens(int tokenType, const string &token, vector<string> &variants) {
+static void getMatchingTokens(int tokenType, const string &token, vector<string> &variants) {
 	const std::set<string> &suggestions = sqlTokenMatchings[tokenType];
 	for (auto it = suggestions.begin(); it != suggestions.end(); ++it) {
-		if (isBlank(token) || checkIfStartsWith(token, *it)) variants.push_back(*it);
+		if (isBlank(token) || checkIfStartsWith(token, *it)) {
+			variants.push_back(*it);
+		}
 	}
 }
 
-void getMatchingNamespacesNames(const SQLSuggester::Namespaces &namespaces, const string &token, vector<string> &variants) {
+void SQLSuggester::getMatchingNamespacesNames(const string &token, vector<string> &variants) {
+	auto namespaces = enumNamespaces_(EnumNamespacesOpts().OnlyNames());
 	for (auto &ns : namespaces) {
 		if (isBlank(token) || checkIfStartsWith(token, ns.name)) variants.push_back(ns.name);
 	}
 }
 
-void SQLSuggester::getMatchingIndexesNames(const Namespaces &namespaces, const string &nsName, const string &token,
-										   vector<string> &variants) {
-	auto itNs = std::find_if(namespaces.begin(), namespaces.end(), [&](const NamespaceDef &lhs) { return lhs.name == nsName; });
-	if (itNs == namespaces.end()) return;
-	for (auto &idx : itNs->indexes) {
+void SQLSuggester::getMatchingFieldsNames(const string &token, vector<string> &variants) {
+	auto namespaces = enumNamespaces_(EnumNamespacesOpts().WithFilter(ctx_.suggestionLinkedNs));
+
+	if (namespaces.empty()) return;
+	auto dotPos = token.find('.');
+	for (auto &idx : namespaces[0].indexes) {
 		if (idx.name_ == "#pk" || idx.name_ == "-tuple") continue;
-		if (isBlank(token) || checkIfStartsWith(token, idx.name_)) variants.push_back(idx.name_);
+		if (isBlank(token) || checkIfStartsWith(token, idx.name_, dotPos != string::npos)) {
+			if (dotPos == string::npos) {
+				variants.push_back(idx.name_);
+			} else {
+				variants.push_back(idx.name_.substr(dotPos));
+			}
+		}
+	}
+
+	if (getSchema_) {
+		auto schema = getSchema_(namespaces[0].name);
+		if (schema) {
+			auto fieldsSuggestions = schema->GetSuggestions(token);
+			for (auto &suggestion : fieldsSuggestions) {
+				if (std::find(variants.begin(), variants.end(), suggestion) == variants.end()) {
+					variants.emplace_back(std::move(suggestion));
+				}
+			}
+		}
 	}
 }
 
-void SQLSuggester::getSuggestionsForToken(SqlParsingCtx::SuggestionData &ctx, const string &nsName, const Namespaces &namespaces) {
+void SQLSuggester::getSuggestionsForToken(SqlParsingCtx::SuggestionData &ctx) {
 	switch (ctx.tokenType) {
 		case Start:
 		case StartAfterExplain:
@@ -96,36 +130,44 @@ void SQLSuggester::getSuggestionsForToken(SqlParsingCtx::SuggestionData &ctx, co
 		case BySqlToken:
 		case SetSqlToken:
 		case WhereSqlToken:
+		case UpdateOptionsSqlToken:
 			getMatchingTokens(ctx.tokenType, ctx.token, ctx.variants);
 			break;
 		case SingleSelectFieldSqlToken:
 			getMatchingTokens(AllFieldsToken, ctx.token, ctx.variants);
 			getMatchingTokens(AggregationSqlToken, ctx.token, ctx.variants);
-			getMatchingIndexesNames(namespaces, nsName, ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
 			break;
 		case SelectFieldsListSqlToken:
 			getMatchingTokens(FromSqlToken, ctx.token, ctx.variants);
 			getMatchingTokens(AggregationSqlToken, ctx.token, ctx.variants);
-			getMatchingIndexesNames(namespaces, nsName, ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
 			break;
 		case NamespaceSqlToken:
-			getMatchingNamespacesNames(namespaces, ctx.token, ctx.variants);
+			getMatchingNamespacesNames(ctx.token, ctx.variants);
 			break;
 		case AndSqlToken:
 		case WhereFieldSqlToken:
 			getMatchingTokens(NotSqlToken, ctx.token, ctx.variants);
-			getMatchingIndexesNames(namespaces, nsName, ctx.token, ctx.variants);
+			getMatchingTokens(ST_DWithinSqlToken, ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
+			getMatchingTokens(EqualPositionSqlToken, ctx.token, ctx.variants);
+			getMatchingTokens(JoinTypesSqlToken, ctx.token, ctx.variants);
+			break;
+		case GeomFieldSqlToken:
+			getMatchingTokens(ST_GeomFromTextSqlToken, ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
 			break;
 		case FieldNameSqlToken:
-			getMatchingIndexesNames(namespaces, nsName, ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
 			break;
 		case SortDirectionSqlToken:
 			getMatchingTokens(SortDirectionSqlToken, ctx.token, ctx.variants);
 			getMatchingTokens(FieldSqlToken, ctx.token, ctx.variants);
 			break;
 		case JoinedFieldNameSqlToken:
-			getMatchingNamespacesNames(namespaces, ctx.token, ctx.variants);
-			getMatchingIndexesNames(namespaces, nsName, ctx.token, ctx.variants);
+			getMatchingNamespacesNames(ctx.token, ctx.variants);
+			getMatchingFieldsNames(ctx.token, ctx.variants);
 			break;
 		default:
 			break;
@@ -137,115 +179,124 @@ bool SQLSuggester::findInPossibleTokens(int type, const string &v) {
 	return (values.find(v) != values.end());
 }
 
-bool SQLSuggester::findInPossibleIndexes(const string &tok, const string &nsName, const Namespaces &namespaces) {
-	auto itNs = std::find_if(namespaces.begin(), namespaces.end(), [&](const NamespaceDef &lhs) { return lhs.name == nsName; });
-	if (itNs == namespaces.end()) return false;
-	return std::find_if(itNs->indexes.begin(), itNs->indexes.end(), [&](const IndexDef &lhs) { return lhs.name_ == tok; }) !=
-		   itNs->indexes.end();
+bool SQLSuggester::findInPossibleFields(const string &tok) {
+	auto namespaces = enumNamespaces_(EnumNamespacesOpts().WithFilter(ctx_.suggestionLinkedNs));
+
+	if (namespaces.empty()) return false;
+	if (std::find_if(namespaces[0].indexes.begin(), namespaces[0].indexes.end(), [&](const IndexDef &lhs) { return lhs.name_ == tok; }) !=
+		namespaces[0].indexes.end()) {
+		return true;
+	}
+	if (getSchema_) {
+		auto schema = getSchema_(namespaces[0].name);
+		return schema && schema->HasPath(tok);
+	}
+	return false;
 }
 
-bool SQLSuggester::findInPossibleNamespaces(const string &tok, const Namespaces &namespaces) {
-	return std::find_if(namespaces.begin(), namespaces.end(), [&](const NamespaceDef &lhs) { return lhs.name == tok; }) != namespaces.end();
+bool SQLSuggester::findInPossibleNamespaces(const string &tok) {
+	return !enumNamespaces_(EnumNamespacesOpts().WithFilter(tok).OnlyNames()).empty();
 }
 
-void SQLSuggester::checkForTokenSuggestions(SqlParsingCtx::SuggestionData &data, const SqlParsingCtx &ctx, const Namespaces &namespaces) {
+void SQLSuggester::checkForTokenSuggestions(SqlParsingCtx::SuggestionData &data) {
 	switch (data.tokenType) {
 		case Start:
 		case StartAfterExplain:
 			if (isBlank(data.token) || !findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
 		case SingleSelectFieldSqlToken: {
 			if (isBlank(data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (data.token == "*") break;
 			bool isIndex = false, isAggregationFunction = false;
-			isIndex = findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces);
+			isIndex = findInPossibleFields(data.token);
 			if (!isIndex) isAggregationFunction = findInPossibleTokens(AggregationSqlToken, data.token);
 			if (!isIndex && !isAggregationFunction) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 		} break;
 		case SelectFieldsListSqlToken: {
 			if (isBlank(data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 
 			if ((data.token == ",") || (data.token == "(")) break;
 
 			bool fromKeywordReached = false;
-			if (ctx.tokens.size() > 1) {
-				int prevTokenType = ctx.tokens.back();
+			if (ctx_.tokens.size() > 1) {
+				int prevTokenType = ctx_.tokens.back();
 				if ((prevTokenType == SingleSelectFieldSqlToken) || (prevTokenType == SelectFieldsListSqlToken)) {
 					fromKeywordReached = checkIfStartsWith(data.token, "from");
 					if (fromKeywordReached && data.token.length() < strlen("from")) {
-						getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+						getSuggestionsForToken(data);
 					}
 				}
 			}
 
-			if (!fromKeywordReached && !findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (!fromKeywordReached && !findInPossibleFields(data.token)) {
+				getSuggestionsForToken(data);
 			}
 		} break;
 		case FromSqlToken:
 			if (isBlank(data.token) || !iequals(data.token, "from")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
 		case NamespaceSqlToken:
-			if (isBlank(data.token) || !findInPossibleNamespaces(data.token, namespaces)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (isBlank(data.token) || !findInPossibleNamespaces(data.token)) {
+				getSuggestionsForToken(data);
 			}
 			break;
 		case SelectConditionsStart:
 		case DeleteConditionsStart:
 			if (isBlank(data.token) || !findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
+		case GeomFieldSqlToken:
 		case WhereFieldSqlToken:
 			if (isBlank(data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (iequals(data.token, "not")) break;
-			if (!findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (!findInPossibleFields(data.token)) {
+				getSuggestionsForToken(data);
 			}
 			break;
 		case ConditionSqlToken:
 			if (isBlank(data.token) || !findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
 		case WhereFieldValueSqlToken:
 			if (isBlank(data.token)) break;
 			if (checkIfTokenStartsWith(data.token, "null")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (checkIfTokenStartsWith(data.token, "empty")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (checkIfTokenStartsWith(data.token, "not")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
 		case WhereFieldNegateValueSqlToken:
 			if (isBlank(data.token) || !findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 			}
 			break;
 		case WhereOpSqlToken:
 		case OpSqlToken:
 			if (isBlank(data.token)) {
-				switch (ctx.tokens.back()) {
+				switch (ctx_.tokens.back()) {
 					case WhereSqlToken:
 						data.tokenType = FieldNameSqlToken;
 						break;
@@ -255,60 +306,57 @@ void SQLSuggester::checkForTokenSuggestions(SqlParsingCtx::SuggestionData &data,
 					default:
 						break;
 				}
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (checkIfTokenStartsWith(data.token, "and")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (checkIfTokenStartsWith(data.token, "or")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
-			if ((data.tokenType == WhereOpSqlToken) && (ctx.tokens.size() > 1)) {
-				int prevTokenType = ctx.tokens.back();
-				if ((prevTokenType != WhereSqlToken) && checkIfTokenStartsWith(data.token, "order")) {
-					getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if ((data.tokenType == WhereOpSqlToken) && (ctx_.tokens.size() > 1)) {
+				int prevTokenType = ctx_.tokens.back();
+				if ((prevTokenType != WhereSqlToken) &&
+					(checkIfTokenStartsWith(data.token, "order") || checkIfTokenStartsWith(data.token, "equal_position"))) {
+					getSuggestionsForToken(data);
 					break;
 				}
 			}
 			break;
 		case AndSqlToken:
 			if (isBlank(data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
-			if (findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces)) break;
-			if (checkIfTokenStartsWith(data.token, "not")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
-			}
-			getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (findInPossibleFields(data.token)) break;
+			getSuggestionsForToken(data);
 			break;
 		case FieldNameSqlToken:
-			if (isBlank(data.token) || !findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (isBlank(data.token) || !findInPossibleFields(data.token)) {
+				getSuggestionsForToken(data);
 			}
 			break;
 		case SortDirectionSqlToken:
 			if (isBlank(data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (data.token == "(") break;
 			if (checkIfTokenStartsWith(data.token, "field")) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			if (!findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			break;
 		case JoinedFieldNameSqlToken:
-			if (isBlank(data.token) || !findInPossibleIndexes(data.token, ctx.suggestionLinkedNs, namespaces) ||
-				!findInPossibleNamespaces(data.token, namespaces)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+			if (isBlank(data.token) || !findInPossibleFields(data.token) || !findInPossibleNamespaces(data.token)) {
+				getSuggestionsForToken(data);
 				break;
 			}
 			break;
@@ -319,12 +367,14 @@ void SQLSuggester::checkForTokenSuggestions(SqlParsingCtx::SuggestionData &data,
 		case BySqlToken:
 		case SetSqlToken:
 		case WhereSqlToken:
+		case UpdateOptionsSqlToken:
 			if (isBlank(data.token) || !findInPossibleTokens(data.tokenType, data.token)) {
-				getSuggestionsForToken(data, ctx.suggestionLinkedNs, namespaces);
+				getSuggestionsForToken(data);
 				break;
 			}
 			break;
 		default:
+			getSuggestionsForToken(data);
 			break;
 	}
 }

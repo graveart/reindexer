@@ -2,10 +2,18 @@
 #include <thread>
 #include "allocs_tracker.h"
 #include "core/cjson/jsonbuilder.h"
+#include "core/nsselecter/joinedselector.h"
 #include "core/reindexer.h"
 #include "tools/string_regexp_functions.h"
 
 #include "helpers.h"
+
+double randDouble(int min, int max, int digits) noexcept {
+	assert(digits > 0);
+	return random<int>(min * digits, max * digits) / static_cast<double>(digits);
+}
+
+reindexer::Point randPoint() noexcept { return {randDouble(-10, 10, 100), randDouble(-10, 10, 100)}; }
 
 using std::bind;
 using std::placeholders::_1;
@@ -27,6 +35,10 @@ void ApiTvSimple::RegisterAllCases() {
 	Register("GetLikeString", &ApiTvSimple::GetLikeString, this);
 	Register("GetByRangeIDAndSortByHash", &ApiTvSimple::GetByRangeIDAndSortByHash, this);
 	Register("GetByRangeIDAndSortByTree", &ApiTvSimple::GetByRangeIDAndSortByTree, this);
+	Register("GetRangeTreeDouble", &ApiTvSimple::GetRangeTreeDouble, this);
+	Register("GetDWithinQuadraticRTreePoint", &ApiTvSimple::GetDWithinQuadraticRTreePoint, this);
+	Register("GetDWithinLinearRTreePoint", &ApiTvSimple::GetDWithinLinearRTreePoint, this);
+	Register("GetDWithinPointNonIndex", &ApiTvSimple::GetDWithinPointNonIndex, this);
 
 	Register("Query1Cond", &ApiTvSimple::Query1Cond, this);
 	Register("Query1CondTotal", &ApiTvSimple::Query1CondTotal, this);
@@ -38,6 +50,7 @@ void ApiTvSimple::RegisterAllCases() {
 	Register("Query2CondLeftJoinTotal", &ApiTvSimple::Query2CondLeftJoinTotal, this);
 	Register("Query2CondLeftJoinCachedTotal", &ApiTvSimple::Query2CondLeftJoinCachedTotal, this);
 	Register("Query0CondInnerJoinUnlimit", &ApiTvSimple::Query0CondInnerJoinUnlimit, this);
+	Register("Query0CondInnerJoinPreResultStoreValues", &ApiTvSimple::Query0CondInnerJoinPreResultStoreValues, this);
 	Register("Query2CondInnerJoin", &ApiTvSimple::Query2CondInnerJoin, this);
 	Register("Query2CondInnerJoinTotal", &ApiTvSimple::Query2CondInnerJoinTotal, this);
 	Register("Query2CondInnerJoinCachedTotal", &ApiTvSimple::Query2CondInnerJoinCachedTotal, this);
@@ -97,31 +110,32 @@ reindexer::Item ApiTvSimple::MakeItem() {
 
 	auto startTime = random<int>(0, 50000);
 
-	item["id"] = id_seq_->Next();
-	item["genre"] = random<int64_t>(0, 49);
-	item["year"] = random<int>(2000, 2049);
-	item["packages"] = packages_.at(random<size_t>(0, packages_.size() - 1));
-	item["countries"] = countries_.at(random<size_t>(0, countries_.size() - 1));
-	item["age"] = random<int>(0, 4);
-	item["price_id"] = priceIDs_.at(random<size_t>(0, priceIDs_.size() - 1));
-	item["location"] = locations_.at(random<size_t>(0, locations_.size() - 1));
-	item["start_time"] = start_times_.at(random<size_t>(0, start_times_.size() - 1));
-	item["end_time"] = startTime + random<int>(1, 5) * 1000;
-
-	// wrSer_.Reset();
-	// reindexer::JsonBuilder bld(wrSer_);
-	// bld.Put("id", id_seq_->Next());
-	// bld.Put("genre", random<int64_t>(0, 49));
-	// bld.Put("year", random<int>(2000, 2049));
-	// bld.Array("packages", reindexer::span<int>(packages_.at(random<size_t>(0, packages_.size() - 1))));
-	// bld.Put("countries", countries_.at(random<size_t>(0, countries_.size() - 1)));
-	// bld.Put("age", random<int>(0, 4));
-	// bld.Array("price_id", reindexer::span<int>(priceIDs_.at(random<size_t>(0, priceIDs_.size() - 1))));
-	// bld.Put("location", locations_.at(random<size_t>(0, locations_.size() - 1)));
-	// bld.Put("start_time", start_times_.at(random<size_t>(0, start_times_.size() - 1)));
-	// bld.Put("end_time", startTime + random<int>(1, 5) * 1000);
-	// bld.End();
-	// item.FromJSON(wrSer_.Slice());
+	wrSer_.Reset();
+	reindexer::JsonBuilder bld(wrSer_);
+	bld.Put("id", id_seq_->Next());
+	bld.Put("genre", random<int64_t>(0, 49));
+	bld.Put("year", random<int>(2000, 2049));
+	bld.Array("packages", reindexer::span<int>(packages_.at(random<size_t>(0, packages_.size() - 1))));
+	bld.Put("countries", countries_.at(random<size_t>(0, countries_.size() - 1)));
+	bld.Put("age", random<int>(0, 4));
+	bld.Array("price_id", reindexer::span<int>(priceIDs_.at(random<size_t>(0, priceIDs_.size() - 1))));
+	bld.Put("location", locations_.at(random<size_t>(0, locations_.size() - 1)));
+	bld.Put("start_time", start_times_.at(random<size_t>(0, start_times_.size() - 1)));
+	bld.Put("end_time", startTime + random<int>(1, 5) * 1000);
+	bld.Put("double", randDouble(-1000, 1000, 100000));
+	reindexer::Point point = randPoint();
+	double coords[]{point.x, point.y};
+	bld.Array("point_quadratic", reindexer::span<double>(coords, 2));
+	point = randPoint();
+	coords[0] = point.x;
+	coords[1] = point.y;
+	bld.Array("point_linear", reindexer::span<double>(coords, 2));
+	point = randPoint();
+	coords[0] = point.x;
+	coords[1] = point.y;
+	bld.Array("point_non_index", reindexer::span<double>(coords, 2));
+	bld.End();
+	item.FromJSON(wrSer_.Slice());
 
 	return item;
 }
@@ -134,76 +148,28 @@ void ApiTvSimple::WarmUpIndexes(State& state) {
 		Error err;
 
 		// Ensure indexes complete build
-		// In current implementation - just wait
-		// Index build process is in background routine
-		std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+		WaitForOptimization();
+		for (size_t i = 0; i < packages_.size() * 2; i++) {
+			QueryResults qres;
+			Query q(nsdef_.name);
+			q.Where("packages", CondSet, packages_.at(i % packages_.size())).Limit(20).Sort("start_time", false);
+			err = db_->Select(q, qres);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
+		}
 
-		for (size_t i = 0; i < packages_.size() * 3; i++) {
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				auto randIdx = random<size_t>(0, packages_.size() - 1);
-				q.Where("packages", CondSet, toArray<int>(packages_.at(randIdx))).Limit(20).Sort("start_time", false);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
-
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				auto randIdx = random<size_t>(0, packages_.size() - 1);
-				q.Where("packages", CondSet, toArray<int>(packages_.at(randIdx))).Limit(20).Sort("year", false);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
-
-			{
-				QueryResults qres;
-				Query q(nsdef_.name);
-				q.Where("year", CondRange, {2010, 2016}).Limit(20);
-				err = db_->Select(q, qres);
-				if (!err.ok()) state.SkipWithError(err.what().c_str());
-			}
+		for (size_t i = 0; i < packages_.size() * 2; i++) {
+			QueryResults qres;
+			Query q(nsdef_.name);
+			q.Where("packages", CondSet, packages_.at(i % packages_.size())).Limit(20).Sort("year", false);
+			err = db_->Select(q, qres);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
 		}
 
 		for (size_t i = 0; i < priceIDs_.size() * 3; i++) {
 			QueryResults qres;
 			Query q("JoinItems");
-			auto randIdx = random<size_t>(0, priceIDs_.size() - 1);
-			q.Where("id", CondSet, toArray<int>(priceIDs_.at(randIdx))).Limit(20);
+			q.Where("id", CondSet, priceIDs_.at(i % priceIDs_.size())).Limit(20);
 			err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < 1000; ++i) {
-			Query q(nsdef_.name);
-			q.Where("start_time", CondEq, start_times_.at(random<size_t>(0, start_times_.size() - 1)));
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < priceIDs_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("price_id", CondEq, priceIDs_[random<size_t>(0, priceIDs_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < countries_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("countries", CondEq, countries_[random<size_t>(0, countries_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
-			if (!err.ok()) state.SkipWithError(err.what().c_str());
-		}
-
-		for (size_t i = 0; i < countryLikePatterns_.size() * 3; ++i) {
-			Query q(nsdef_.name);
-			q.Where("countries", CondLike, countryLikePatterns_[random<size_t>(0, countryLikePatterns_.size() - 1)]);
-			QueryResults qres;
-			auto err = db_->Select(q, qres);
 			if (!err.ok()) state.SkipWithError(err.what().c_str());
 		}
 	}
@@ -298,6 +264,51 @@ void ApiTvSimple::GetByRangeIDAndSortByTree(benchmark::State& state) {
 		if (!err.ok()) state.SkipWithError(err.what().c_str());
 
 		if (!qres.Count()) state.SkipWithError("Results does not contain any value");
+	}
+}
+
+void ApiTvSimple::GetRangeTreeDouble(benchmark::State& state) {
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		Query q(nsdef_.name);
+		const double min = randDouble(-1000, 1000, 100000);
+		q.Where("double", CondRange, {min, min + randDouble(0, 1, 10000)});
+		QueryResults qres;
+		auto err = db_->Select(q, qres);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	}
+}
+
+void ApiTvSimple::GetDWithinQuadraticRTreePoint(benchmark::State& state) {
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		Query q(nsdef_.name);
+		q.DWithin("point_quadratic", randPoint(), randDouble(0, 1, 100));
+		QueryResults qres;
+		auto err = db_->Select(q, qres);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	}
+}
+
+void ApiTvSimple::GetDWithinLinearRTreePoint(benchmark::State& state) {
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		Query q(nsdef_.name);
+		q.DWithin("point_linear", randPoint(), randDouble(0, 1, 100));
+		QueryResults qres;
+		auto err = db_->Select(q, qres);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	}
+}
+
+void ApiTvSimple::GetDWithinPointNonIndex(benchmark::State& state) {
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		Query q(nsdef_.name);
+		q.DWithin("point_non_index", randPoint(), randDouble(0, 1, 100));
+		QueryResults qres;
+		auto err = db_->Select(q, qres);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
 	}
 }
 
@@ -469,6 +480,60 @@ void ApiTvSimple::Query2CondInnerJoin(benchmark::State& state) {
 		QueryResults qres;
 		auto err = db_->Select(q, qres);
 		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	}
+}
+
+void ApiTvSimple::Query0CondInnerJoinPreResultStoreValues(benchmark::State& state) {
+	using reindexer::JoinedSelector;
+	static const string rightNs = "rightNs";
+	static const vector<string> leftNs = {"leftNs1", "leftNs2", "leftNs3", "leftNs4"};
+	static constexpr char const* id = "id";
+	static constexpr char const* data = "data";
+	static constexpr int maxDataValue = 10;
+	static constexpr int maxRightNsRowCount = maxDataValue * (JoinedSelector::MaxIterationsForPreResultStoreValuesOptimization() - 1);
+	static constexpr int maxLeftNsRowCount = 10000;
+
+	const auto createNs = [this, &state](const string& ns) {
+		Error err = db_->OpenNamespace(ns);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+		err = db_->AddIndex(ns, {id, "hash", "int", IndexOpts().PK()});
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+		err = db_->AddIndex(ns, {data, "hash", "int", IndexOpts()});
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	};
+	const auto fill = [this, &state](const string& ns, int startId, int endId) {
+		Error err;
+		for (int i = startId; i < endId; ++i) {
+			Item item = db_->NewItem(ns);
+			item[id] = i;
+			item[data] = i % maxDataValue;
+			err = db_->Upsert(ns, item);
+			if (!err.ok()) state.SkipWithError(err.what().c_str());
+		}
+		err = db_->Commit(ns);
+		if (!err.ok()) state.SkipWithError(err.what().c_str());
+	};
+
+	createNs(rightNs);
+	fill(rightNs, 0, maxRightNsRowCount);
+	for (size_t i = 0; i < leftNs.size(); ++i) {
+		createNs(leftNs[i]);
+		fill(leftNs[i], 0, maxLeftNsRowCount);
+	}
+	AllocsTracker allocsTracker(state);
+	for (auto _ : state) {
+		vector<std::thread> threads;
+		threads.reserve(leftNs.size());
+		for (size_t i = 0; i < leftNs.size(); ++i) {
+			threads.emplace_back([this, i, &state]() {
+				Query q{leftNs[i]};
+				q.InnerJoin(data, data, CondEq, Query(rightNs).Where(data, CondEq, rand() % maxDataValue));
+				QueryResults qres;
+				Error err = db_->Select(q, qres);
+				if (!err.ok()) state.SkipWithError(err.what().c_str());
+			});
+		}
+		for (auto& th : threads) th.join();
 	}
 }
 

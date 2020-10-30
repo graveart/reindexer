@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <time.h>
+#include <cctype>
 #include <string>
 #include <vector>
 #include "core/indexopts.h"
@@ -23,6 +24,13 @@ string unescapeString(string_view str);
 static inline bool isalpha(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
 static inline bool isdigit(char c) { return (c >= '0' && c <= '9'); }
 static inline char tolower(char c) { return (c >= 'A' && c <= 'Z') ? c + 'a' - 'A' : c; }
+string toLower(string_view src);
+inline string_view skipSpace(string_view str) {
+	size_t i = 0;
+	for (; i < str.size() && std::isspace(str[i]); ++i)
+		;
+	return str.substr(i);
+}
 
 template <typename Container>
 Container& split(const typename Container::value_type& str, const string& delimiters, bool trimEmpty, Container& tokens) {
@@ -78,9 +86,11 @@ int64_t stoll(string_view sl);
 
 bool validateObjectName(string_view name);
 LogLevel logLevelFromString(const string& strLogLevel);
+StrictMode strictModeFromString(const std::string& strStrictMode);
+string_view strictModeToString(StrictMode mode);
 
 bool iequals(string_view lhs, string_view rhs);
-bool checkIfStartsWith(string_view src, string_view pattern);
+bool checkIfStartsWith(string_view src, string_view pattern, bool casesensitive = false);
 bool isPrintable(string_view str);
 bool isBlank(string_view token);
 

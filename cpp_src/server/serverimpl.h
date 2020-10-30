@@ -24,7 +24,7 @@ struct IDBManagerStatsCollector;
 struct IRPCServerStatsCollector;
 
 class ServerImpl {
-	using SinkMap = std::unordered_map<string, std::shared_ptr<spdlog::sinks::simple_file_sink_mt>>;
+	using SinkMap = std::unordered_map<string, std::shared_ptr<spdlog::sinks::fast_file_sink>>;
 
 public:
 	ServerImpl();
@@ -38,6 +38,7 @@ public:
 	void EnableHandleSignals(bool enable = true) { enableHandleSignals_ = enable; }
 	DBManager& GetDBManager() { return *dbMgr_; }
 	bool IsReady() { return storageLoaded_.load(); }
+	void ReopenLogFiles();
 
 protected:
 	int run();
@@ -47,14 +48,6 @@ private:
 	Error daemonize();
 	Error loggerConfigure();
 	void initCoreLogger();
-
-#ifndef _WIN32
-	void loggerReopen() {
-		for (auto& sync : sinks_) {
-			sync.second->reopen();
-		}
-	}
-#endif
 
 private:
 	vector<string> args_;
@@ -75,5 +68,5 @@ private:
 	bool enableHandleSignals_ = false;
 	ev::async async_;
 	ev::dynamic_loop loop_;
-};  // class server
+};
 }  // namespace reindexer_server

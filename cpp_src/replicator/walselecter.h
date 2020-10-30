@@ -2,17 +2,18 @@
 
 namespace reindexer {
 
-class Namespace;
+class NamespaceImpl;
 class QueryResults;
+class RdxContext;
 struct SelectCtx;
 class WALSelecter {
 public:
-	WALSelecter(const Namespace *ns);
+	WALSelecter(const NamespaceImpl *ns);
 	void operator()(QueryResults &result, SelectCtx &params);
 
 protected:
 	void putReplState(QueryResults &result);
-	const Namespace *ns_;
+	const NamespaceImpl *ns_;
 };
 
 }  // namespace reindexer

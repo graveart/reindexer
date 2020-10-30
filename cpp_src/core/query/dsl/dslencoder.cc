@@ -22,8 +22,8 @@ namespace dsl {
 const unordered_map<JoinType, string, EnumClassHash> join_types = {{InnerJoin, "inner"}, {LeftJoin, "left"}, {OrInnerJoin, "orinner"}};
 
 const unordered_map<CondType, string, EnumClassHash> cond_map = {
-	{CondAny, "any"},	 {CondEq, "eq"},   {CondLt, "lt"},			{CondLe, "le"},		  {CondGt, "gt"},	 {CondGe, "ge"},
-	{CondRange, "range"}, {CondSet, "set"}, {CondAllSet, "allset"}, {CondEmpty, "empty"}, {CondLike, "like"},
+	{CondAny, "any"},	  {CondEq, "eq"},	{CondLt, "lt"},			{CondLe, "le"},		  {CondGt, "gt"},	  {CondGe, "ge"},
+	{CondRange, "range"}, {CondSet, "set"}, {CondAllSet, "allset"}, {CondEmpty, "empty"}, {CondLike, "like"}, {CondDWithin, "dwithin"},
 };
 
 const unordered_map<OpType, string, EnumClassHash> op_map = {{OpOr, "or"}, {OpAnd, "and"}, {OpNot, "not"}};
@@ -43,7 +43,7 @@ void encodeSorting(const SortingEntries& sortingEntries, JsonBuilder& builder) {
 	auto arrNode = builder.Array("sort");
 
 	for (const SortingEntry& sortingEntry : sortingEntries) {
-		arrNode.Object().Put("field", sortingEntry.column).Put("desc", sortingEntry.desc);
+		arrNode.Object().Put("field", sortingEntry.expression).Put("desc", sortingEntry.desc);
 	}
 }
 
@@ -54,6 +54,19 @@ void encodeJoins(const Query& query, JsonBuilder& builder) {
 		if (joinQuery.joinType == LeftJoin) {
 			auto node = builder.Object();
 			encodeSingleJoinQuery(joinQuery, node);
+		}
+	}
+}
+
+void encodeEqualPositions(const Query& query, JsonBuilder& builder) {
+	if (query.equalPositions_.empty()) return;
+	auto epNodePositions = builder.Array("equal_positions");
+	for (auto it = query.equalPositions_.begin(); it != query.equalPositions_.end(); ++it) {
+		auto epNodePosition = epNodePositions.Object(string_view());
+		auto epNodePositionArr = epNodePosition.Array("positions");
+		for (auto it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
+			assert(query.entries.IsValue(*it2));
+			epNodePositionArr.Put(nullptr, query.entries[*it2].index);
 		}
 	}
 }
@@ -128,6 +141,7 @@ void encodeSingleJoinQuery(const JoinedQuery& joinQuery, JsonBuilder& builder) {
 }
 
 void encodeFilter(const Query& parentQuery, const QueryEntry& qentry, JsonBuilder& builder) {
+	if (qentry.distinct) return;
 	if (qentry.joinIndex == QueryEntry::kNoJoins) {
 		builder.Put("cond", get(cond_map, CondType(qentry.condition)));
 		builder.Put("field", qentry.index);
@@ -147,20 +161,103 @@ void encodeFilter(const Query& parentQuery, const QueryEntry& qentry, JsonBuilde
 	}
 }
 
-void toDsl(const Query& query, JsonBuilder& builder) {
-	builder.Put("namespace", query._namespace);
-	builder.Put("limit", query.count);
-	builder.Put("offset", query.start);
-	// builder.Put("distinct", "");
-	builder.Put("req_total", get(reqtotal_values, query.calcTotal));
-	builder.Put("explain", query.explain_);
+void encodeDropFields(const Query& query, JsonBuilder& builder) {
+	auto dropFields = builder.Array("drop_fields");
+	for (const UpdateEntry& updateEntry : query.UpdateFields()) {
+		if (updateEntry.mode == FieldModeDrop) {
+			dropFields.Put(0, updateEntry.column);
+		}
+	}
+}
 
-	encodeSelectFilter(query, builder);
-	encodeSelectFunctions(query, builder);
-	encodeSorting(query.sortingEntries_, builder);
-	encodeFilters(query, builder);
-	encodeMergedQueries(query, builder);
-	encodeAggregationFunctions(query, builder);
+void encodeUpdateFields(const Query& query, JsonBuilder& builder) {
+	auto updateFields = builder.Array("update_fields");
+	for (const UpdateEntry& updateEntry : query.UpdateFields()) {
+		if (updateEntry.mode == FieldModeSet || updateEntry.mode == FieldModeSetJson) {
+			bool isObject = (updateEntry.mode == FieldModeSetJson);
+			auto field = updateFields.Object(0);
+			if (isObject) {
+				field.Put("type", "object");
+			} else if (updateEntry.isExpression) {
+				field.Put("type", "expression");
+			} else {
+				field.Put("type", "value");
+			}
+			field.Put("name", updateEntry.column);
+			field.Put("is_array", updateEntry.values.IsArrayValue());
+			auto values = field.Array("values");
+			for (const Variant& v : updateEntry.values) {
+				if (isObject) {
+					values.Json(nullptr, p_string(v));
+				} else {
+					values.Put(0, v);
+				}
+			}
+		}
+	}
+}
+
+void toDsl(const Query& query, JsonBuilder& builder) {
+	switch (query.Type()) {
+		case QueryType::QuerySelect: {
+			builder.Put("namespace", query._namespace);
+			builder.Put("limit", query.count);
+			builder.Put("offset", query.start);
+			builder.Put("req_total", get(reqtotal_values, query.calcTotal));
+			builder.Put("explain", query.explain_);
+			builder.Put("type", "select");
+			auto strictMode = strictModeToString(query.strictMode);
+			if (!strictMode.empty()) {
+				builder.Put("strict_mode", strictMode);
+			}
+			builder.Put("select_with_rank", query.IsWithRank());
+
+			encodeSelectFilter(query, builder);
+			encodeSelectFunctions(query, builder);
+			encodeSorting(query.sortingEntries_, builder);
+			encodeFilters(query, builder);
+			encodeMergedQueries(query, builder);
+			encodeAggregationFunctions(query, builder);
+			encodeEqualPositions(query, builder);
+			break;
+		}
+		case QueryType::QueryUpdate: {
+			builder.Put("namespace", query._namespace);
+			builder.Put("explain", query.explain_);
+			builder.Put("type", "update");
+			encodeFilters(query, builder);
+			bool withDropEntries = false, withUpdateEntries = false;
+			for (const UpdateEntry& updateEntry : query.UpdateFields()) {
+				if (updateEntry.mode == FieldModeDrop) {
+					if (!withDropEntries) withDropEntries = true;
+				}
+				if (updateEntry.mode == FieldModeSet || updateEntry.mode == FieldModeSetJson) {
+					if (!withUpdateEntries) withUpdateEntries = true;
+				}
+			}
+			if (withDropEntries) {
+				encodeDropFields(query, builder);
+			}
+			if (withUpdateEntries) {
+				encodeUpdateFields(query, builder);
+			}
+			break;
+		}
+		case QueryType::QueryDelete: {
+			builder.Put("namespace", query._namespace);
+			builder.Put("explain", query.explain_);
+			builder.Put("type", "delete");
+			encodeFilters(query, builder);
+			break;
+		}
+		case QueryType::QueryTruncate: {
+			builder.Put("namespace", query._namespace);
+			builder.Put("type", "truncate");
+			break;
+		}
+		default:
+			break;
+	}
 }
 
 std::string toDsl(const Query& query) {
@@ -177,14 +274,15 @@ std::string toDsl(const Query& query) {
 void QueryEntries::toDsl(const_iterator it, const_iterator to, const Query& parentQuery, JsonBuilder& builder) {
 	for (; it != to; ++it) {
 		auto node = builder.Object();
-		if (it->Value().joinIndex == QueryEntry::kNoJoins) {
-			node.Put("op", dsl::get(dsl::op_map, it->Op));
-		}
 		if (it->IsLeaf()) {
+			if (it->Value().distinct) continue;
+			if (it->Value().joinIndex == QueryEntry::kNoJoins) {
+				node.Put("op", dsl::get(dsl::op_map, it->operation));
+			}
 			dsl::encodeFilter(parentQuery, it->Value(), node);
 		} else {
 			auto arrNode = node.Array("filters");
-			toDsl(it->cbegin(it), it->cend(it), parentQuery, arrNode);
+			toDsl(it.cbegin(), it.cend(), parentQuery, arrNode);
 		}
 	}
 }

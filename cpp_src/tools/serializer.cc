@@ -52,7 +52,7 @@ Variant Serializer::GetRawVariant(KeyValueType type) {
 
 inline static void checkbound(int pos, int need, int len) {
 	if (pos + need > len) {
-		throw Error(errParseBin, "Binary buffer underflow. Need more %d bytes, pos=%d,len=%d", need, pos, len);
+		throw Error(errParseBin, "Binary buffer underflow. Need more %d bytes, pos=%d,len=%d", (pos + need) - len, pos, len);
 	}
 }
 
@@ -119,6 +119,14 @@ string_view Serializer::GetVString() {
 p_string Serializer::GetPVString() {
 	auto ret = reinterpret_cast<const v_string_hdr *>(buf + pos);
 	int l = GetVarUint();
+	checkbound(pos, l, len);
+	pos += l;
+	return p_string(ret);
+}
+
+p_string Serializer::GetPSlice() {
+	auto ret = reinterpret_cast<const l_string_hdr *>(buf + pos);
+	uint32_t l = GetUInt32();
 	checkbound(pos, l, len);
 	pos += l;
 	return p_string(ret);
@@ -198,12 +206,71 @@ WrSerializer::SliceHelper WrSerializer::StartSlice() {
 	return SliceHelper(this, savePos);
 }
 
+WrSerializer::VStringHelper WrSerializer::StartVString() {
+	size_t savePos = len_;
+	return VStringHelper(this, savePos);
+}
+
 WrSerializer::SliceHelper::~SliceHelper() {
 	if (ser_) {
 		uint32_t sliceSize = ser_->len_ - pos_ - sizeof(uint32_t);
 		memcpy(&ser_->buf_[pos_], &sliceSize, sizeof(sliceSize));
 	}
+	ser_ = nullptr;
 }
+
+WrSerializer::VStringHelper &WrSerializer::VStringHelper::operator=(WrSerializer::VStringHelper &&other) noexcept {
+	if (this != &other) {
+		ser_ = other.ser_;
+		pos_ = other.pos_;
+		other.ser_ = nullptr;
+	}
+	return *this;
+}
+
+static int uint32ByteSize(uint32_t value) {
+	int bytes = 1;
+	if (value >= 0x80) {
+		++bytes;
+		value >>= 7;
+		if (value >= 0x80) {
+			++bytes;
+			value >>= 7;
+			if (value >= 0x80) {
+				++bytes;
+				value >>= 7;
+				if (value >= 0x80) {
+					++bytes;
+					value >>= 7;
+				}
+			}
+		}
+	}
+	return bytes;
+}
+
+void WrSerializer::VStringHelper::End() {
+	if (ser_) {
+		int size = ser_->len_ - pos_;
+		if (size < 0) {
+			throw Error(errParseBin, "Size of object is unexpedetly negative: %d", size);
+		}
+		if (size == 0) {
+			ser_->grow(1);
+			uint32_pack(0, ser_->buf_ + pos_);
+			ser_->len_++;
+		} else {
+			int bytesToGrow = uint32ByteSize(size);
+			ser_->grow(bytesToGrow);
+			ser_->len_ += bytesToGrow;
+			memmove(&ser_->buf_[0] + pos_ + bytesToGrow, &ser_->buf_[0] + pos_, size);
+			uint32_pack(size, ser_->buf_ + pos_);
+		}
+	}
+	ser_ = nullptr;
+}
+
+WrSerializer::VStringHelper::~VStringHelper() { End(); }
 
 void WrSerializer::PutUInt32(uint32_t v) {
 	grow(sizeof v);
@@ -244,7 +311,7 @@ void WrSerializer::grow(size_t sz) {
 
 void WrSerializer::Reserve(size_t cap) {
 	if (cap > cap_) {
-		cap_ = std::max(cap, cap_);
+		cap_ = cap;
 		uint8_t *b = new uint8_t[cap_];
 		memcpy(b, buf_, len_);
 		if (buf_ != inBuf_) delete[] buf_;
@@ -367,10 +434,31 @@ chunk WrSerializer::DetachChunk() {
 	return ch;
 }
 
+std::unique_ptr<uint8_t[]> WrSerializer::DetachBuf() {
+	std::unique_ptr<uint8_t[]> ret;
+
+	reinterpret_cast<l_string_hdr *>(buf_)->length = len_ - sizeof(uint32_t);
+	if (buf_ == inBuf_) {
+		ret.reset(new uint8_t[len_]);
+		memcpy(ret.get(), buf_, len_);
+	} else {
+		ret.reset(buf_);
+	}
+	buf_ = inBuf_;
+	cap_ = sizeof(inBuf_);
+	len_ = 0;
+	return ret;
+}
+
 void WrSerializer::Write(string_view slice) {
 	grow(slice.size());
 	memcpy(&buf_[len_], slice.data(), slice.size());
 	len_ += slice.size();
+}
+
+int msgpack_wrserializer_write(void *data, const char *buf, size_t len) {
+	reinterpret_cast<reindexer::WrSerializer *>(data)->Write(reindexer::string_view(buf, len));
+	return 0;
 }
 
 }  // namespace reindexer

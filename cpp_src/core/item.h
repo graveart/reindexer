@@ -1,11 +1,11 @@
 #pragma once
 
+#include "core/keyvalue/geometry.h"
 #include "core/keyvalue/variant.h"
 #include "estl/span.h"
 #include "tools/errors.h"
 
 namespace reindexer {
-
 using std::vector;
 
 namespace client {
@@ -16,12 +16,12 @@ class Namespace;
 class ItemImpl;
 class FieldRefImpl;
 class Replicator;
+class Schema;
 
 /// Item is the interface for data manipulating. It holds and control one database document (record)<br>
-/// *Lifetime*: Item is uses Copy-On-Write semantics, and have independent lifetime and state - e.g., aquired from Reindexer Item will not
-/// changed externally, even in case, when data in database was changed, or deleted.
-/// *Thread safety*: Item is thread safe againist Reindexer, but not thread safe itself.
-/// Usage of single Item from different threads will race
+/// *Lifetime*: Item is uses Copy-On-Write semantics, and have independent lifetime and state - e.g., aquired from Reindexer Item will
+/// not changed externally, even in case, when data in database was changed, or deleted. *Thread safety*: Item is thread safe against
+/// Reindexer, but not thread safe itself. Usage of single Item from different threads will race
 
 class Item {
 public:
@@ -62,6 +62,13 @@ public:
 		FieldRef &operator=(const T &val) {
 			return operator=(Variant(val));
 		}
+		/// Set single point type value
+		/// @param val - value, which will be setted to field
+		FieldRef &operator=(Point p) {
+			const double arr[]{p.x, p.y};
+			return operator=(span<double>(arr, 2));
+		}
+
 		/// Set array of values to field
 		/// @tparam T - type. Must be one of: int, int64_t, double
 		/// @param arr - std::vector of T values, which will be setted to field
@@ -83,7 +90,7 @@ public:
 		/// If Item is in Unsafe Mode, then Item will not store str, but just keep pointer to str,
 		/// application *MUST* hold str until end of life of Item
 		/// @param str - std::string, which will be setted to field
-		FieldRef &operator=(const string &str);
+		FieldRef &operator=(const std::string &str);
 
 		/// Get field index name
 		string_view Name() const;
@@ -96,10 +103,10 @@ public:
 		/// @return VariantArray with field values
 		operator VariantArray() const;
 		/// Set field value
-		/// @param kr - key reference object, which will be setted to field
+		/// @param kr - key reference object, which will be set to field
 		FieldRef &operator=(Variant kr);
 		/// Set field value
-		/// @param krs - key reference object, which will be setted to field
+		/// @param krs - key reference object, which will be set to field
 		FieldRef &operator=(const VariantArray &krs);
 
 	private:
@@ -116,27 +123,44 @@ public:
 	/// @param slice - data slice with Json.
 	/// @param endp - pointer to end of parsed part of slice
 	/// @param pkOnly - if TRUE, that mean a JSON string will be parse only primary key fields
-	Error FromJSON(const string_view &slice, char **endp = nullptr, bool pkOnly = false);
+	Error FromJSON(string_view slice, char **endp = nullptr, bool pkOnly = false);
 
 	/// Build item from JSON<br>
 	/// If Item is in *Unsafe Mode*, then Item will not store slice, but just keep pointer to data in slice,
 	/// application *MUST* hold slice until end of life of Item
 	/// @param slice - data slice with CJson
 	/// @param pkOnly - if TRUE, that mean a JSON string will be parse only primary key fields
-	Error FromCJSON(const string_view &slice, bool pkOnly = false);
+	Error FromCJSON(string_view slice, bool pkOnly = false);
+
+	/// Builds item from msgpack::object.
+	/// @param sbuf - msgpack encoded data buffer.
+	/// @param offset - position to start from.
+	Error FromMsgPack(string_view buf, size_t &offset);
+
+	/// Builds item from Protobuf
+	/// @param sbuf - Protobuf encoded data
+	Error FromProtobuf(string_view sbuf);
+
+	/// Packs data in msgpack format
+	/// @param wrser - buffer to serialize data to
+	Error GetMsgPack(WrSerializer &wrser);
+
+	/// Packs item data to Protobuf
+	/// @param wrser - buffer to serialize data to
+	Error GetProtobuf(WrSerializer &wrser);
 
 	/// Serialize item to CJSON.<br>
-	/// If Item is in *Unfafe Mode*, then returned slice is allocated in temporary buffer, and can be invalidated by any next operation with
-	/// Item
+	/// If Item is in *Unfafe Mode*, then returned slice is allocated in temporary buffer, and can be invalidated by any next operation
+	/// with Item
 	/// @return data slice with CJSON
 	string_view GetCJSON();
 	/// Serialize item to JSON.<br>
-	/// @return data slice with JSON. Returned slice is allocated in temporary Item's buffer, and can be invalidated by any next operation
-	/// with Item
+	/// @return data slice with JSON. Returned slice is allocated in temporary Item's buffer, and can be invalidated by any next
+	/// operation with Item
 	string_view GetJSON();
 	/// Get status of item
-	/// @return data slice with JSON. Returned slice is allocated in temporary Item's buffer, and can be invalidated by any next operation
-	/// with Item
+	/// @return data slice with JSON. Returned slice is allocated in temporary Item's buffer, and can be invalidated by any next
+	/// operation with Item
 	Error Status() { return status_; }
 	/// Get internal ID of item
 	/// @return ID of item
@@ -154,12 +178,16 @@ public:
 	/// Get field by name
 	/// @param name - name of field
 	/// @return FieldRef which contains reference to indexed field
-	FieldRef operator[](string_view name);
+	FieldRef operator[](string_view name) const;
+	/// Get field's name tag
+	/// @param name - field name
+	/// @return name's numeric tag value
+	int GetFieldTag(string_view name) const;
 	/// Get PK fields
 	FieldsSet PkFields() const;
 	/// Set additional percepts for modify operation
 	/// @param precepts - strings in format "fieldName=Func()"
-	void SetPrecepts(const vector<string> &precepts);
+	void SetPrecepts(const vector<std::string> &precepts);
 	/// Check was names tags updated while modify operation
 	/// @return true: tags was updated.
 	bool IsTagsUpdated();
@@ -184,12 +212,13 @@ private:
 	ItemImpl *impl_;
 	Error status_;
 	int id_ = -1;
-	friend class Namespace;
+	friend class NamespaceImpl;
 	friend class TransactionImpl;
 
 	friend class QueryResults;
 	friend class ReindexerImpl;
 	friend class Replicator;
+	friend class TransactionStep;
 	friend class client::ReindexerImpl;
 	friend class client::Namespace;
 };

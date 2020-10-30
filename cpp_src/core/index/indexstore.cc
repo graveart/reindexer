@@ -7,6 +7,17 @@
 namespace reindexer {
 
 template <>
+IndexStore<Point>::IndexStore(const IndexDef &idef, const PayloadType payloadType, const FieldsSet &fields)
+	: Index(idef, payloadType, fields) {
+	keyType_ = selectKeyType_ = KeyValueDouble;
+	opts_.Array(true);
+}
+
+struct StrDeepClean {
+	void operator()(unordered_str_map<int>::value_type &v) const { v.first = key_string(); }
+};
+
+template <>
 void IndexStore<key_string>::Delete(const Variant &key, IdType id) {
 	if (key.Type() == KeyValueNull) return;
 	auto keyIt = str_map.find(string_view(key));
@@ -15,14 +26,27 @@ void IndexStore<key_string>::Delete(const Variant &key, IdType id) {
 	if (keyIt->second) keyIt->second--;
 	if (!keyIt->second) {
 		memStat_.dataSize -= sizeof(unordered_str_map<int>::value_type) + sizeof(*keyIt->first.get()) + keyIt->first->heap_size();
-		keyIt->first = key_string();
-		str_map.erase(keyIt);
+		str_map.template erase<StrDeepClean>(keyIt);
 	}
 
 	(void)id;
 }
 template <typename T>
 void IndexStore<T>::Delete(const Variant & /*key*/, IdType /* id */) {}
+
+template <typename T>
+void IndexStore<T>::Delete(const VariantArray &keys, IdType id) {
+	if (keys.empty()) {
+		Delete(Variant{}, id);
+	} else {
+		for (const auto &key : keys) Delete(key, id);
+	}
+}
+
+template <>
+void IndexStore<Point>::Delete(const VariantArray & /*keys*/, IdType /*id*/) {
+	assert(0);
+}
 
 template <>
 Variant IndexStore<key_string>::Upsert(const Variant &key, IdType /*id*/) {
@@ -53,6 +77,23 @@ Variant IndexStore<T>::Upsert(const Variant &key, IdType id) {
 }
 
 template <typename T>
+void IndexStore<T>::Upsert(VariantArray &result, const VariantArray &keys, IdType id, bool needUpsertEmptyValue) {
+	if (keys.empty()) {
+		if (needUpsertEmptyValue) {
+			Upsert(Variant{}, id);
+		}
+	} else {
+		result.reserve(keys.size());
+		for (const auto &key : keys) result.emplace_back(Upsert(key, id));
+	}
+}
+
+template <>
+void IndexStore<Point>::Upsert(VariantArray & /*result*/, const VariantArray & /*keys*/, IdType /*id*/, bool /*needUpsertEmptyValue*/) {
+	assert(0);
+}
+
+template <typename T>
 void IndexStore<T>::Commit() {
 	logPrintf(LogTrace, "IndexStore::Commit (%s) %d uniq strings", name_, str_map.size());
 }
@@ -70,7 +111,7 @@ SelectKeyResults IndexStore<T>::SelectKey(const VariantArray &keys, CondType con
 
 	res.comparators_.push_back(Comparator(condition, KeyType(), keys, opts_.IsArray(), sopts.distinct, payloadType_, fields_,
 										  idx_data.size() ? idx_data.data() : nullptr, opts_.collateOpts_));
-	return SelectKeyResults(res);
+	return SelectKeyResults(std::move(res));
 }
 
 template <typename T>
@@ -105,5 +146,6 @@ Index *IndexStore_New(const IndexDef &idef, const PayloadType payloadType, const
 }
 
 template class IndexStore<PayloadValue>;
+template class IndexStore<Point>;
 
 }  // namespace reindexer

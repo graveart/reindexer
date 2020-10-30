@@ -1,5 +1,6 @@
 #include "resultserializer.h"
 #include "core/cjson/tagsmatcher.h"
+#include "core/queryresults/joinresults.h"
 #include "core/queryresults/queryresults.h"
 #include "tools/logger.h"
 
@@ -44,10 +45,14 @@ void WrResultSerializer::putQueryParams(const QueryResults* results) {
 }
 
 void WrResultSerializer::putExtraParams(const QueryResults* results) {
-	for (auto& ar : results->aggregationResults) {
+	for (const AggregationResult& aggregationRes : results->aggregationResults) {
 		PutVarUint(QueryResultAggregation);
 		auto slicePosSaver = StartSlice();
-		ar.GetJSON(*this);
+		if ((opts_.flags & kResultsFormatMask) == kResultsMsgPack) {
+			aggregationRes.GetMsgPack(*this);
+		} else {
+			aggregationRes.GetJSON(*this);
+		}
 	}
 
 	if (!results->explainResults.empty()) {
@@ -64,21 +69,21 @@ void WrResultSerializer::putItemParams(const QueryResults* result, int idx, bool
 	auto& itemRef = it.GetItemRef();
 
 	if (opts_.flags & kResultsWithItemID) {
-		PutVarUint(itemRef.id);
-		PutVarUint(itemRef.value.GetLSN());
+		PutVarUint(itemRef.Id());
+		PutVarUint(itemRef.Value().GetLSN());
 	}
 
 	if (opts_.flags & kResultsWithNsID) {
-		PutVarUint(itemRef.nsid);
+		PutVarUint(itemRef.Nsid());
 	}
 
-	if (opts_.flags & kResultsWithPercents) {
-		PutVarUint(itemRef.proc);
+	if (opts_.flags & kResultsWithRank) {
+		PutVarUint(itemRef.Proc());
 	}
 
 	if (opts_.flags & kResultsWithRaw) {
-		PutBool(itemRef.raw);
-		if (itemRef.raw) {
+		PutBool(itemRef.Raw());
+		if (itemRef.Raw()) {
 			PutSlice(it.GetRaw());
 			return;
 		}
@@ -93,9 +98,12 @@ void WrResultSerializer::putItemParams(const QueryResults* result, int idx, bool
 			err = it.GetCJSON(*this);
 			break;
 		case kResultsPtrs:
-			PutUInt64(uintptr_t(itemRef.value.Ptr()));
+			PutUInt64(uintptr_t(itemRef.Value().Ptr()));
 			break;
 		case kResultsPure:
+			break;
+		case kResultsMsgPack:
+			err = it.GetMsgPack(*this);
 			break;
 		default:
 			throw Error(errParams, "Can't serialize query results: unknown formar %d", int((opts_.flags & kResultsFormatMask)));
@@ -127,18 +135,21 @@ bool WrResultSerializer::PutResults(const QueryResults* result) {
 
 	// Result has items from multiple namespaces, so pass nsid to each item
 	if (result->getMergedNSCount() > 1) opts_.flags |= kResultsWithNsID;
-
 	// Result has joined items, so pass them to client within items from main NS
 	if (result->joined_.size() > 0) opts_.flags |= kResultsWithJoined;
 
-	if (result->haveProcent) opts_.flags |= kResultsWithPercents;
+	if (result->haveRank) opts_.flags |= kResultsWithRank;
+	if (result->needOutputRank) opts_.flags |= kResultsNeedOutputRank;
 	// If data is not cacheable, just do not pass item's ID and LSN. Clients should not cache this data
 	if (result->nonCacheableData) opts_.flags &= ~kResultsWithItemID;
-	// for JSON results joined field are embeded to json's, so no need to transfer separate joined data items
-	// JSON results already has resolved names, so no need to transfer payload types
-	if ((opts_.flags & kResultsFormatMask) == kResultsJson) opts_.flags &= ~(kResultsWithJoined | kResultsWithPayloadTypes);
+	// MsgPack items contain fields names so there is no need to transfer payload types
+	// and joined data, as well as for JSON (they both contain it already)
+	if ((opts_.flags & kResultsFormatMask) == kResultsJson || (opts_.flags & kResultsFormatMask) == kResultsMsgPack) {
+		opts_.flags &= ~(kResultsWithJoined | kResultsWithPayloadTypes);
+	}
 
 	putQueryParams(result);
+	size_t saveLen = len_;
 
 	for (unsigned i = 0; i < opts_.fetchLimit; ++i) {
 		// Put Item ID and version
@@ -146,11 +157,11 @@ bool WrResultSerializer::PutResults(const QueryResults* result) {
 
 		if (opts_.flags & kResultsWithJoined) {
 			auto rowIt = result->begin() + (i + opts_.fetchOffset);
-			joins::ItemIterator jIt = rowIt.GetJoinedItemsIterator();
+			auto jIt = rowIt.GetJoined();
 			PutVarUint(jIt.getJoinedItemsCount() > 0 ? jIt.getJoinedFieldsCount() : 0);
 			if (jIt.getJoinedItemsCount() > 0) {
 				size_t joinedField = rowIt.qr_->joined_.size();
-				for (size_t ns = 0; ns < rowIt.GetItemRef().nsid; ++ns) {
+				for (size_t ns = 0; ns < rowIt.GetItemRef().Nsid(); ++ns) {
 					joinedField += rowIt.qr_->joined_[ns].GetJoinedSelectorsCount();
 				}
 				for (auto it = jIt.begin(); it != jIt.end(); ++it, ++joinedField) {
@@ -158,12 +169,12 @@ bool WrResultSerializer::PutResults(const QueryResults* result) {
 					if (it.ItemsCount() == 0) continue;
 					QueryResults qr = it.ToQueryResults();
 					qr.addNSContext(result->getPayloadType(joinedField), result->getTagsMatcher(joinedField),
-									result->getFieldsFilter(joinedField));
+									result->getFieldsFilter(joinedField), result->getSchema(joinedField));
 					for (size_t idx = 0; idx < qr.Count(); idx++) putItemParams(&qr, idx, false);
 				}
 			}
 		}
-		if (i == 0) grow((opts_.fetchLimit - 1) * len_);
+		if (i == 0) grow((opts_.fetchLimit - 1) * (len_ - saveLen));
 	}
 	return opts_.fetchOffset + opts_.fetchLimit >= result->Count();
 }

@@ -3,18 +3,24 @@
 
 using std::thread;
 
+#if !defined(REINDEX_WITH_TSAN)
 TEST_F(QueriesApi, QueriesStandardTestSet) {
 	FillDefaultNamespace(0, 2500, 20);
 	FillDefaultNamespace(2500, 2500, 0);
 	FillCompositeIndexesNamespace(0, 1000);
 	FillTestSimpleNamespace();
 	FillComparatorsNamespace();
+	FillTestJoinNamespace();
+	FillGeomNamespace();
 
 	CheckStandartQueries();
 	CheckAggregationQueries();
 	CheckSqlQueries();
+	CheckDslQueries();
 	CheckCompositeIndexesQueries();
 	CheckComparatorsQueries();
+	CheckDistinctQueries();
+	CheckGeomQueries();
 
 	int itemsCount = 0;
 	InsertedItemsByPk& items = insertedItems[default_namespace];
@@ -67,13 +73,18 @@ TEST_F(QueriesApi, QueriesStandardTestSet) {
 	FillDefaultNamespace(1000, 500, 00);
 	FillCompositeIndexesNamespace(1000, 1000);
 	FillComparatorsNamespace();
+	FillGeomNamespace();
 
 	CheckStandartQueries();
 	CheckAggregationQueries();
 	CheckSqlQueries();
+	CheckDslQueries();
 	CheckCompositeIndexesQueries();
 	CheckComparatorsQueries();
+	CheckDistinctQueries();
+	CheckGeomQueries();
 }
+#endif
 
 TEST_F(QueriesApi, TransactionStress) {
 	vector<thread> pool;
@@ -113,9 +124,112 @@ TEST_F(QueriesApi, QueriesSqlGenerate) {
 		EXPECT_EQ(sql, q.GetSQL());
 	};
 
-	check("SELECT ID,Year,Genre FROM test_namespace WHERE year > '2016' ORDER BY year DESC LIMIT 10000000");
+	check("SELECT ID, Year, Genre FROM test_namespace WHERE year > '2016' ORDER BY 'year' DESC LIMIT 10000000");
 
 	check(
 		"SELECT ID FROM test_namespace WHERE name LIKE 'something' AND (genre IN ('1','2','3') AND year > '2016') OR age IN "
 		"('1','2','3','4') LIMIT 10000000");
+
+	check(
+		"SELECT * FROM test_namespace WHERE  INNER JOIN join_ns ON join_ns.id = test_namespace.id ORDER BY 'year + join_ns.year * (5 - "
+		"rand())'");
+
+	// Checks parsing and generation of SQL query with DWithin
+	check(std::string("SELECT * FROM ") + geomNs + " WHERE ST_DWithin(" + kFieldNamePointNonIndex +
+		  ", ST_GeomFromText('POINT(1.25 -7.25)'), 0.5)");
+}
+
+TEST_F(QueriesApi, QueriesDslGenerate) {
+	const auto check = [](string dsl) {
+		const string expected = dsl;
+		dsl += " ";
+		dsl.resize(dsl.size() - 1); // HACK DUE TO Query::FromJSON(const std::string& str) BREAK str
+		Query q;
+		Error err = q.FromJSON(dsl);
+		ASSERT_TRUE(err.ok()) << err.what();
+		const std::string result = q.GetJSON();
+		EXPECT_EQ(expected, result);
+	};
+	// Checks parsing and generation of DSL query with DWithin
+	check(
+		std::string(R"({"namespace":")") + geomNs +
+		R"(","limit":-1,"offset":0,"req_total":"disabled","explain":false,"type":"select","select_with_rank":false,"select_filter":[],"select_functions":[],"sort":[],"filters":[{"op":"and","cond":"dwithin","field":")" +
+		kFieldNamePointLinearRTree + R"(","value":[[-9.2,-0.145],0.581]}],"merge_queries":[],"aggregations":[]})");
+}
+
+std::vector<int> generateForcedSortOrder(int maxValue, size_t size) {
+	std::set<int> res;
+	while (res.size() < size) res.insert(rand() % maxValue);
+	return {res.cbegin(), res.cend()};
+}
+
+TEST_F(QueriesApi, ForcedSortOffsetTest) {
+	FillForcedSortNamespace();
+	for (size_t i = 0; i < 100; ++i) {
+		const auto forcedSortOrder =
+			generateForcedSortOrder(forcedSortOffsetMaxValue * 1.1, rand() % static_cast<int>(forcedSortOffsetNsSize * 1.1));
+		const size_t offset = rand() % static_cast<size_t>(forcedSortOffsetNsSize * 1.1);
+		const size_t limit = rand() % static_cast<size_t>(forcedSortOffsetNsSize * 1.1);
+		const bool desc = rand() % 2;
+		// Single column sort
+		auto expectedResults = ForcedSortOffsetTestExpectedResults(offset, limit, desc, forcedSortOrder, First);
+		ExecuteAndVerify(forcedSortOffsetNs,
+						 Query(forcedSortOffsetNs).Sort(kFieldNameColumnHash, desc, forcedSortOrder).Offset(offset).Limit(limit),
+						 kFieldNameColumnHash, expectedResults);
+		expectedResults = ForcedSortOffsetTestExpectedResults(offset, limit, desc, forcedSortOrder, Second);
+		ExecuteAndVerify(forcedSortOffsetNs,
+						 Query(forcedSortOffsetNs).Sort(kFieldNameColumnTree, desc, forcedSortOrder).Offset(offset).Limit(limit),
+						 kFieldNameColumnTree, expectedResults);
+		// Multicolumn sort
+		const bool desc2 = rand() % 2;
+		auto expectedResultsMult = ForcedSortOffsetTestExpectedResults(offset, limit, desc, desc2, forcedSortOrder, First);
+		ExecuteAndVerify(forcedSortOffsetNs,
+						 Query(forcedSortOffsetNs)
+							 .Sort(kFieldNameColumnHash, desc, forcedSortOrder)
+							 .Sort(kFieldNameColumnTree, desc2)
+							 .Offset(offset)
+							 .Limit(limit),
+						 kFieldNameColumnHash, expectedResultsMult.first, kFieldNameColumnTree, expectedResultsMult.second);
+		expectedResultsMult = ForcedSortOffsetTestExpectedResults(offset, limit, desc, desc2, forcedSortOrder, Second);
+		ExecuteAndVerify(forcedSortOffsetNs,
+						 Query(forcedSortOffsetNs)
+							 .Sort(kFieldNameColumnTree, desc2, forcedSortOrder)
+							 .Sort(kFieldNameColumnHash, desc)
+							 .Offset(offset)
+							 .Limit(limit),
+						 kFieldNameColumnHash, expectedResultsMult.first, kFieldNameColumnTree, expectedResultsMult.second);
+	}
+}
+
+TEST_F(QueriesApi, StrictModeTest) {
+	FillTestSimpleNamespace();
+
+	const string kNotExistingField = "some_random_name123";
+	QueryResults qr;
+	{
+		Query query = Query(testSimpleNs).Where(kNotExistingField, CondEmpty, 0);
+		Error err = rt.reindexer->Select(query.Strict(StrictModeNames), qr);
+		EXPECT_EQ(err.code(), errParams);
+		qr.Clear();
+		err = rt.reindexer->Select(query.Strict(StrictModeIndexes), qr);
+		EXPECT_EQ(err.code(), errParams);
+		qr.Clear();
+		err = rt.reindexer->Select(query.Strict(StrictModeNone), qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		Verify(testSimpleNs, qr, Query(testSimpleNs));
+		qr.Clear();
+	}
+
+	{
+		Query query = Query(testSimpleNs).Where(kNotExistingField, CondEq, 0);
+		Error err = rt.reindexer->Select(query.Strict(StrictModeNames), qr);
+		EXPECT_EQ(err.code(), errParams);
+		qr.Clear();
+		err = rt.reindexer->Select(query.Strict(StrictModeIndexes), qr);
+		EXPECT_EQ(err.code(), errParams);
+		qr.Clear();
+		err = rt.reindexer->Select(query.Strict(StrictModeNone), qr);
+		EXPECT_TRUE(err.ok()) << err.what();
+		EXPECT_EQ(qr.Count(), 0);
+	}
 }

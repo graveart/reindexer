@@ -1,13 +1,14 @@
 #include "jsonbuilder.h"
+#include "tools/json2kv.h"
 
 namespace reindexer {
 
 JsonBuilder::JsonBuilder(WrSerializer &ser, ObjType type, const TagsMatcher *tm) : ser_(&ser), tm_(tm), type_(type) {
 	switch (type_) {
-		case TypeArray:
+		case ObjType::TypeArray:
 			(*ser_) << '[';
 			break;
-		case TypeObject:
+		case ObjType::TypeObject:
 			(*ser_) << '{';
 			break;
 		default:
@@ -21,30 +22,28 @@ string_view JsonBuilder::getNameByTag(int tagName) { return tagName ? tm_->tag2n
 
 JsonBuilder &JsonBuilder::End() {
 	switch (type_) {
-		case TypeArray:
+		case ObjType::TypeArray:
 			(*ser_) << ']';
 			break;
-		case TypeObject:
+		case ObjType::TypeObject:
 			(*ser_) << '}';
 			break;
 		default:
 			break;
 	}
-	type_ = TypePlain;
+	type_ = ObjType::TypePlain;
 
 	return *this;
 }
 
-void JsonBuilder::SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
-
-JsonBuilder JsonBuilder::Object(string_view name) {
+JsonBuilder JsonBuilder::Object(string_view name, int /*size*/) {
 	putName(name);
-	return JsonBuilder(*ser_, TypeObject, tm_);
+	return JsonBuilder(*ser_, ObjType::TypeObject, tm_);
 }
 
-JsonBuilder JsonBuilder::Array(string_view name) {
+JsonBuilder JsonBuilder::Array(string_view name, int /*size*/) {
 	putName(name);
-	return JsonBuilder(*ser_, TypeArray, tm_);
+	return JsonBuilder(*ser_, ObjType::TypeArray, tm_);
 }
 
 void JsonBuilder::putName(string_view name) {
@@ -66,6 +65,7 @@ JsonBuilder &JsonBuilder::Raw(string_view name, string_view arg) {
 	(*ser_) << arg;
 	return *this;
 }
+
 JsonBuilder &JsonBuilder::Null(string_view name) {
 	putName(name);
 	(*ser_) << "null";

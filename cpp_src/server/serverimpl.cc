@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "args/args.hpp"
+#include "clientsstats.h"
 #include "dbmanager.h"
 #include "debug/allocdebug.h"
 #include "debug/backtrace.h"
@@ -24,7 +25,7 @@
 #endif
 #ifdef LINK_RESOURCES
 #include <cmrc/cmrc.hpp>
-void init_resources() { CMRC_INIT(resources); }
+void init_resources() { CMRC_INIT(reindexer_server_resources); }
 #else
 void init_resources() {}
 #endif
@@ -95,7 +96,7 @@ Error ServerImpl::init() {
 		GetDirPath(config_.DaemonPidFile),
 #endif
 		GetDirPath(config_.CoreLog),	   GetDirPath(config_.HttpLog), GetDirPath(config_.RpcLog),
-		GetDirPath(config_.ServerLog),	 config_.StoragePath};
+		GetDirPath(config_.ServerLog),	   config_.StoragePath};
 
 	for (const string &dir : dirs) {
 		err = TryCreateDirectory(dir);
@@ -137,10 +138,10 @@ int ServerImpl::Start() {
 			run();
 			running = false;
 		},
-		[]() {  //
+		[]() {	//
 			raise(SIGTERM);
 		},
-		[&]() {  //
+		[&]() {	 //
 			return running;
 		});
 
@@ -173,8 +174,17 @@ void ServerImpl::Stop() {
 	}
 }
 
+void ServerImpl::ReopenLogFiles() {
+#ifndef _WIN32
+	for (auto &sync : sinks_) {
+		sync.second->reopen();
+	}
+#endif
+}
+
 int ServerImpl::run() {
 	loggerConfigure();
+
 	reindexer::debug::backtrace_set_writer([](string_view out) {
 		auto logger = spdlog::get("server");
 		if (logger) {
@@ -233,8 +243,10 @@ int ServerImpl::run() {
 	}
 
 	initCoreLogger();
+	std::unique_ptr<ClientsStats> clientsStats;
+	if (config_.EnableConnectionsStats) clientsStats.reset(new ClientsStats());
 	try {
-		dbMgr_.reset(new DBManager(config_.StoragePath, !config_.EnableSecurity));
+		dbMgr_.reset(new DBManager(config_.StoragePath, !config_.EnableSecurity, clientsStats.get()));
 
 		auto status = dbMgr_->Init(config_.StorageEngine, config_.StartWithErrors, config_.Autorepair);
 		if (!status.ok()) {
@@ -246,14 +258,6 @@ int ServerImpl::run() {
 		logger_.info("Starting reindexer_server ({0}) on {1} HTTP, {2} RPC, with db '{3}'", REINDEX_VERSION, config_.HTTPAddr,
 					 config_.RPCAddr, config_.StoragePath);
 
-#if LINK_RESOURCES
-		if (config_.WebRoot.length() != 0) {
-			logger_.warn("Reindexer server built with embeded web resources. Specified web root '{0}' will be ignored", config_.WebRoot);
-			config_.WebRoot.clear();
-		}
-#endif
-		LoggerWrapper httpLogger("http");
-
 		std::unique_ptr<Prometheus> prometheus;
 		std::unique_ptr<StatsCollector> statsCollector;
 		if (config_.EnablePrometheus) {
@@ -261,16 +265,18 @@ int ServerImpl::run() {
 			statsCollector.reset(new StatsCollector(prometheus.get(), config_.PrometheusCollectPeriod));
 		}
 
+		LoggerWrapper httpLogger("http");
 		HTTPServer httpServer(*dbMgr_, config_.WebRoot, httpLogger,
-							  HTTPServer::OptionalConfig{config_.DebugAllocs, config_.DebugPprof, prometheus.get(), statsCollector.get()});
+							  HTTPServer::OptionalConfig{config_.DebugAllocs, config_.DebugPprof, config_.TxIdleTimeout, prometheus.get(),
+														 statsCollector.get()});
 		if (!httpServer.Start(config_.HTTPAddr, loop_)) {
 			logger_.error("Can't listen HTTP on '{0}'", config_.HTTPAddr);
 			return EXIT_FAILURE;
 		}
 
 		LoggerWrapper rpcLogger("rpc");
-		RPCServer rpcServer(*dbMgr_, rpcLogger, config_.DebugAllocs, statsCollector.get());
-		if (!rpcServer.Start(config_.RPCAddr, loop_)) {
+		RPCServer rpcServer(*dbMgr_, rpcLogger, clientsStats.get(), config_.DebugAllocs, statsCollector.get());
+		if (!rpcServer.Start(config_.RPCAddr, loop_, config_.EnableConnectionsStats)) {
 			logger_.error("Can't listen RPC on '{0}'", config_.RPCAddr);
 			return EXIT_FAILURE;
 		}
@@ -294,7 +300,7 @@ int ServerImpl::run() {
 #ifndef _WIN32
 			auto sigHupCallback = [&](ev::sig &sig) {
 				(void)sig;
-				loggerReopen();
+				ReopenLogFiles();
 			};
 			shup.set(loop_);
 			shup.set(sigHupCallback);
@@ -315,15 +321,8 @@ int ServerImpl::run() {
 		rpcServer.Stop();
 		httpServer.Stop();
 	} catch (const Error &err) {
-		logger_.error("Unhandled exception occuried: {0}", err.what());
+		logger_.error("Unhandled exception occured: {0}", err.what());
 	}
-	dbMgr_.reset();
-	logger_.info("Reindexer server shutdown completed.");
-
-	spdlog::drop_all();
-	async_.reset();
-	logger_ = LoggerWrapper();
-	coreLogger_ = LoggerWrapper();
 	return 0;
 }
 
@@ -375,7 +374,7 @@ Error ServerImpl::loggerConfigure() {
 			} else if (!fileName.empty() && fileName != "none") {
 				auto sink = sinks_.find(fileName);
 				if (sink == sinks_.end()) {
-					sink = sinks_.emplace(fileName, std::make_shared<spdlog::sinks::simple_file_sink_mt>(fileName)).first;
+					sink = sinks_.emplace(fileName, std::make_shared<spdlog::sinks::fast_file_sink>(fileName)).first;
 				}
 				spdlog::create(logger.first, sink->second);
 			}
@@ -383,8 +382,8 @@ Error ServerImpl::loggerConfigure() {
 			return Error(errLogic, "Can't create logger for '%s' to file '%s': %s\n", logger.first, logger.second, e.what());
 		}
 	}
-	coreLogger_ = "core";
-	logger_ = "server";
+	coreLogger_ = LoggerWrapper("core");
+	logger_ = LoggerWrapper("server");
 	return 0;
 }
 
@@ -417,7 +416,12 @@ void ServerImpl::initCoreLogger() {
 }
 
 ServerImpl::~ServerImpl() {
+	logger_.info("Reindexer server shutdown completed.");
+	dbMgr_.reset();
+
+	async_.reset();
 	if (coreLogLevel_) reindexer::logInstallWriter(nullptr);
+	spdlog::drop_all();
 }
 
 }  // namespace reindexer_server

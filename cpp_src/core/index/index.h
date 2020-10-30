@@ -6,7 +6,7 @@
 #include "core/indexdef.h"
 #include "core/indexopts.h"
 #include "core/keyvalue/variant.h"
-#include "core/namespacestat.h"
+#include "core/namespace/namespacestat.h"
 #include "core/payload/payloadiface.h"
 #include "core/perfstatcounter.h"
 #include "core/selectfunc/ctx/basefunctionctx.h"
@@ -23,7 +23,8 @@ class RdxContext;
 class Index {
 public:
 	struct SelectOpts {
-		SelectOpts() : distinct(0), disableIdSetCache(0), forceComparator(0), unbuiltSortOrders(0) {}
+		SelectOpts() : itemsCountInNamespace(0), distinct(0), disableIdSetCache(0), forceComparator(0), unbuiltSortOrders(0) {}
+		unsigned itemsCountInNamespace;
 		unsigned distinct : 1;
 		unsigned disableIdSetCache : 1;
 		unsigned forceComparator : 1;
@@ -37,7 +38,9 @@ public:
 	Index& operator=(const Index&) = delete;
 	virtual ~Index();
 	virtual Variant Upsert(const Variant& key, IdType id) = 0;
+	virtual void Upsert(VariantArray& result, const VariantArray& keys, IdType id, bool needUpsertEmptyValue) = 0;
 	virtual void Delete(const Variant& key, IdType id) = 0;
+	virtual void Delete(const VariantArray& keys, IdType id) = 0;
 
 	virtual SelectKeyResults SelectKey(const VariantArray& keys, CondType condition, SortType stype, SelectOpts opts,
 									   BaseFunctionCtx::Ptr ctx, const RdxContext&) = 0;
@@ -98,7 +101,8 @@ protected:
 	// Perfstat counter
 	PerfStatCounterMT commitPerfCounter_;
 	PerfStatCounterMT selectPerfCounter_;
-	KeyValueType keyType_, selectKeyType_;
+	KeyValueType keyType_ = KeyValueUndefined;
+	KeyValueType selectKeyType_ = KeyValueUndefined;
 	// Count of sorted indexes in namespace to resereve additional space in idsets
 	int sortedIdxCount_ = 0;
 };

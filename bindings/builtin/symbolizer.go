@@ -1,7 +1,10 @@
+// +build cgosymbolizer
+
 package builtin
 
 // extern void cgoTraceback(void*);
 // extern void cgoSymbolizer(void*);
+// extern void cgoSignalsInit();
 import "C"
 import (
 	"runtime"
@@ -9,5 +12,6 @@ import (
 )
 
 func init() {
+	C.cgoSignalsInit()
 	runtime.SetCgoTraceback(0, unsafe.Pointer(C.cgoTraceback), nil, unsafe.Pointer(C.cgoSymbolizer))
 }

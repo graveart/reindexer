@@ -1,15 +1,15 @@
 package reindexer
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/restream/reindexer"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -23,7 +23,7 @@ type TestJoinItem struct {
 	Location string `reindex:"location"`
 	Device   string `reindex:"device"`
 	Amount   int    `reindex:"amount,tree"`
-	Price    int
+	Price    int    `json:"price"`
 }
 
 func (item *TestItem) Join(field string, subitems []interface{}, context interface{}) {
@@ -47,25 +47,25 @@ func (item *TestItem) Join(field string, subitems []interface{}, context interfa
 
 func TestJoin(t *testing.T) {
 	FillTestItems("test_items_for_join", 0, 10000, 20)
-	FillTestJoinItems(7000, 500)
+	FillTestJoinItems(7000, 500, "test_join_items")
 	for _, left := range []bool{true, false} {
 		for _, inner := range []bool{true, false} {
 			if inner {
 				for _, whereOrJoin := range []bool{true, false} {
 					for _, orInner := range []bool{true, false} {
-						CheckTestItemsJoinQueries(left, inner, whereOrJoin, orInner)
+						CheckTestItemsJoinQueries(t, left, inner, whereOrJoin, orInner)
 					}
 				}
 			} else {
-				CheckTestItemsJoinQueries(left, false, false, false)
+				CheckTestItemsJoinQueries(t, left, false, false, false)
 			}
 		}
 	}
-	CheckJoinsAsWhereCondition()
+	CheckJoinsAsWhereCondition(t)
 }
 
-func FillTestJoinItems(start int, count int) {
-	tx := newTestTx(DB, "test_join_items")
+func FillTestJoinItems(start int, count int, ns string) {
+	tx := newTestTx(DB, ns)
 
 	for i := 0; i < count; i++ {
 		if err := tx.Upsert(&TestJoinItem{
@@ -74,6 +74,7 @@ func FillTestJoinItems(start int, count int) {
 			Location: randLocation(),
 			Device:   randDevice(),
 			Amount:   rand.Int() % 10,
+			Price:    rand.Int() % 1000,
 		}); err != nil {
 			panic(err)
 		}
@@ -93,7 +94,7 @@ func (s byID) Less(i, j int) bool {
 	return s[i].ID < s[j].ID
 }
 
-func CheckJoinsAsWhereCondition() {
+func CheckJoinsAsWhereCondition(t *testing.T) {
 	qj1 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "ottstb").Sort("NAME", true)
 	qj2 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "android").Where("AMOUNT", reindexer.GT, 2)
 	qj3 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "iphone")
@@ -157,9 +158,7 @@ func CheckJoinsAsWhereCondition() {
 	}
 
 	rjoin, _ := qjoin.MustExec().FetchAll()
-	if len(rjcheck) != len(rjoin) {
-		panic(fmt.Errorf("%d != %d", len(rjcheck), len(rjoin)))
-	}
+	assert.Equal(t, len(rjcheck), len(rjoin))
 	for i := 0; i < len(rjcheck); i++ {
 		i1 := rjcheck[i].(*TestItem)
 		i2 := rjoin[i].(*TestItem)
@@ -167,12 +166,7 @@ func CheckJoinsAsWhereCondition() {
 		sort.Sort(byID(i2.Pricesx))
 		sort.Sort(byID(i1.Prices))
 		sort.Sort(byID(i2.Prices))
-		if !reflect.DeepEqual(i1, i2) {
-			i1s, _ := json.Marshal(i1)
-			i2s, _ := json.Marshal(i2)
-			panic(fmt.Errorf("%d:-----expect:\n%s\n-----got:\n%s", i, string(i1s), string(i2s)))
-
-		}
+		assert.Equal(t, i1, i2)
 	}
 }
 
@@ -245,7 +239,7 @@ func permutate(q *queryTest, andConditions []addCondition, orConditions []addCon
 	}
 }
 
-func CheckTestItemsJoinQueries(left, inner, whereOrJoin bool, orInner bool) {
+func CheckTestItemsJoinQueries(t *testing.T, left, inner, whereOrJoin bool, orInner bool) {
 	qj1 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "ottstb").Sort("NAME", true)
 	qj2 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "android").Where("AMOUNT", reindexer.GT, 2)
 	qj3 := DB.Query("test_join_items").Where("DEVICE", reindexer.EQ, "iphone")
@@ -369,9 +363,7 @@ func CheckTestItemsJoinQueries(left, inner, whereOrJoin bool, orInner bool) {
 		}
 	}
 
-	if len(rjcheck) != len(rjoin) {
-		panic(fmt.Errorf("%d != %d", len(rjcheck), len(rjoin)))
-	}
+	assert.Equal(t, len(rjcheck), len(rjoin))
 	for i := 0; i < len(rjcheck); i++ {
 		i1 := rjcheck[i].(*TestItem)
 		i2 := rjoin[i].(*TestItem)
@@ -379,13 +371,7 @@ func CheckTestItemsJoinQueries(left, inner, whereOrJoin bool, orInner bool) {
 		sort.Sort(byID(i2.Pricesx))
 		sort.Sort(byID(i1.Prices))
 		sort.Sort(byID(i2.Prices))
-		if !reflect.DeepEqual(i1, i2) {
-			i1s, _ := json.Marshal(i1)
-			i2s, _ := json.Marshal(i2)
-
-			panic(fmt.Errorf("%d:-----expect:\n%s\n-----got:\n%s", i, string(i1s), string(i2s)))
-
-		}
+		assert.Equal(t, i1, i2)
 	}
 }
 
@@ -399,12 +385,10 @@ func TestJoinQueryResultsOnIterator(t *testing.T) {
 	var handlerSubitems []interface{}
 
 	qjoin.JoinHandler("PRICES", func(field string, item interface{}, subitems []interface{}) (isContinue bool) {
-		if !strings.EqualFold(field, "prices") {
-			t.Errorf("field expected: '%v'; actual: '%v'", "prices", field)
-		}
-		if item == nil {
-			t.Errorf("item in handler is nil")
-		}
+
+		assert.True(t, strings.EqualFold(field, "prices"), "field expected: '%v'; actual: '%v'", "prices", field)
+		assert.NotNil(t, item, "item in handler is nil")
+
 		handlerSubitems = subitems
 		return true
 	})
@@ -415,35 +399,185 @@ func TestJoinQueryResultsOnIterator(t *testing.T) {
 	for iter.Next() {
 		item := iter.Object().(*TestItem)
 		joinResultsPrices, err := iter.JoinedObjects("PRICES")
-		if err != nil {
-			t.Fatalf("Can't get join objects from iterator: %v", err)
-		}
+		assert.NoError(t, err)
 		joinResultsPricesx, err := iter.JoinedObjects("PRICESX")
-		if err != nil {
-			t.Fatalf("Can't get join objects from iterator: %v", err)
-		}
+		assert.NoError(t, err)
 
 		for i := range item.Prices {
-			if !reflect.DeepEqual(item.Prices[i], joinResultsPrices[i]) {
-				i1s, _ := json.Marshal(item.Prices[i])
-				i2s, _ := json.Marshal(joinResultsPrices[i])
-
-				panic(fmt.Errorf("-----expect:\n%s\n-----got:\n%s", string(i1s), string(i2s)))
-			}
-			if !reflect.DeepEqual(item.Prices[i], handlerSubitems[i]) {
-				i1s, _ := json.Marshal(item.Prices[i])
-				i2s, _ := json.Marshal(handlerSubitems[i])
-
-				panic(fmt.Errorf("-----expect:\n%s\n-----got:\n%s", string(i1s), string(i2s)))
-			}
+			assert.EqualValues(t, item.Prices[i], joinResultsPrices[i])
+			assert.EqualValues(t, item.Prices[i], handlerSubitems[i])
 		}
 		for i := range item.Pricesx {
-			if !reflect.DeepEqual(item.Pricesx[i], joinResultsPricesx[i]) {
-				i1s, _ := json.Marshal(item.Pricesx[i])
-				i2s, _ := json.Marshal(joinResultsPricesx[i])
-
-				panic(fmt.Errorf("-----expect:\n%s\n-----got:\n%s", string(i1s), string(i2s)))
-			}
+			assert.EqualValues(t, item.Pricesx[i], joinResultsPricesx[i])
 		}
 	}
+}
+
+type explainNs struct {
+	Id                int          `reindex:"id,,pk"`
+	Data              int          `reindex:"data"`
+	InnerJoinedData   []*explainNs `reindex:"inner_joined,,joined"`
+	OrInnerJoinedData []*explainNs `reindex:"or_inner_joined,,joined"`
+	LeftJoinedData    []*explainNs `reindex:"left_joined,,joined"`
+}
+
+func initNsForExplain(t *testing.T, ns string, count int) {
+	DB.DropNamespace(ns)
+	err := DB.OpenNamespace(ns, reindexer.DefaultNamespaceOptions(), explainNs{})
+	assert.NoError(t, err)
+	tx := newTestTx(DB, ns)
+	for i := 0; i < count; i++ {
+		testItem := explainNs{i, i, nil, nil, nil}
+		err = tx.Upsert(testItem)
+		assert.NoError(t, err)
+	}
+	tx.MustCommit()
+}
+
+type expectedExplain struct {
+	Field       string
+	Method      string
+	Keys        int
+	Comparators int
+	Matched     int
+	Preselect   []expectedExplain
+	JoinSelect  []expectedExplain
+}
+
+func checkExplain(t *testing.T, res *reindexer.ExplainResults, expected []expectedExplain, fieldName string) {
+	require.Equal(t, len(expected), len(res.Selectors))
+	for i := 0; i < len(expected); i++ {
+		assert.Equalf(t, expected[i].Field, res.Selectors[i].Field, fieldName+expected[i].Field)
+		assert.Equalf(t, expected[i].Method, res.Selectors[i].Method, fieldName+expected[i].Field)
+		assert.Equalf(t, expected[i].Matched, res.Selectors[i].Matched, fieldName+expected[i].Field)
+		assert.Equalf(t, expected[i].Keys, res.Selectors[i].Keys, fieldName+expected[i].Field)
+		assert.Equalf(t, expected[i].Comparators, res.Selectors[i].Comparators, fieldName+expected[i].Field)
+		if len(expected[i].Preselect) == 0 {
+			assert.Nil(t, res.Selectors[i].ExplainPreselect, fieldName+expected[i].Field)
+		} else {
+			checkExplain(t, res.Selectors[i].ExplainPreselect, expected[i].Preselect, fieldName+expected[i].Field+" -> ")
+		}
+		if len(expected[i].JoinSelect) == 0 {
+			assert.Nil(t, res.Selectors[i].ExplainSelect, fieldName+expected[i].Field)
+		} else {
+			checkExplain(t, res.Selectors[i].ExplainSelect, expected[i].JoinSelect, fieldName+expected[i].Field+" -> ")
+		}
+	}
+}
+
+func TestExplainJoin(t *testing.T) {
+	nsMain := "test_explain_main"
+	nsJoined := "test_explain_joined"
+	initNsForExplain(t, nsMain, 5)
+	initNsForExplain(t, nsJoined, 20)
+
+	qjoin1 := DB.Query(nsJoined).Where("data", reindexer.GT, 0)
+	qjoin2 := DB.Query(nsJoined).Where("data", reindexer.SET, []int{1, 2, 4})
+	qjoin3 := DB.Query(nsJoined).Where("data", reindexer.EQ, 1)
+	q := DB.Query(nsMain).Explain()
+	q.InnerJoin(qjoin1, "inner_joined").On("id", reindexer.EQ, "id")
+	q.Or().Where("id", reindexer.EQ, 1)
+	q.Or().InnerJoin(qjoin2, "or_inner_joined").On("id", reindexer.EQ, "id")
+	q.Not().Where("data", reindexer.EQ, 4)
+	q.LeftJoin(qjoin3, "left_joined").On("id", reindexer.EQ, "id")
+
+	iter := q.MustExec()
+	explainRes, err := iter.GetExplainResults()
+	assert.NoError(t, err)
+	assert.NotNil(t, explainRes)
+	checkExplain(t, explainRes, []expectedExplain{
+		{
+			Field:       "",
+			Method:      "scan",
+			Keys:        0,
+			Comparators: 0,
+			Matched:     5,
+			Preselect:   nil,
+			JoinSelect:  nil,
+		},
+		{
+			Field:       "not data",
+			Method:      "index",
+			Keys:        1,
+			Comparators: 0,
+			Matched:     1,
+			Preselect:   nil,
+			JoinSelect:  nil,
+		},
+		{
+			Field:       "inner_join test_explain_joined",
+			Method:      "no_preselect",
+			Keys:        1,
+			Comparators: 0,
+			Matched:     3,
+			Preselect:   nil,
+			JoinSelect: []expectedExplain{
+				{
+					Field:       "id",
+					Method:      "index",
+					Keys:        1,
+					Comparators: 0,
+					Matched:     1,
+					Preselect:   nil,
+					JoinSelect:  nil,
+				},
+				{
+					Field:       "data",
+					Method:      "scan",
+					Keys:        0,
+					Comparators: 1,
+					Matched:     0,
+					Preselect:   nil,
+					JoinSelect:  nil,
+				},
+			},
+		},
+		{
+			Field:       " or id",
+			Method:      "index",
+			Keys:        1,
+			Comparators: 0,
+			Matched:     1,
+			Preselect:   nil,
+			JoinSelect:  nil,
+		},
+		{
+			Field:       "or_inner_join test_explain_joined",
+			Method:      "preselected_values",
+			Keys:        3,
+			Comparators: 0,
+			Matched:     2,
+			Preselect: []expectedExplain{
+				{
+					Field:       "data",
+					Method:      "index",
+					Keys:        3,
+					Comparators: 0,
+					Matched:     3,
+					Preselect:   nil,
+					JoinSelect:  nil,
+				},
+			},
+			JoinSelect: nil,
+		},
+		{
+			Field:       "left_join test_explain_joined",
+			Method:      "preselected_values",
+			Keys:        1,
+			Comparators: 0,
+			Matched:     1,
+			Preselect: []expectedExplain{
+				{
+					Field:       "data",
+					Method:      "index",
+					Keys:        1,
+					Comparators: 0,
+					Matched:     1,
+					Preselect:   nil,
+					JoinSelect:  nil,
+				},
+			},
+			JoinSelect: nil,
+		},
+	}, "")
 }

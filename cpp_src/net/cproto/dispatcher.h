@@ -9,6 +9,7 @@
 #include "core/keyvalue/p_string.h"
 #include "cproto.h"
 #include "estl/string_view.h"
+#include "net/connection.h"
 #include "net/stat.h"
 #include "tools/errors.h"
 
@@ -26,26 +27,30 @@ struct RPCCall {
 	milliseconds execTimeout_;
 };
 
-class ClientData {
-public:
-	typedef std::shared_ptr<ClientData> Ptr;
+struct ClientData {
 	virtual ~ClientData() = default;
 };
 
 struct Context;
+struct IRPCCall {
+	void (*Get)(IRPCCall *, CmdCode &, Args &);
+	intrusive_ptr<intrusive_atomic_rc_wrapper<chunk>> data_;
+};
+
 class Writer {
 public:
 	virtual ~Writer() = default;
-	virtual void WriteRPCReturn(Context &ctx, const Args &args) = 0;
-	virtual void CallRPC(CmdCode cmd, const Args &args) = 0;
-	virtual void SetClientData(ClientData::Ptr data) = 0;
-	virtual ClientData::Ptr GetClientData() = 0;
+	virtual void WriteRPCReturn(Context &ctx, const Args &args, const Error &status) = 0;
+	virtual void CallRPC(const IRPCCall &call) = 0;
+	virtual void SetClientData(std::unique_ptr<ClientData> data) = 0;
+	virtual ClientData *GetClientData() = 0;
+	virtual std::shared_ptr<reindexer::net::ConnectionStat> GetConnectionStat() = 0;
 };
 
 struct Context {
-	void Return(const Args &args) { writer->WriteRPCReturn(*this, args); }
-	void SetClientData(ClientData::Ptr data) { writer->SetClientData(data); }
-	ClientData::Ptr GetClientData() { return writer->GetClientData(); }
+	void Return(const Args &args, const Error &status = errOK) { writer->WriteRPCReturn(*this, args, status); }
+	void SetClientData(std::unique_ptr<ClientData> data) { writer->SetClientData(std::move(data)); }
+	ClientData *GetClientData() { return writer->GetClientData(); }
 
 	string_view clientAddr;
 	RPCCall *call;
@@ -55,6 +60,23 @@ struct Context {
 };
 
 class ServerConnection;
+
+struct abstract_optional {};
+
+template <typename T>
+class optional : public abstract_optional {
+public:
+	using type = T;
+	optional() : abstract_optional(), hasValue_(false) {}
+	optional(const T &t) : abstract_optional(), hasValue_(true), t_(t) {}
+
+	bool hasValue() const { return hasValue_; }
+	const T &value() const { return t_; }
+
+private:
+	bool hasValue_;
+	T t_;
+};
 
 /// Reindexer cproto RPC dispatcher implementation.
 class Dispatcher {
@@ -67,15 +89,21 @@ public:
 	/// @param cmd - Command code
 	/// @param object - handler class object
 	/// @param func - handler
+	/// @param hasOptionalArgs - has to be true if func has optional args
 	template <class K, typename... Args>
-	void Register(CmdCode cmd, K *object, Error (K::*func)(Context &, Args... args)) {
-		auto wrapper = [func](void *obj, Context &ctx) {
-			if (sizeof...(Args) > ctx.call->args.size())
-				return Error(errParams, "Invalid args of %s call expected %d, got %d", CmdName(ctx.call->cmd), int(sizeof...(Args)),
-							 int(ctx.call->args.size()));
-			return func_wrapper(obj, func, ctx);
-		};
-		handlers_[cmd] = {wrapper, object};
+	void Register(CmdCode cmd, K *object, Error (K::*func)(Context &, Args... args), bool hasOptionalArgs = false) {
+		if (!hasOptionalArgs) {
+			auto wrapper = [func](void *obj, Context &ctx) {
+				if (sizeof...(Args) > ctx.call->args.size())
+					return Error(errParams, "Invalid args of %s call expected %d, got %d", CmdName(ctx.call->cmd), int(sizeof...(Args)),
+								 int(ctx.call->args.size()));
+				return func_wrapper(obj, func, ctx);
+			};
+			handlers_[cmd] = {wrapper, object};
+		} else {
+			auto wrapper = [func](void *obj, Context &ctx) { return func_wrapper(obj, func, ctx); };
+			handlers_[cmd] = {wrapper, object};
+		}
 	}
 
 	/// Add middleware for commands
@@ -114,41 +142,64 @@ public:
 protected:
 	Error handle(Context &ctx);
 
+	template <typename T>
+	using is_optional = std::is_base_of<abstract_optional, T>;
+
+	template <typename T, typename std::enable_if<!is_optional<T>::value, int>::type = 0>
+	static T get_arg(const Args &args, size_t index) {
+		return T(args[index]);
+	}
+	template <typename T, typename std::enable_if<is_optional<T>::value, int>::type = 0>
+	static T get_arg(const Args &args, size_t index) {
+		return index < args.size() ? T(typename T::type(args[index])) : T();
+	}
+
 	template <class K>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx), Context &ctx) {
 		return (static_cast<K *>(obj)->*func)(ctx);
 	}
 	template <class K, typename T1>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0));
 	}
 	template <class K, typename T1, typename T2>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1));
 	}
 	template <class K, typename T1, typename T2, typename T3>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]), T3(ctx.call->args[2]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1),
+											  get_arg<T3>(ctx.call->args, 2));
 	}
 	template <class K, typename T1, typename T2, typename T3, typename T4>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3, T4), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]), T3(ctx.call->args[2]),
-											  T4(ctx.call->args[3]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1),
+											  get_arg<T3>(ctx.call->args, 2), get_arg<T4>(ctx.call->args, 3));
 	}
 	template <class K, typename T1, typename T2, typename T3, typename T4, typename T5>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3, T4, T5), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]), T3(ctx.call->args[2]),
-											  T4(ctx.call->args[3]), T5(ctx.call->args[4]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1),
+											  get_arg<T3>(ctx.call->args, 2), get_arg<T4>(ctx.call->args, 3),
+											  get_arg<T5>(ctx.call->args, 4));
 	}
 	template <class K, typename T1, typename T2, typename T3, typename T4, typename T5, typename T6>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3, T4, T5, T6), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]), T3(ctx.call->args[2]),
-											  T4(ctx.call->args[3]), T5(ctx.call->args[4]), T6(ctx.call->args[5]));
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1),
+											  get_arg<T3>(ctx.call->args, 2), get_arg<T4>(ctx.call->args, 3),
+											  get_arg<T5>(ctx.call->args, 4), get_arg<T6>(ctx.call->args, 5));
 	}
 	template <class K, typename T1, typename T2, typename T3, typename T4, typename T5, typename T6, typename T7>
 	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3, T4, T5, T6, T7), Context &ctx) {
-		return (static_cast<K *>(obj)->*func)(ctx, T1(ctx.call->args[0]), T2(ctx.call->args[1]), T3(ctx.call->args[2]),
-											  T4(ctx.call->args[3]), T5(ctx.call->args[4]), T6(ctx.call->args[5]), T7(ctx.call->args[6]));
+		return (static_cast<K *>(obj)->*func)(
+			ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1), get_arg<T3>(ctx.call->args, 2),
+			get_arg<T4>(ctx.call->args, 3), get_arg<T5>(ctx.call->args, 4), get_arg<T6>(ctx.call->args, 5), get_arg<T7>(ctx.call->args, 6));
+	}
+	template <class K, typename T1, typename T2, typename T3, typename T4, typename T5, typename T6, typename T7, typename T8>
+	static Error func_wrapper(void *obj, Error (K::*func)(Context &ctx, T1, T2, T3, T4, T5, T6, T7, T8), Context &ctx) {
+		return (static_cast<K *>(obj)->*func)(ctx, get_arg<T1>(ctx.call->args, 0), get_arg<T2>(ctx.call->args, 1),
+											  get_arg<T3>(ctx.call->args, 2), get_arg<T4>(ctx.call->args, 3),
+											  get_arg<T5>(ctx.call->args, 4), get_arg<T6>(ctx.call->args, 5),
+											  get_arg<T7>(ctx.call->args, 6), get_arg<T8>(ctx.call->args, 7));
 	}
 
 	struct Handler {
@@ -161,6 +212,7 @@ protected:
 
 	std::function<void(Context &ctx, const Error &err, const Args &args)> logger_;
 	std::function<void(Context &ctx, const Error &err)> onClose_;
+	// This should be called from the connection thread only to prevet access to other connection's ClientData
 	std::function<void(Context &ctx)> onResponse_;
 };
 }  // namespace cproto
