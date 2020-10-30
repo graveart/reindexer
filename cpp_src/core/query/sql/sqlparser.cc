@@ -90,9 +90,6 @@ int SQLParser::selectParse(tokenizer &parser) {
 			tok = peekSqlToken(parser, SingleSelectFieldSqlToken);
 			AggType agg = AggregationResult::strToAggType(name.text());
 			if (agg != AggUnknown) {
-				if (!query_.CanAddAggregation(agg) || (wasSelectFilter && agg != AggDistinct)) {
-					throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-				}
 				AggregateEntry entry{agg, {string(tok.text())}, UINT_MAX, 0};
 				tok = parser.next_token();
 				for (tok = parser.peek_token(); tok.text() == ","_sv; tok = parser.peek_token()) {
@@ -149,16 +146,10 @@ int SQLParser::selectParse(tokenizer &parser) {
 			tok = peekSqlToken(parser, SelectFieldsListSqlToken);
 
 		} else if (name.text() != "*"_sv) {
-			if (!query_.CanAddSelectFilter()) {
-				throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-			}
 			query_.selectFilter_.push_back(string(nameWithCase.text()));
 			query_.count = UINT_MAX;
 			wasSelectFilter = true;
 		} else if (name.text() == "*"_sv) {
-			if (!query_.CanAddSelectFilter()) {
-				throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-			}
 			query_.count = UINT_MAX;
 			wasSelectFilter = true;
 			query_.selectFilter_.clear();
