@@ -15,6 +15,7 @@ class FieldsSet;
 class VariantArray;
 class key_string;
 struct p_string;
+struct Point;
 
 class Variant {
 public:
@@ -29,6 +30,7 @@ public:
 	explicit Variant(const key_string &v);
 	explicit Variant(const PayloadValue &v);
 	Variant(const VariantArray &values);
+	explicit Variant(Point);
 	Variant(const Variant &other) : type_(other.type_), hold_(other.hold_) {
 		if (hold_)
 			copy(other);
@@ -73,6 +75,7 @@ public:
 	explicit operator string_view() const;
 	explicit operator const PayloadValue &() const;
 	explicit operator key_string() const;
+	explicit operator Point() const;
 
 	template <typename T>
 	T As() const;
@@ -134,6 +137,9 @@ protected:
 
 class VariantArray : public h_vector<Variant, 2> {
 public:
+	VariantArray() noexcept = default;
+	explicit VariantArray(Point) noexcept;
+	explicit operator Point() const;
 	void MarkArray() noexcept { isArrayValue = true; }
 	void MarkObject() noexcept { isObjectValue = true; }
 	using h_vector<Variant, 2>::h_vector;

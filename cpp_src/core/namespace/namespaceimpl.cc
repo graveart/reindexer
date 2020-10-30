@@ -235,7 +235,7 @@ void NamespaceImpl::updateItems(PayloadType oldPlType, const FieldsSet &changedF
 		idx->UpdatePayloadType(payloadType_);
 	}
 
-	VariantArray krefs, skrefsDel, skrefsUps;
+	VariantArray skrefsDel, skrefsUps;
 	ItemImpl newItem(payloadType_, tagsMatcher_);
 	newItem.Unsafe(true);
 	int errCount = 0;
@@ -265,17 +265,14 @@ void NamespaceImpl::updateItems(PayloadType oldPlType, const FieldsSet &changedF
 			auto &index = *indexes_[fieldIdx];
 			if ((fieldIdx == 0) || deltaFields <= 0) {
 				oldValue.Get(fieldIdx, skrefsDel, true);
-				for (auto key : skrefsDel) index.Delete(key, rowId);
-				if (skrefsDel.empty()) index.Delete(Variant(), rowId);
+				index.Delete(skrefsDel, rowId);
 			}
 
 			if ((fieldIdx == 0) || deltaFields >= 0) {
 				newItem.GetPayload().Get(fieldIdx, skrefsUps);
 				krefs.resize(0);
-				for (auto key : skrefsUps) krefs.push_back(index.Upsert(key, rowId));
-
+				index.Upsert(krefs, skrefsUps, rowId, true);
 				newValue.Set(fieldIdx, krefs);
-				if (krefs.empty()) index.Upsert(Variant(), rowId);
 			}
 		}
 
@@ -531,7 +528,7 @@ void NamespaceImpl::addIndex(const IndexDef &indexDef) {
 	} else {
 		PayloadType oldPlType = payloadType_;
 
-		payloadType_.Add(PayloadFieldType(newIndex->KeyType(), indexName, jsonPaths, opts.IsArray()));
+		payloadType_.Add(PayloadFieldType(newIndex->KeyType(), indexName, jsonPaths, newIndex->Opts().IsArray()));
 		tagsMatcher_.UpdatePayloadType(payloadType_);
 		newIndex->SetFields(FieldsSet{idxNo});
 		newIndex->UpdatePayloadType(payloadType_);
@@ -823,9 +820,7 @@ void NamespaceImpl::doDelete(IdType id) {
 			pl.Get(field, skrefs, index.Opts().IsArray());
 		}
 		// Delete value from index
-		for (auto key : skrefs) index.Delete(key, id);
-		// If no krefs delete empty value from index
-		if (!skrefs.size()) index.Delete(Variant(), id);
+		index.Delete(skrefs, id);
 	} while (++field != borderIdx);
 
 	// free PayloadValue
@@ -1111,19 +1106,15 @@ void NamespaceImpl::doUpsert(ItemImpl *ritem, IdType id, bool doUpdate) {
 			} else {
 				pl.Get(field, krefs, index.Opts().IsArray());
 			}
-			for (auto key : krefs) index.Delete(key, id);
-			if (krefs.empty()) index.Delete(Variant(), id);
+			index.Delete(krefs, id);
 		}
 		// Put value to index
 		krefs.resize(0);
-		krefs.reserve(skrefs.size());
-		for (auto key : skrefs) krefs.push_back(index.Upsert(key, id));
+		index.Upsert(krefs, skrefs, id, !isIndexSparse);
 
 		if (!isIndexSparse) {
 			// Put value to payload
 			pl.Set(field, krefs);
-			// If no krefs doUpsert empty value to index
-			if (skrefs.empty()) index.Upsert(Variant(), id);
 		}
 	} while (++field != borderIdx);
 
@@ -1199,20 +1190,18 @@ void NamespaceImpl::updateItemFromCJSON(IdType itemId, const Query &q, const NsC
 	Update(item, nsCtx);
 }
 
-void NamespaceImpl::updateFieldIndex(IdType itemId, int field, const VariantArray &values, Payload &pl) {
+void NamespaceImpl::updateFieldIndex(IdType itemId, int field, VariantArray values, Payload &pl) {
 	Index &index = *indexes_[field];
 	if (values.IsNullValue() && !index.Opts().IsArray()) {
 		throw Error(errParams, "Non-array index fields cannot be set to null!");
 	}
-	if (skrefs.empty()) index.Delete(Variant(), itemId);
-	for (const Variant &key : skrefs) index.Delete(key, itemId);
+	index.Delete(skrefs, itemId);
 	krefs.resize(0);
 	krefs.reserve(values.size());
-	for (Variant key : values) {
+	for (Variant &key : values) {
 		key.convert(index.KeyType());
-		krefs.push_back(index.Upsert(key, itemId));
 	}
-	if (krefs.empty()) index.Upsert(Variant(), itemId);
+	index.Upsert(krefs, values, itemId, true);
 	if (!index.Opts().IsSparse()) {
 		pl.Set(field, krefs);
 	}

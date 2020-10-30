@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/keyvalue/geometry.h"
 #include "core/keyvalue/variant.h"
 #include "estl/span.h"
 #include "tools/errors.h"
@@ -61,6 +62,13 @@ public:
 		FieldRef &operator=(const T &val) {
 			return operator=(Variant(val));
 		}
+		/// Set single point type value
+		/// @param val - value, which will be setted to field
+		FieldRef &operator=(Point p) {
+			const double arr[]{p.x, p.y};
+			return operator=(span<double>(arr, 2));
+		}
+
 		/// Set array of values to field
 		/// @tparam T - type. Must be one of: int, int64_t, double
 		/// @param arr - std::vector of T values, which will be setted to field

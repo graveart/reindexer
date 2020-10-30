@@ -2104,6 +2104,7 @@ definitions:
         - "string"
         - "bool"
         - "composite"
+        - "point"
       index_type:
         type: string
         description: "Index structure type"
@@ -2112,6 +2113,7 @@ definitions:
         - "hash"
         - "tree"
         - "text"
+        - "rtree"
         - "-"
       is_pk:
         description: "Specifies, that index is primary key. The update opertations will checks, that PK field is unique. The namespace MUST have only 1 PK index"
@@ -2126,6 +2128,10 @@ definitions:
         default: false
       is_sparse:
         description: "Value of index may not present in the document, and threfore, reduce data size but decreases speed operations on index"
+        type: boolean
+        default: false
+      is_linear:
+        description: "Use linear algorithm to construct RTree index. Quadratic algorithm will be used otherwise"
         type: boolean
         default: false
       is_simple_tag:

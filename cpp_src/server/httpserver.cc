@@ -64,7 +64,7 @@ std::unordered_map<string_view, int> kProtoColumnsFields = {
 std::unordered_map<string_view, int> kProtoModifyResultsFields = {{kParamItems, 1}, {kParamUpdated, 2}, {kParamSuccess, 3}};
 std::unordered_map<string_view, int> kProtoErrorResultsFields = {{kParamSuccess, 1}, {kParamResponseCode, 2}, {kParamDescription, 3}};
 
-HTTPServer::HTTPServer(DBManager &dbMgr, const string &webRoot, LoggerWrapper &logger, OptionalConfig config)
+HTTPServer::HTTPServer(DBManager &dbMgr, const string &webRoot, LoggerWrapper logger, OptionalConfig config)
 	: dbMgr_(dbMgr),
 	  prometheus_(config.prometheus),
 	  statsWatcher_(config.statsWatcher),

@@ -52,6 +52,7 @@ about reindexer server and HTTP API refer to
     - [DeepCopy interface](#deepcopy-interface)
     - [Get shared objects from object cache (USE WITH CAUTION)](#get-shared-objects-from-object-cache-use-with-caution)
     - [Limit size of object cache](#limit-size-of-object-cache)
+    - [Geometry](#geometry)
 - [Logging, debug and profiling](#logging-debug-and-profiling)
   - [Turn on logger](#turn-on-logger)
   - [Debug queries](#debug-queries)
@@ -289,6 +290,7 @@ Queries are possible only on the indexed fields, marked with `reindex` tag. The 
   - `text` – full text search index. Usage details of full text search is described [here](fulltext.md)
   - `-` – column index. Can't perform fast select because it's implemented with full-scan technic. Has the smallest memory overhead.
   - `ttl` - TTL index that works only with int64 fields. These indexes are quite convenient for representation of date fields (stored as UNIX timestamps) that expire after specified amount of seconds.
+  - `rtree` - available only DWITHIN match. Acceptable only for `[2]float64` field type. For details see [geometry subsection](#geometry).
 - `opts` – additional index options:
   - `pk` – field is part of a primary key. Struct must have at least 1 field tagged with `pk`
   - `composite` – create composite index. The field type must be an empty struct: `struct{}`.
@@ -299,6 +301,7 @@ Queries are possible only on the indexed fields, marked with `reindex` tag. The 
   - `collate_ascii` - create case-insensitive string index works with ASCII. The field type must be a string.
   - `collate_utf8` - create case-insensitive string index works with UTF8. The field type must be a string.
   - `collate_custom=<ORDER>` - create custom order string index. The field type must be a string. `<ORDER>` is sequence of letters, which defines sort order.
+  - `linear` or `quadratic` - specify algorithm for construction of `rtree` index. For details see [geometry subsection](#geometry).
 
 Fields with regular indexes are not nullable. Condition `is NULL` is supported only by `sparse` and `array` indexes.
 
@@ -974,6 +977,33 @@ to OpenNamespace. e.g.
 ```go
 	// Set object cache limit to 4096 items
 	db.OpenNamespace("items_with_huge_cache", reindexer.DefaultNamespaceOptions().ObjCacheSize(4096), Item{})
+```
+
+### Geometry
+
+The only supported geometry data type is 2D point, which implemented in Golang as `[2]float64`.
+
+In SQL, a point can be created as `ST_GeomFromText("point(1 -3)")`.
+
+The only supported request for geometry field is to find all points within a distance from a point.
+`DWithin(field_name, point, distance)` as on example below.
+
+Corresponding SQL function is `ST_DWithin(field_name, point, distance)`.
+
+RTree index can be created for points. To do so, `rtree` and `linear` or `quadratic` tags should be declared. `linear` or `quadratic` means which algorithm of RTree construction would be used.
+
+```go
+type Item struct {
+	id              int        `reindexer:"id,,pk"`
+	pointIndexed    [2]float64 `reindexer:"point_indexed,rtree,linear"`
+	pointNonIndexed [2]float64 `json:"point_non_indexed"`
+}
+
+query1 := db.Query("items").DWithin("point_indexed", [2]float64{-1.0, 1.0}, 4.0)
+```
+
+```SQL
+SELECT * FROM items WHERE ST_DWithin(point_non_indexed, ST_GeomFromText("point(1 -3.5)"), 5.0);
 ```
 
 ## Logging, debug and profiling

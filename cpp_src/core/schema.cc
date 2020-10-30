@@ -32,7 +32,7 @@ void SchemaFieldsTypes::AddObject(string_view objectType) {
 	types_[tagsPath_] = {KeyValueComposite, false};
 	auto it = objectTypes_.find(string(objectType));
 	if (it == objectTypes_.end()) {
-		objectTypes_.emplace(objectType, tagsPath_.size());
+		objectTypes_.emplace(std::string(objectType), tagsPath_.size());
 	} else {
 		int depth = int(tagsPath_.size());
 		if (depth < it->second) {

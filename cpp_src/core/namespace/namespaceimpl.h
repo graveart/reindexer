@@ -265,7 +265,7 @@ protected:
 	void doUpsert(ItemImpl *ritem, IdType id, bool doUpdate);
 	void modifyItem(Item &item, const NsContext &, int mode = ModeUpsert);
 	void updateItemFromCJSON(IdType id, const Query &q, const NsContext &);
-	void updateFieldIndex(IdType id, int field, const VariantArray &v, Payload &pl);
+	void updateFieldIndex(IdType id, int field, VariantArray v, Payload &pl);
 	void updateSingleField(const UpdateEntry &updateField, const IdType &itemId, Payload &pl);
 	void updateItemFields(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &);
 	void updateItemFromQuery(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &, bool withJsonUpdates);

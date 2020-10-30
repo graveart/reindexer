@@ -434,6 +434,20 @@ func (q *Query) WhereDouble(index string, condition int, keys ...float64) *Query
 	return q
 }
 
+// DWithin - Add DWithin condition to DB query
+func (q *Query) DWithin(index string, point [2]float64, distance float64) *Query {
+
+	q.ser.PutVarCUInt(queryCondition).PutVString(index).PutVarCUInt(q.nextOp).PutVarCUInt(DWITHIN)
+	q.nextOp = opAND
+	q.queriesCount++
+
+	q.ser.PutVarCUInt(3)
+	q.ser.PutVarCUInt(valueDouble).PutDouble(point[0])
+	q.ser.PutVarCUInt(valueDouble).PutDouble(point[1])
+	q.ser.PutVarCUInt(valueDouble).PutDouble(distance)
+	return q
+}
+
 func (q *Query) AggregateSum(field string) {
 	q.ser.PutVarCUInt(queryAggregation).PutVarCUInt(AggSum).PutVarCUInt(1).PutVString(field)
 }
