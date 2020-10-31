@@ -27,8 +27,8 @@ RPCClient::~RPCClient() { Stop(); }
 
 Error RPCClient::startWorkers() {
 	connections_.resize(config_.ConnPoolSize);
-	for (size_t i = 0; i < workers_.size(); i++) {
-		workers_[i].thread_ = std::thread([this](size_t id) { this->run(id); }, i);
+	for (unsigned i = 0; i < workers_.size(); i++) {
+		workers_[i].thread_ = std::thread([this](int i) { this->run(i); }, i);
 		while (!workers_[i].running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	return errOK;
@@ -88,7 +88,7 @@ Error RPCClient::Stop() {
 	return errOK;
 }
 
-void RPCClient::run(size_t thIdx) {
+void RPCClient::run(int thIdx) {
 	bool terminate = false;
 
 	workers_[thIdx].stop_.set(workers_[thIdx].loop_);
@@ -100,7 +100,7 @@ void RPCClient::run(size_t thIdx) {
 	workers_[thIdx].stop_.start();
 	delayedUpdates_.clear();
 
-	for (size_t i = thIdx; int(i) < config_.ConnPoolSize; i += config_.WorkerThreads) {
+	for (int i = thIdx; i < config_.ConnPoolSize; i += config_.WorkerThreads) {
 		connections_[i].reset(new cproto::ClientConnection(workers_[thIdx].loop_, &connectData_,
 														   std::bind(&RPCClient::onConnectionFail, this, std::placeholders::_1)));
 	}
@@ -117,8 +117,7 @@ void RPCClient::run(size_t thIdx) {
 		workers_[thIdx].loop_.run();
 		bool doTerminate = terminate;
 		if (doTerminate) {
-			for (size_t i = thIdx; int(i) < config_.ConnPoolSize; i += config_.WorkerThreads) {
-				logPrintf(LogInfo, "Set terminate flag %d/%d %X", i, config_.ConnPoolSize, int64_t(connections_[i].get()));
+			for (int i = thIdx; i < config_.ConnPoolSize; i += config_.WorkerThreads) {
 				connections_[i]->SetTerminateFlag();
 				if (connections_[i]->PendingCompletions()) {
 					doTerminate = false;
@@ -127,7 +126,7 @@ void RPCClient::run(size_t thIdx) {
 		}
 		if (doTerminate) break;
 	}
-	for (size_t i = thIdx; int(i) < config_.ConnPoolSize; i += config_.WorkerThreads) {
+	for (int i = thIdx; i < config_.ConnPoolSize; i += config_.WorkerThreads) {
 		connections_[i].reset();
 	}
 	workers_[thIdx].running.store(false);

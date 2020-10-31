@@ -347,12 +347,7 @@ void ClientConnection::onRead() {
 				} else {
 					completion->used = false;
 				}
-
-				if (terminate_.load(std::memory_order_acquire) && !PendingCompletions()) {
-					closeConn();
-				} else {
-					io_.loop.break_loop();
-				}
+				io_.loop.break_loop();
 				break;
 			}
 			if (!completion) {
@@ -470,16 +465,7 @@ void ClientConnection::call(Completion cmpl, const CommandParams &opts, const Ar
 			}
 			if (completion->used) {
 				bufWait_++;
-				struct {
-					uint32_t seq;
-					RPCCompletion *cmpl;
-				} arg = {seq, completion};
-
-				bufCond_.wait(lck, [this, &arg]() {
-					arg.cmpl = &completions_[arg.seq % completions_.size()];
-					return !arg.cmpl->used.load();
-				});
-				completion = arg.cmpl;
+				bufCond_.wait(lck, [&completion]() { return !completion->used.load(); });
 				bufWait_--;
 			}
 		}
@@ -509,14 +495,7 @@ void ClientConnection::call(Completion cmpl, const CommandParams &opts, const Ar
 
 	wrBuf_.write(std::move(data));
 	lck.unlock();
-
-	if (inLoopThread) {
-		if (state_ == ConnConnected) {
-			callback(io_, ev::WRITE);
-		}
-	} else {
-		async_.send();
-	}
+	if (!inLoopThread) async_.send();
 }
 
 }  // namespace cproto

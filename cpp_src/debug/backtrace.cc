@@ -5,7 +5,6 @@
 #include <sstream>
 #include "estl/span.h"
 #include "resolver.h"
-
 // There are 3 backtrace methods are available:
 // 1. stangalone libunwind ( https://github.com/libunwind/libunwind )
 // 2. libgcc's/llvm built in unwind
@@ -47,7 +46,6 @@ extern "C" void __assert_fail(const char *expr, const char *file, int line, cons
 namespace reindexer {
 namespace debug {
 
-std::function<void(std::ostream &sout)> g_crash_query_reporter = [](std::ostream &) {};
 std::function<void(string_view out)> g_writer = [](string_view sv) { std::cerr << sv; };
 
 #if REINDEX_WITH_UNWIND
@@ -132,7 +130,7 @@ int backtrace_internal(void **addrlist, size_t size, void *ctx, string_view &met
 	return addrlen;
 }
 
-void inline print_backtrace(std::ostream &sout, void *ctx, int sig) {
+void inline getBackTraceString(std::ostringstream &sout, void *ctx, int sig) {
 #if !REINDEX_WITH_EXECINFO && !REINDEX_WITH_UNWIND && !REINDEX_WITH_LIBUNWIND
 	sout << "Sorry, reindexer has been compiled without any backtrace methods." << std::endl;
 #else
@@ -141,8 +139,7 @@ void inline print_backtrace(std::ostream &sout, void *ctx, int sig) {
 	string_view method;
 	int addrlen = backtrace_internal(addrlist, sizeof(addrlist) / sizeof(addrlist[0]), ctx, method);
 
-	if (sig >= 0) sout << "Signal " << sig << " ";
-	sout << "backtrace (" << method << "):" << std::endl;
+	sout << "Signal " << sig << " backtrace (" << method << "):" << std::endl;
 	for (int i = 1; i < addrlen; i++) {
 		auto te = TraceEntry(uintptr_t(addrlist[i]));
 		resolver->Resolve(te);
@@ -151,18 +148,12 @@ void inline print_backtrace(std::ostream &sout, void *ctx, int sig) {
 #endif
 }
 
-void print_crash_query(std::ostream &sout) {
-	if (g_crash_query_reporter) {
-		g_crash_query_reporter(sout);
-	}
-}
-
 static void sighandler(int sig, siginfo_t *, void *ctx) {
 	std::ostringstream sout;
-	print_backtrace(sout, ctx, sig);
-	print_crash_query(sout);
+	getBackTraceString(sout, ctx, sig);
 	g_writer(sout.str());
 
+	raise(sig);
 	exit(-1);
 }
 
@@ -175,9 +166,7 @@ void backtrace_init() {
 	sigaction(SIGABRT, &sa, nullptr);
 	sigaction(SIGBUS, &sa, nullptr);
 }
-
 void backtrace_set_writer(std::function<void(string_view out)> writer) { g_writer = writer; }
-void backtrace_set_crash_query_reporter(std::function<void(std::ostream &sout)> reporter) { g_crash_query_reporter = reporter; }
 
 }  // namespace debug
 }  // namespace reindexer
@@ -188,8 +177,7 @@ namespace debug {
 void backtrace_init() {}
 void backtrace_set_writer(std::function<void(string_view out)>) {}
 int backtrace_internal(void **, size_t, void *, string_view &) { return 0; }
-void backtrace_set_crash_query_reporter(std::function<void(std::ostream &sout)> >) { g_crash_query_reporter = reporter; }
-void inline print_backtrace(std::ostream &, void *, int) {}
+void getBackTraceString(std::ostringstream &, void *, int) {}
 
 }  // namespace debug
 }  // namespace reindexer

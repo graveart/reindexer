@@ -61,7 +61,7 @@ protected:
 	ev::async async_;
 	std::shared_ptr<Shared> shared_;
 	vector<std::unique_ptr<IServerConnection>> connections_;
-	uint64_t id_;
+	int id_;
 };
 }  // namespace net
 }  // namespace reindexer

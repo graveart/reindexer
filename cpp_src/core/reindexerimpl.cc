@@ -8,7 +8,6 @@
 #include "core/index/index.h"
 #include "core/itemimpl.h"
 #include "core/namespacedef.h"
-#include "core/nsselecter/crashqueryreporter.h"
 #include "core/query/sql/sqlsuggester.h"
 #include "core/selectfunc/selectfunc.h"
 #include "estl/contexted_locks.h"
@@ -18,10 +17,9 @@
 #include "tools/fsops.h"
 #include "tools/logger.h"
 
-#include "debug/backtrace.h"
 #include "debug/terminate_handler.h"
 
-std::once_flag initTerminateHandlerFlag;
+reindexer::SetTerminateHandler sth;
 
 using std::lock_guard;
 using std::string;
@@ -49,10 +47,6 @@ ReindexerImpl::ReindexerImpl(IClientsStats* clientsStats)
 	stopBackgroundThread_ = false;
 	configProvider_.setHandler(ProfilingConf, std::bind(&ReindexerImpl::onProfiligConfigLoad, this));
 	backgroundThread_ = std::thread([this]() { this->backgroundRoutine(); });
-	std::call_once(initTerminateHandlerFlag, []() {
-		debug::terminate_handler_init();
-		debug::backtrace_set_crash_query_reporter(&reindexer::PrintCrashedQuery);
-	});
 }
 
 ReindexerImpl::~ReindexerImpl() {
@@ -183,13 +177,13 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 	if (!err.ok()) return err;
 
 	if (enableStorage && opts.IsOpenNamespaces()) {
-		size_t maxLoadWorkers = std::min(std::thread::hardware_concurrency(), 8u);
+		int maxLoadWorkers = std::min(int(std::thread::hardware_concurrency()), 8);
 		std::unique_ptr<std::thread[]> thrs(new std::thread[maxLoadWorkers]);
 		std::atomic_flag hasNsErrors{false};
-		for (size_t i = 0; i < maxLoadWorkers; i++) {
+		for (int i = 0; i < maxLoadWorkers; i++) {
 			thrs[i] = std::thread(
-				[&](size_t begin) {
-					for (size_t j = begin; j < foundNs.size(); j += maxLoadWorkers) {
+				[&](int i) {
+					for (int j = i; j < int(foundNs.size()); j += maxLoadWorkers) {
 						auto& de = foundNs[j];
 						if (de.isDir && validateObjectName(de.name)) {
 							auto status = OpenNamespace(de.name, StorageOpts().Enabled());
@@ -209,7 +203,7 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 				},
 				i);
 		}
-		for (size_t i = 0; i < maxLoadWorkers; i++) thrs[i].join();
+		for (int i = 0; i < maxLoadWorkers; i++) thrs[i].join();
 
 		if (!opts.IsAllowNamespaceErrors() && hasNsErrors.test_and_set(std::memory_order_relaxed)) {
 			return Error(errNotValid, "Namespaces load error");

@@ -171,7 +171,7 @@ void parseValues(JsonValue& values, Array& kvs) {
 		for (auto elem : values) {
 			Variant kv;
 			if (elem->value.getTag() == JSON_OBJECT) {
-				kv = Variant(stringifyJson(*elem));
+                kv = Variant(stringifyJson(*elem));
 			} else if (elem->value.getTag() != JSON_NULL) {
 				kv = jsonValue2Variant(elem->value, KeyValueUndefined);
 				kv.EnsureHold();
@@ -443,9 +443,6 @@ void parseAggregation(JsonValue& aggregation, Query& query) {
 			case Aggregation::Type:
 				checkJsonValueType(value, name, JSON_STRING);
 				aggEntry.type_ = get(aggregation_types, value.toString(), "aggregation type enum"_sv);
-				if (!query.CanAddAggregation(aggEntry.type_)) {
-					throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-				}
 				break;
 			case Aggregation::Sort:
 				parseSort(value, aggEntry);
@@ -567,14 +564,10 @@ void parse(JsonValue& root, Query& q) {
 				checkJsonValueType(v, name, JSON_ARRAY);
 				parseMergeQueries(v, q);
 				break;
-			case Root::SelectFilter: {
-				if (!q.CanAddSelectFilter()) {
-					throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-				}
+			case Root::SelectFilter:
 				checkJsonValueType(v, name, JSON_ARRAY);
 				parseStringArray(v, q.selectFilter_);
 				break;
-			}
 			case Root::SelectFunctions:
 				checkJsonValueType(v, name, JSON_ARRAY);
 				parseStringArray(v, q.selectFunctions_);

@@ -1,7 +1,6 @@
 #include "nsselecter.h"
 #include "core/namespace/namespaceimpl.h"
 #include "core/queryresults/joinresults.h"
-#include "crashqueryreporter.h"
 #include "explaincalc.h"
 #include "itemcomparator.h"
 #include "querypreprocessor.h"
@@ -24,14 +23,12 @@ static int GetMaxIterations(const SelectIteratorContainer &iterators, bool withZ
 
 void NsSelecter::operator()(QueryResults &result, SelectCtx &ctx, const RdxContext &rdxCtx) {
 	const size_t resultInitSize = result.Count();
-	ctx.sortingContext.enableSortOrders = ns_->SortOrdersBuilt();
+	ctx.sortingContext.enableSortOrders = ns_->sortOrdersBuilt_;
 	if (ns_->config_.logLevel > ctx.query.debugLevel) {
 		const_cast<Query *>(&ctx.query)->debugLevel = ns_->config_.logLevel;
 	}
 
 	ExplainCalc explain(ctx.query.explain_ || ctx.query.debugLevel >= LogInfo);
-	ActiveQueryScope queryScope(ctx, ns_->optimizationState_, explain);
-
 	explain.StartTiming();
 
 	bool needPutCachedTotal = false;
