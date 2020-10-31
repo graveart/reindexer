@@ -21,7 +21,7 @@ void WALSelecter::operator()(QueryResults &result, SelectCtx &params) {
 		throw Error(errLogic, "Query to WAL should contain only 1 condition '#lsn > number'");
 	}
 
-	result.addNSContext(ns_->payloadType_, ns_->tagsMatcher_, FieldsSet(ns_->tagsMatcher_, q.selectFilter_));
+	result.addNSContext(ns_->payloadType_, ns_->tagsMatcher_, FieldsSet(ns_->tagsMatcher_, q.selectFilter_), ns_->getNsNumber());
 
 	int lsnIdx = -1;
 	int versionIdx = -1;

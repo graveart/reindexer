@@ -50,6 +50,7 @@ Error Replicator::Start() {
 			terminate_ = true;
 			stop_.send();
 			thread_.join();
+			terminate_ = false;
 		}
 		thread_ = std::thread([this]() { this->run(); });
 	}

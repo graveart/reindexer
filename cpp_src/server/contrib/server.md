@@ -31,6 +31,7 @@
   * [Drop index from namespace](#drop-index-from-namespace)
   * [Get namespace schema](#get-namespace-schema)
   * [Set namespace schema](#set-namespace-schema)
+  * [Get protobuf communication parameters schema](#get-protobuf-communication-parameters-schema)
   * [Query documents from namespace](#query-documents-from-namespace)
   * [Query documents from namespace](#query-documents-from-namespace-1)
   * [Delete documents from namespace](#delete-documents-from-namespace-1)
@@ -111,7 +112,6 @@
 
 <!-- tocstop -->
 
->
 ## Overview
 **Reindexer** is an embeddable, in-memory, document-oriented database with a high-level Query builder interface.
 Reindexer's goal is to provide fast search with complex queries.
@@ -603,7 +603,7 @@ This operation will select documents from namespace with specified filters, and 
 |**Path**|**name**  <br>*required*|Namespace name|string|
 |**Query**|**fields**  <br>*optional*|Comma-separated list of returned fields|string|
 |**Query**|**filter**  <br>*optional*|Filter with SQL syntax, e.g: field1 = 'v1' AND field2 > 'v2'|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**limit**  <br>*optional*|Maximum count of returned items|integer|
 |**Query**|**offset**  <br>*optional*|Offset of first returned item|integer|
 |**Query**|**sort_field**  <br>*optional*|Sort Field|string|
@@ -649,7 +649,7 @@ Each document should be in request body as separate JSON object, e.g.
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**name**  <br>*required*|Namespace name|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
 |**Body**|**body**  <br>*required*||object|
 
@@ -693,7 +693,7 @@ Each document should be in request body as separate JSON object, e.g.
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**name**  <br>*required*|Namespace name|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
 |**Body**|**body**  <br>*required*||object|
 
@@ -975,6 +975,46 @@ This operation will set namespace schema (information about available fields and
 
 
 
+### Get protobuf communication parameters schema
+```
+GET /db/{database}/protobuf_schema
+```
+
+
+#### Description
+This operation allows to get client/server communication parameters as google protobuf schema (content of .proto file)
+
+
+#### Parameters
+
+|Type|Name|Description|Schema|
+|---|---|---|---|
+|**Path**|**database**  <br>*required*|Database name|string|
+|**Query**|**ns**  <br>*required*|Namespace name|< string > array(multi)|
+
+
+#### Responses
+
+|HTTP Code|Description|Schema|
+|---|---|---|
+|**200**|successful operation|No Content|
+|**400**|Invalid arguments supplied|[StatusResponse](#statusresponse)|
+|**403**|Forbidden|[StatusResponse](#statusresponse)|
+|**404**|Entry not found|[StatusResponse](#statusresponse)|
+|**500**|Unexpected internal error|[StatusResponse](#statusresponse)|
+
+
+#### Produces
+
+* `text/plain`
+
+
+#### Tags
+
+* schema
+
+
+
 ### Query documents from namespace
 ```
 GET /db/{database}/query
@@ -992,7 +1032,7 @@ then `limit` and `offset` from http request.
 |Type|Name|Description|Schema|
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**limit**  <br>*optional*|Maximum count of returned items|integer|
 |**Query**|**offset**  <br>*optional*|Offset of first returned item|integer|
 |**Query**|**q**  <br>*required*|SQL query|string|
@@ -1032,7 +1072,7 @@ This opertaion queries documents from namespace by DSL query.
 |Type|Name|Description|Schema|
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
-|**Query**|**format**  <br>*optional*|format of encoding data: json or msgpack|string|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**width**  <br>*optional*|Total width in rows of view for table format output|integer|
 |**Query**|**with_columns**  <br>*optional*|Return columns names and widths for table format output|boolean|
 |**Body**|**body**  <br>*required*|DSL query|[Query](#query)|
@@ -1102,7 +1142,7 @@ POST /db/{database}/namespaces/{name}/transactions/begin
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**name**  <br>*required*|Namespace name|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 
 
 #### Responses
@@ -1134,7 +1174,6 @@ POST /db/{database}/transactions/{tx_id}/commit
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
 
 
 #### Responses
@@ -1166,7 +1205,6 @@ POST /db/{database}/transactions/{tx_id}/rollback
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
 
 
 #### Responses
@@ -1209,7 +1247,7 @@ Each document should be in request body as separate JSON object, e.g.
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
 |**Body**|**body**  <br>*required*||object|
 
@@ -1254,7 +1292,7 @@ Each document should be in request body as separate JSON object, e.g.
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
 |**Body**|**body**  <br>*required*||object|
 
@@ -1337,7 +1375,7 @@ This query UPDATEs/DELETEs documents from namespace
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
-|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack)|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**q**  <br>*required*|SQL query|string|
 |**Query**|**width**  <br>*optional*|Total width in rows of view for table format output|integer|
 
@@ -1820,6 +1858,7 @@ Specifies facet aggregations results sorting order
 |**current_activity**  <br>*required*|Current activity|string|
 |**db_name**  <br>*required*|Database name|string|
 |**ip**  <br>*required*|Ip|string|
+|**is_subscribed**  <br>*required*|Status of updates subscription|boolean|
 |**last_recv_ts**  <br>*optional*|Timestamp of last recv operation (ms)|integer|
 |**last_send_ts**  <br>*optional*|Timestamp of last send operation (ms)|integer|
 |**pended_updates**  <br>*optional*|Pended updates count|integer|
@@ -1830,7 +1869,7 @@ Specifies facet aggregations results sorting order
 |**sent_bytes**  <br>*required*|Send byte|integer|
 |**start_time**  <br>*required*|Server start time in unix timestamp|integer|
 |**tx_count**  <br>*required*|Count of currently opened transactions for this client|integer|
-|**updates_filter**  <br>*required*||[updates_filter](#clientsstats-updates_filter)|
+|**updates_filter**  <br>*required*|Updates filter for this client|[updates_filter](#clientsstats-updates_filter)|
 |**user_name**  <br>*required*|User name|string|
 |**user_rights**  <br>*required*|User right|string|
 

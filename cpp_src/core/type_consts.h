@@ -114,7 +114,10 @@ enum ErrorCode {
 	errReplParams = 22,
 	errNamespaceInvalidated = 23,
 	errParseMsgPack = 24,
+	errParseProtobuf = 25,
 };
+
+enum SchemaType { JsonSchemaType, ProtobufSchemaType };
 
 enum QueryType { QuerySelect, QueryDelete, QueryUpdate, QueryTruncate };
 

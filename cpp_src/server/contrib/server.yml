@@ -545,6 +545,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -603,6 +604,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -669,6 +671,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -892,6 +895,42 @@ paths:
         500:
           $ref: "#/responses/UnexpectedError"
 
+  /db/{database}/protobuf_schema:
+    get:
+      produces:
+      - "text/plain"
+      tags:
+      - "schema"
+      summary: "Get protobuf communication parameters schema"
+      operationId: "getNsParamsSchema"
+      description: |
+        This operation allows to get client/server communication parameters as google protobuf schema (content of .proto file) 
+      parameters:
+      - name: "database"
+        in: path
+        type: string
+        description: "Database name"
+        required: true
+      - name: "ns"
+        in: "query"
+        type: "array"
+        collectionFormat: "multi"
+        description: "Namespace name"
+        items:
+          type: "string"
+        required: true
+      responses:
+        200:
+          description: "successful operation"
+        400:
+          $ref: "#/responses/BadRequest"
+        403:
+          $ref: "#/responses/Forbidden"
+        404:
+          $ref: "#/responses/NotFound"
+        500:
+          $ref: "#/responses/UnexpectedError"
+
   /db/{database}/query:
     get:
       tags:
@@ -939,6 +978,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -984,8 +1024,12 @@ paths:
       - name: "format"
         in: query
         type: string
-        description: "format of encoding data: json or msgpack"
+        description: "encoding data format"
         required: false
+        enum:
+          - json
+          - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -1055,6 +1099,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           description: "successful operation"
@@ -1086,14 +1131,6 @@ paths:
         type: "string"
         description: "transaction id"
         required: true
-      - name: "format"
-        in: "query"
-        type: "string"
-        description: "encoding data format"
-        required: false
-        enum:
-          - json
-          - msgpack
       responses:
         200:
           $ref: "#/responses/OK"
@@ -1123,14 +1160,6 @@ paths:
         type: "string"
         description: "transaction id"
         required: true
-      - name: "format"
-        in: "query"
-        type: "string"
-        description: "encoding data format"
-        required: false
-        enum:
-          - json
-          - msgpack
       responses:
         200:
           $ref: "#/responses/OK"
@@ -1239,6 +1268,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           $ref: "#/responses/OK"
@@ -1296,6 +1326,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           $ref: "#/responses/OK"
@@ -1346,6 +1377,7 @@ paths:
         enum:
           - json
           - msgpack
+          - protobuf
       responses:
         200:
           $ref: "#/responses/OK"
@@ -1851,11 +1883,11 @@ definitions:
               type: integer
               description: "Current recv rate (bytes/s)"
             is_subscribed:
-              type: bool
+              type: boolean
               description: "Status of updates subscription"
             updates_filter:
               type: object
-              descriptin: "Updates filter for this client"
+              description: "Updates filter for this client"
               properties:
                 namespaces:
                   type: array
@@ -2049,6 +2081,9 @@ definitions:
           - "object"
           - "expression"
           - "value"
+      is_array:
+        type: "boolean"
+        description: "is updated value an array"
       values:
         type: "array"
         items: 
@@ -2592,6 +2627,7 @@ definitions:
           $ref: "#/definitions/QueryColumnDef"
       explain:
         $ref: "#/definitions/ExplainDef"
+
 
   Indexes:
     type: object

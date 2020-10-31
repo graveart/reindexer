@@ -1553,7 +1553,7 @@ protected:
 		CompareQueryResults(sqlQr3, checkQr3);
 		Verify(default_namespace, checkQr3, checkQuery3);
 
-		sqlQuery = "SELECT ID, FACET(ID, Year ORDER BY ID DESC ORDER BY Year ASC LIMIT 20 OFFSET 1) FROM test_namespace LIMIT 10000000";
+		sqlQuery = "SELECT FACET(ID, Year ORDER BY ID DESC ORDER BY Year ASC LIMIT 20 OFFSET 1) FROM test_namespace LIMIT 10000000";
 		const Query checkQuery4 =
 			std::move(Query(default_namespace, 0, 10000000)
 						  .Aggregate(AggFacet, {kFieldNameId, kFieldNameYear}, {{kFieldNameId, true}, {kFieldNameYear, false}}, 20, 1));

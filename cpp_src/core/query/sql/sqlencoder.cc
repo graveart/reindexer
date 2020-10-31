@@ -183,7 +183,8 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 				}
 				if (isUpdate) {
 					ser << " = ";
-					if (field.values.size() != 1) ser << '[';
+					bool isArray = (field.values.IsArrayValue() || field.values.size() > 1);
+					if (isArray) ser << '[';
 					for (const Variant &v : field.values) {
 						if (&v != &*field.values.begin()) ser << ',';
 						if ((v.Type() == KeyValueString) && !field.isExpression && (mode != FieldModeSetJson)) {
@@ -192,7 +193,7 @@ WrSerializer &SQLEncoder::GetSQL(WrSerializer &ser, bool stripArgs) const {
 							ser << v.As<string>();
 						}
 					}
-					ser << ((field.values.size() != 1) ? "]" : "");
+					if (isArray) ser << "]";
 				}
 			}
 			break;

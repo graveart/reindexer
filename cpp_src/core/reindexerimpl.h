@@ -25,6 +25,7 @@ namespace reindexer {
 
 class Replicator;
 class IClientsStats;
+class ProtobufSchema;
 
 class ReindexerImpl {
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Reindexer>;
@@ -54,7 +55,7 @@ public:
 	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
 	Error SetSchema(string_view nsName, string_view schema, const InternalRdxContext &ctx = InternalRdxContext());
-	Error GetSchema(string_view nsName, string &schema, const InternalRdxContext &ctx = InternalRdxContext());
+	Error GetSchema(string_view nsName, int format, std::string &schema, const InternalRdxContext &ctx = InternalRdxContext());
 	Error UpdateIndex(string_view nsName, const IndexDef &indexDef, const InternalRdxContext &ctx = InternalRdxContext());
 	Error DropIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
 	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts, const InternalRdxContext &ctx = InternalRdxContext());

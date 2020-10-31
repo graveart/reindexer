@@ -206,12 +206,46 @@ WrSerializer::SliceHelper WrSerializer::StartSlice() {
 	return SliceHelper(this, savePos);
 }
 
+WrSerializer::VStringHelper WrSerializer::StartVString() {
+	size_t savePos = len_;
+	return VStringHelper(this, savePos);
+}
+
 WrSerializer::SliceHelper::~SliceHelper() {
 	if (ser_) {
 		uint32_t sliceSize = ser_->len_ - pos_ - sizeof(uint32_t);
 		memcpy(&ser_->buf_[pos_], &sliceSize, sizeof(sliceSize));
 	}
+	ser_ = nullptr;
 }
+
+WrSerializer::VStringHelper &WrSerializer::VStringHelper::operator=(WrSerializer::VStringHelper &&other) noexcept {
+	if (this != &other) {
+		ser_ = other.ser_;
+		pos_ = other.pos_;
+		other.ser_ = nullptr;
+	}
+	return *this;
+}
+
+void WrSerializer::VStringHelper::End() {
+	if (ser_) {
+		int bytesToGrow = 0;
+		int size = ser_->len_ - pos_;
+		if (size > 0) {
+			for (int value = size; value != 0; value >>= 8) {
+				++bytesToGrow;
+			}
+			ser_->grow(bytesToGrow);
+			ser_->len_ += bytesToGrow;
+			memmove(&ser_->buf_[0] + pos_ + bytesToGrow, &ser_->buf_[0] + pos_, size);
+			uint32_pack(size, ser_->buf_ + pos_);
+		}
+	}
+	ser_ = nullptr;
+}
+
+WrSerializer::VStringHelper::~VStringHelper() { End(); }
 
 void WrSerializer::PutUInt32(uint32_t v) {
 	grow(sizeof v);
@@ -252,7 +286,7 @@ void WrSerializer::grow(size_t sz) {
 
 void WrSerializer::Reserve(size_t cap) {
 	if (cap > cap_) {
-		cap_ = std::max(cap, cap_);
+		cap_ = cap;
 		uint8_t *b = new uint8_t[cap_];
 		memcpy(b, buf_, len_);
 		if (buf_ != inBuf_) delete[] buf_;

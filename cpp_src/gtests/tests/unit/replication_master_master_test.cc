@@ -68,8 +68,6 @@ public:
 		}
 		nodes[id].InitServer(id, port + id, port + 1000 + id, dbPathMaster + std::to_string(id), "db", true);
 	}
-
-private:
 };
 
 class TestNamespace1 {

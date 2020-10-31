@@ -8,6 +8,7 @@
 #include "core/index/index.h"
 #include "core/itemimpl.h"
 #include "core/namespacedef.h"
+#include "core/nsselecter/crashqueryreporter.h"
 #include "core/query/sql/sqlsuggester.h"
 #include "core/selectfunc/selectfunc.h"
 #include "estl/contexted_locks.h"
@@ -17,9 +18,10 @@
 #include "tools/fsops.h"
 #include "tools/logger.h"
 
+#include "debug/backtrace.h"
 #include "debug/terminate_handler.h"
 
-reindexer::SetTerminateHandler sth;
+std::once_flag initTerminateHandlerFlag;
 
 using std::lock_guard;
 using std::string;
@@ -47,6 +49,10 @@ ReindexerImpl::ReindexerImpl(IClientsStats* clientsStats)
 	stopBackgroundThread_ = false;
 	configProvider_.setHandler(ProfilingConf, std::bind(&ReindexerImpl::onProfiligConfigLoad, this));
 	backgroundThread_ = std::thread([this]() { this->backgroundRoutine(); });
+	std::call_once(initTerminateHandlerFlag, []() {
+		debug::terminate_handler_init();
+		debug::backtrace_set_crash_query_reporter(&reindexer::PrintCrashedQuery);
+	});
 }
 
 ReindexerImpl::~ReindexerImpl() {
@@ -177,13 +183,13 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 	if (!err.ok()) return err;
 
 	if (enableStorage && opts.IsOpenNamespaces()) {
-		int maxLoadWorkers = std::min(int(std::thread::hardware_concurrency()), 8);
+		size_t maxLoadWorkers = std::min(std::thread::hardware_concurrency(), 8u);
 		std::unique_ptr<std::thread[]> thrs(new std::thread[maxLoadWorkers]);
 		std::atomic_flag hasNsErrors{false};
-		for (int i = 0; i < maxLoadWorkers; i++) {
+		for (size_t i = 0; i < maxLoadWorkers; i++) {
 			thrs[i] = std::thread(
-				[&](int i) {
-					for (int j = i; j < int(foundNs.size()); j += maxLoadWorkers) {
+				[&](size_t begin) {
+					for (size_t j = begin; j < foundNs.size(); j += maxLoadWorkers) {
 						auto& de = foundNs[j];
 						if (de.isDir && validateObjectName(de.name)) {
 							auto status = OpenNamespace(de.name, StorageOpts().Enabled());
@@ -203,7 +209,7 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 				},
 				i);
 		}
-		for (int i = 0; i < maxLoadWorkers; i++) thrs[i].join();
+		for (size_t i = 0; i < maxLoadWorkers; i++) thrs[i].join();
 
 		if (!opts.IsAllowNamespaceErrors() && hasNsErrors.test_and_set(std::memory_order_relaxed)) {
 			return Error(errNotValid, "Namespaces load error");
@@ -738,12 +744,13 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 
 struct ReindexerImpl::QueryResultsContext {
 	QueryResultsContext() {}
-	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter)
-		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter) {}
+	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter, int nsNumber)
+		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), nsNumber_(nsNumber) {}
 
 	PayloadType type_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet fieldsFilter_;
+	int nsNumber_ = 0;
 };
 
 bool ReindexerImpl::isPreResultValuesModeOptimizationAvailable(const Query& jItemQ, const NamespaceImpl::Ptr& jns) {
@@ -837,7 +844,8 @@ JoinedSelectors ReindexerImpl::prepareJoinedSelectors(const Query& q, QueryResul
 			jns->putToJoinCache(joinRes, preResult);
 		}
 
-		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_));
+		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_),
+										  jns->getNsNumber());
 
 		if (preResult->dataMode == JoinPreResult::ModeValues) {
 			jItemQ.entries.ForEachEntry([&jns](QueryEntry& qe) {
@@ -923,7 +931,8 @@ void ReindexerImpl::doSelect(const Query& q, QueryResults& result, NsLocker<T>& 
 		}
 	}
 	// Adding context to QueryResults
-	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_);
+	for (const auto& jctx : joinQueryResultsContexts)
+		result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_, jctx.nsNumber_);
 	result.lockResults();
 }
 
@@ -984,13 +993,13 @@ Error ReindexerImpl::SetSchema(string_view nsName, string_view schema, const Int
 	return Error(errOK);
 }
 
-Error ReindexerImpl::GetSchema(string_view nsName, std::string& schema, const InternalRdxContext& ctx) {
+Error ReindexerImpl::GetSchema(string_view nsName, int format, std::string& schema, const InternalRdxContext& ctx) {
 	try {
 		WrSerializer ser;
 		const auto rdxCtx =
 			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "GET SCHEMA ON " << nsName).Slice() : ""_sv, activities_);
 		auto ns = getNamespace(nsName, rdxCtx);
-		ns->GetSchema(schema, rdxCtx);
+		schema = ns->GetSchema(format, rdxCtx);
 	} catch (const Error& err) {
 		return err;
 	}

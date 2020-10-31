@@ -184,6 +184,7 @@ void encodeUpdateFields(const Query& query, JsonBuilder& builder) {
 				field.Put("type", "value");
 			}
 			field.Put("name", updateEntry.column);
+			field.Put("is_array", updateEntry.values.IsArrayValue());
 			auto values = field.Array("values");
 			for (const Variant& v : updateEntry.values) {
 				if (isObject) {

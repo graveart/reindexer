@@ -18,7 +18,7 @@ struct p_string;
 
 class Variant {
 public:
-	Variant() : type_(KeyValueNull) {}
+	Variant() : type_(KeyValueNull), value_uint64() {}
 	explicit Variant(int v) : type_(KeyValueInt), value_int(v) {}
 	explicit Variant(bool v) : type_(KeyValueBool), value_bool(v) {}
 	explicit Variant(int64_t v) : type_(KeyValueInt64), value_int64(v) {}

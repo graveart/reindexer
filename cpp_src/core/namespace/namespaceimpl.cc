@@ -70,7 +70,6 @@ NamespaceImpl::NamespaceImpl(const string &name, UpdatesObservers &observers)
 	  payloadType_(name),
 	  tagsMatcher_(payloadType_),
 	  unflushedCount_{0},
-	  sortOrdersBuilt_(false),
 	  queryCache_(make_shared<QueryCache>()),
 	  joinCache_(make_shared<JoinCache>()),
 	  enablePerfCounters_(false),
@@ -85,6 +84,7 @@ NamespaceImpl::NamespaceImpl(const string &name, UpdatesObservers &observers)
 	FlagGuardT nsLoadingGuard(nsIsLoading_);
 	items_.reserve(10000);
 	itemsCapacity_.store(items_.capacity());
+	optimizationState_.store(NotOptimized);
 
 	// Add index and payload field for tuple of non indexed fields
 	IndexDef tupleIndexDef(kTupleName, {}, IndexStrStore, IndexOpts());
@@ -103,12 +103,11 @@ void NamespaceImpl::copyContentsFrom(const NamespaceImpl &src) {
 	storage_ = src.storage_;
 	updates_ = src.updates_;
 	unflushedCount_.store(src.unflushedCount_.load(std::memory_order_acquire), std::memory_order_release);	// 0
-	sortOrdersBuilt_ = false;
+	optimizationState_.store(NotOptimized);
 	meta_ = src.meta_;
 	dbpath_ = src.dbpath_;
 	queryCache_ = src.queryCache_;
 	joinCache_ = src.joinCache_;
-
 	enablePerfCounters_ = src.enablePerfCounters_.load();
 	config_ = src.config_;
 	wal_ = src.wal_;
@@ -123,6 +122,7 @@ void NamespaceImpl::copyContentsFrom(const NamespaceImpl &src) {
 	storageOpts_ = src.storageOpts_;
 	sysRecordsVersions_ = src.sysRecordsVersions_;
 	for (auto &idxIt : src.indexes_) indexes_.push_back(unique_ptr<Index>(idxIt->Clone()));
+
 	markUpdated();
 	logPrintf(LogTrace, "Namespace::CopyContentsFrom (%s)", name_);
 }
@@ -333,18 +333,28 @@ void NamespaceImpl::SetSchema(string_view schema, const RdxContext &ctx) {
 	for (auto &field : fields) {
 		tagsMatcher_.path2tag(field, true);
 	}
+
+	WrSerializer ser;
+	schema_->GetProtobufSchema(ser, tagsMatcher_, payloadType_);
+
 	saveSchemaToStorage();
 	addToWAL(schema, WalSetSchema, ctx);
 }
 
-void NamespaceImpl::GetSchema(std::string &schema, const RdxContext &ctx) {
-	schema.clear();
+std::string NamespaceImpl::GetSchema(int format, const RdxContext &ctx) {
 	auto rlck = rLock(ctx);
+	WrSerializer ser;
 	if (schema_) {
-		WrSerializer ser;
-		schema_->GetJSON(ser);
-		schema = string(ser.Slice());
+		if (format == JsonSchemaType) {
+			schema_->GetJSON(ser);
+		} else if (format == ProtobufSchemaType) {
+			Error err = schema_->GetProtobufSchema(ser, tagsMatcher_, payloadType_);
+			if (!err.ok()) throw err;
+		} else {
+			throw Error(errParams, "Unknown schema type: %d", format);
+		}
 	}
+	return std::string(ser.Slice());
 }
 
 void NamespaceImpl::dropIndex(const IndexDef &index) {
@@ -1415,9 +1425,9 @@ pair<IdType, bool> NamespaceImpl::findByPK(ItemImpl *ritem, const RdxContext &ct
 
 void NamespaceImpl::optimizeIndexes(const RdxContext &ctx) {
 	// This is read lock only atomics based implementation of rebuild indexes
-	// If sortOrdersBuilt_ is true, then indexes are completely built
-	// In this case reset sortOrdersBuilt_ to false and/or any idset's and sort orders builds are allowed only protected by write lock
-	if (sortOrdersBuilt_) return;
+	// If optimizationState_ == OptimizationCompleted is true, then indexes are completely built.
+	// In this case reset optimizationState_ and/or any idset's and sort orders builds are allowed only protected by write lock
+	if (optimizationState_ == OptimizationCompleted) return;
 	int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 	auto lastUpdateTime = lastUpdateTime_.load(std::memory_order_acquire);
 
@@ -1431,7 +1441,8 @@ void NamespaceImpl::optimizeIndexes(const RdxContext &ctx) {
 		return;
 	}
 
-	if (sortOrdersBuilt_ || cancelCommit_) return;
+	if (optimizationState_ == OptimizationCompleted || cancelCommit_) return;
+	optimizationState_ = OptimizingIndexes;
 
 	logPrintf(LogTrace, "Namespace::optimizeIndexes(%s) enter", name_);
 	assert(indexes_.firstCompositePos() != 0);
@@ -1444,6 +1455,7 @@ void NamespaceImpl::optimizeIndexes(const RdxContext &ctx) {
 	} while (++field != indexes_.firstCompositePos() && !cancelCommit_);
 
 	// Update sort orders and sort_id for each index
+	optimizationState_ = OptimizingSortOrders;
 
 	int i = 1;
 	int maxIndexWorkers = std::min(int(std::thread::hardware_concurrency()), config_.optimizationSortWorkers);
@@ -1467,7 +1479,7 @@ void NamespaceImpl::optimizeIndexes(const RdxContext &ctx) {
 		}
 		if (cancelCommit_) break;
 	}
-	sortOrdersBuilt_ = !cancelCommit_ && maxIndexWorkers;
+	optimizationState_ = (!cancelCommit_ && maxIndexWorkers) ? OptimizationCompleted : NotOptimized;
 	if (!cancelCommit_) {
 		lastUpdateTime_.store(0, std::memory_order_release);
 	}
@@ -1477,7 +1489,7 @@ void NamespaceImpl::optimizeIndexes(const RdxContext &ctx) {
 void NamespaceImpl::markUpdated() {
 	itemsCount_.store(items_.size(), std::memory_order_relaxed);
 	itemsCapacity_.store(items_.capacity(), std::memory_order_relaxed);
-	sortOrdersBuilt_ = false;
+	optimizationState_.store(NotOptimized);
 	queryCache_->Clear();
 	joinCache_->Clear();
 	lastUpdateTime_.store(
@@ -1578,7 +1590,7 @@ NamespaceMemStat NamespaceImpl::GetMemStat(const RdxContext &ctx) {
 
 	ret.storageOK = storage_ != nullptr;
 	ret.storagePath = dbpath_;
-	ret.optimizationCompleted = sortOrdersBuilt_;
+	ret.optimizationCompleted = (optimizationState_ == OptimizationCompleted);
 
 	logPrintf(LogTrace,
 			  "[GetMemStat:%s]:%d replication (dataHash=%ld  dataCount=%d  lastLsn=%s) replication.masterState (dataHash=%ld dataCount=%d "
@@ -1680,7 +1692,7 @@ bool NamespaceImpl::loadIndexesFromStorage() {
 	if (def.size()) {
 		schema_ = make_shared<Schema>();
 		Serializer ser(def.data(), def.size());
-		status = schema_->FromJSON(giftStr(ser.GetSlice()));
+		status = schema_->FromJSON(ser.GetSlice());
 		if (!status.ok()) {
 			throw status;
 		}
@@ -2217,7 +2229,7 @@ void NamespaceImpl::FillResult(QueryResults &result, IdSet::Ptr ids) const {
 }
 
 void NamespaceImpl::getFromJoinCache(JoinCacheRes &ctx) const {
-	if (config_.cacheMode == CacheModeOff || !sortOrdersBuilt_) return;
+	if (config_.cacheMode == CacheModeOff || optimizationState_ != OptimizationCompleted) return;
 	auto it = joinCache_->Get(ctx.key);
 	ctx.needPut = false;
 	ctx.haveData = false;
@@ -2232,7 +2244,7 @@ void NamespaceImpl::getFromJoinCache(JoinCacheRes &ctx) const {
 }
 
 void NamespaceImpl::getIndsideFromJoinCache(JoinCacheRes &ctx) const {
-	if (config_.cacheMode != CacheModeAggressive || !sortOrdersBuilt_) return;
+	if (config_.cacheMode != CacheModeAggressive || optimizationState_ != OptimizationCompleted) return;
 	auto it = joinCache_->Get(ctx.key);
 	ctx.needPut = false;
 	ctx.haveData = false;

@@ -48,6 +48,7 @@ class RdxContext;
 class RdxActivityContext;
 class ItemComparator;
 struct SortExpressionJoinedIndex;
+class ProtobufSchema;
 
 struct NsContext {
 	NsContext(const RdxContext &rdxCtx) : rdxContext(rdxCtx) {}
@@ -130,6 +131,8 @@ protected:
 	};
 
 public:
+	enum OptimizationState : int { NotOptimized, OptimizingIndexes, OptimizingSortOrders, OptimizationCompleted };
+
 	typedef shared_ptr<NamespaceImpl> Ptr;
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Namespace>;
 
@@ -154,7 +157,7 @@ public:
 	void UpdateIndex(const IndexDef &indexDef, const RdxContext &ctx);
 	void DropIndex(const IndexDef &indexDef, const RdxContext &ctx);
 	void SetSchema(string_view schema, const RdxContext &ctx);
-	void GetSchema(string &schema, const RdxContext &ctx);
+	std::string GetSchema(int format, const RdxContext &ctx);
 
 	void Insert(Item &item, const NsContext &ctx);
 	void Update(Item &item, const NsContext &ctx);
@@ -206,6 +209,7 @@ public:
 	void OnConfigUpdated(DBConfigProvider &configProvider, const RdxContext &ctx);
 	StorageOpts GetStorageOpts(const RdxContext &);
 	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx);
+	int getNsNumber() const { return schema_ ? schema_->GetProtobufNsNumber() : 0; }
 
 protected:
 	struct SysRecordsVersions {
@@ -310,6 +314,8 @@ protected:
 	Locker::WLockT wLock(const RdxContext &ctx) const { return locker_.WLock(ctx); }
 	Locker::RLockT rLock(const RdxContext &ctx) const { return locker_.RLock(ctx); }
 
+	bool SortOrdersBuilt() const { return optimizationState_ == OptimizationState::OptimizationCompleted; }
+
 	IndexesStorage indexes_;
 	fast_hash_map<string, int, nocase_hash_str, nocase_equal_str> indexesNames_;
 	// All items with data
@@ -326,9 +332,6 @@ protected:
 	shared_ptr<datastorage::IDataStorage> storage_;
 	datastorage::UpdatesCollection::Ptr updates_;
 	std::atomic<int> unflushedCount_;
-
-	// Commit phases state
-	std::atomic<bool> sortOrdersBuilt_;
 
 	std::unordered_map<string, string> meta_;
 
@@ -384,6 +387,7 @@ private:
 	size_t itemsDataSize_ = 0;
 
 	std::shared_ptr<Schema> schema_;
+	std::atomic<int> optimizationState_ = {OptimizationState::NotOptimized};
 };
 
 }  // namespace reindexer

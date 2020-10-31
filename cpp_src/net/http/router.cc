@@ -76,6 +76,14 @@ int Context::MSGPACK(int code, chunk &&chunk) {
 	return 0;
 }
 
+int Context::Protobuf(int code, chunk &&chunk) {
+	writer->SetContentLength(chunk.len_);
+	writer->SetRespCode(code);
+	writer->SetHeader(http::Header{"Content-Type"_sv, "application/protobuf; charset=utf-8"_sv});
+	writer->Write(std::move(chunk));
+	return 0;
+}
+
 int Context::String(int code, string_view slice) {
 	writer->SetContentLength(slice.size());
 	writer->SetRespCode(code);

@@ -921,11 +921,11 @@ WARNING: when used `AllowUnsafe(true)` queries returns shared pointers to struct
 
 #### Limit size of object cache
 
-By default maximum size of object cache is 256MB for each namespace. To change maximim size use `ObjCacheSize` method of `NameapaceOptions`, passed
+By default maximum size of object cache is 256000 items for each namespace. To change maximim size use `ObjCacheSize` method of `NameapaceOptions`, passed
 to OpenNamespace. e.g.
 
 ```go
-	// Set object cache limit to 4096 megabytes 
+	// Set object cache limit to 4096 items 
 	db.OpenNamespace("items_with_huge_cache", reindexer.DefaultNamespaceOptions().ObjCacheSize(4096), Item{})
 ```
 

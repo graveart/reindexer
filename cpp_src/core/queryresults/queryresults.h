@@ -54,6 +54,7 @@ public:
 		Error GetJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Error GetCJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Error GetMsgPack(WrSerializer &wrser, bool withHdrLen = true);
+		Error GetProtobuf(WrSerializer &wrser, bool withHdrLen = true);
 		Item GetItem();
 		joins::ItemIterator GetJoined();
 		const ItemRef &GetItemRef() const { return qr_->items_[idx_]; }
@@ -94,12 +95,13 @@ public:
 	using ContextsVector = h_vector<Context, 1, kSizeofContext>;
 	ContextsVector ctxs;
 
-	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter);
+	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter, int nsNumber);
 	const TagsMatcher &getTagsMatcher(int nsid) const;
 	const PayloadType &getPayloadType(int nsid) const;
 	const FieldsSet &getFieldsFilter(int nsid) const;
 	TagsMatcher &getTagsMatcher(int nsid);
 	PayloadType &getPayloadType(int nsid);
+	int getNsNumber(int nsid) const;
 	int getMergedNSCount() const;
 	void lockResults();
 	ItemRefVector &Items() { return items_; }

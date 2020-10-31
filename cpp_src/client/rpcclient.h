@@ -104,7 +104,7 @@ protected:
 	Namespace *getNamespace(string_view nsName);
 	Error startWorkers();
 	Error addConnectEntry(const string &dsn, const client::ConnectOpts &opts, size_t idx);
-	void run(int thIdx);
+	void run(size_t thIdx);
 	void onUpdates(net::cproto::RPCAnswer &ans, cproto::ClientConnection *conn);
 	bool onConnectionFail(int failedDsnIndex);
 
