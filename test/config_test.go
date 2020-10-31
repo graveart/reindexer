@@ -15,7 +15,6 @@ func TestSetDefaultQueryDebug(t *testing.T) {
 		ns := "ns_with_config"
 
 		item, err := DB.Reindexer.Query(reindexer.ConfigNamespaceName).WhereString("type", reindexer.EQ, "namespaces").Exec().FetchOne()
-		require.NoError(t, err)
 		ncCfgExp := reindexer.DBNamespacesConfig{
 			Namespace:               ns,
 			LogLevel:                "trace",

@@ -744,13 +744,12 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 
 struct ReindexerImpl::QueryResultsContext {
 	QueryResultsContext() {}
-	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter, std::shared_ptr<const Schema> schema)
-		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), schema_(schema) {}
+	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter)
+		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter) {}
 
 	PayloadType type_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet fieldsFilter_;
-	std::shared_ptr<const Schema> schema_;
 };
 
 bool ReindexerImpl::isPreResultValuesModeOptimizationAvailable(const Query& jItemQ, const NamespaceImpl::Ptr& jns) {
@@ -844,8 +843,7 @@ JoinedSelectors ReindexerImpl::prepareJoinedSelectors(const Query& q, QueryResul
 			jns->putToJoinCache(joinRes, preResult);
 		}
 
-		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_),
-										  jns->GetSchemaPtr(rdxCtx));
+		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_));
 
 		if (preResult->dataMode == JoinPreResult::ModeValues) {
 			jItemQ.entries.ForEachEntry([&jns](QueryEntry& qe) {
@@ -931,7 +929,7 @@ void ReindexerImpl::doSelect(const Query& q, QueryResults& result, NsLocker<T>& 
 		}
 	}
 	// Adding context to QueryResults
-	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_, jctx.schema_);
+	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_);
 	result.lockResults();
 }
 
@@ -992,13 +990,13 @@ Error ReindexerImpl::SetSchema(string_view nsName, string_view schema, const Int
 	return Error(errOK);
 }
 
-Error ReindexerImpl::GetSchema(string_view nsName, int format, std::string& schema, const InternalRdxContext& ctx) {
+Error ReindexerImpl::GetSchema(string_view nsName, std::string& schema, const InternalRdxContext& ctx) {
 	try {
 		WrSerializer ser;
 		const auto rdxCtx =
 			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "GET SCHEMA ON " << nsName).Slice() : ""_sv, activities_);
 		auto ns = getNamespace(nsName, rdxCtx);
-		schema = ns->GetSchema(format, rdxCtx);
+		ns->GetSchema(schema, rdxCtx);
 	} catch (const Error& err) {
 		return err;
 	}

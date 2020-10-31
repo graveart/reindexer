@@ -1234,47 +1234,47 @@ TEST_F(ReindexerApi, SchemaSuggestions) {
 	ASSERT_TRUE(err.ok()) << err.what();
 
 	// clang-format off
-    const std::string jsonschema = R"xxx(
-    {
-      "required": [
-        "Countries",
-        "Nest_fake",
-        "nested"
-      ],
-      "properties": {
-        "Countries": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "Nest_fake": {
-          "type": "number"
-        },
-        "nested": {
-          "required": [
-            "Name",
-            "Naame",
-            "Age"
-          ],
-          "properties": {
-            "Name": {
-              "type": "string"
-            },
-            "Naame": {
-              "type": "string"
-            },
-            "Age": {
-              "type": "integer"
-            }
-          },
-          "additionalProperties": false,
-          "type": "object"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    })xxx";
+	const std::string jsonschema = R"xxx(
+	{
+	  "required": [
+		"Countries",
+		"Nest_fake",
+		"nested"
+	  ],
+	  "properties": {
+		"Countries": {
+		  "items": {
+			"type": "string"
+		  },
+		  "type": "array"
+		},
+		"Nest_fake": {
+		  "type": "number"
+		},
+		"nested": {
+		  "required": [
+			"Name",
+			"Naame",
+			"Age"
+		  ],
+		  "properties": {
+			"Name": {
+			  "type": "string"
+			},
+			"Naame": {
+			  "type": "string"
+			},
+			"Age": {
+			  "type": "integer"
+			}
+		  },
+		  "additionalProperties": false,
+		  "type": "object"
+		}
+	  },
+	  "additionalProperties": false,
+	  "type": "object"
+	})xxx";
 	// clang-format on
 
 	err = rt.reindexer->SetSchema(default_namespace, jsonschema);
@@ -1363,7 +1363,6 @@ TEST_F(ReindexerApi, LoggerWriteInterruptTest) {
 	writeThread.join();
 	reopenThread.join();
 	reindexer::logPrintf(LogTrace, "FINISHED\n");
-	reindexer::logInstallWriter(nullptr);
 }
 
 TEST_F(ReindexerApi, IntToStringIndexUpdate) {

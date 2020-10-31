@@ -1,8 +1,8 @@
 #include "backtrace.h"
-#include <sstream>
 #ifndef WIN32
 #include <signal.h>
 #include <unistd.h>
+#include <sstream>
 #include "estl/span.h"
 #include "resolver.h"
 
@@ -152,7 +152,9 @@ void inline print_backtrace(std::ostream &sout, void *ctx, int sig) {
 }
 
 void print_crash_query(std::ostream &sout) {
-	if (g_crash_query_reporter) g_crash_query_reporter(sout);
+	if (g_crash_query_reporter) {
+		g_crash_query_reporter(sout);
+	}
 }
 
 static void sighandler(int sig, siginfo_t *, void *ctx) {
@@ -183,17 +185,11 @@ void backtrace_set_crash_query_reporter(std::function<void(std::ostream &sout)> 
 #else
 namespace reindexer {
 namespace debug {
-std::function<void(std::ostream &sout)> g_crash_query_reporter = [](std::ostream &) {};
-std::function<void(string_view out)> g_writer = [](string_view sv) { std::cerr << sv; };
-
 void backtrace_init() {}
 void backtrace_set_writer(std::function<void(string_view out)>) {}
 int backtrace_internal(void **, size_t, void *, string_view &) { return 0; }
-void backtrace_set_crash_query_reporter(std::function<void(std::ostream &sout)> reporter) { g_crash_query_reporter = reporter; }
-void print_backtrace(std::ostream &, void *, int) {}
-void print_crash_query(std::ostream &sout) {
-	if (g_crash_query_reporter) g_crash_query_reporter(sout);
-}
+void backtrace_set_crash_query_reporter(std::function<void(std::ostream &sout)> >) { g_crash_query_reporter = reporter; }
+void inline print_backtrace(std::ostream &, void *, int) {}
 
 }  // namespace debug
 }  // namespace reindexer
