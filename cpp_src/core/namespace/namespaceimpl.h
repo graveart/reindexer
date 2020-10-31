@@ -48,6 +48,7 @@ class RdxContext;
 class RdxActivityContext;
 class ItemComparator;
 struct SortExpressionJoinedIndex;
+class ProtobufSchema;
 
 struct NsContext {
 	NsContext(const RdxContext &rdxCtx) : rdxContext(rdxCtx) {}
@@ -154,7 +155,7 @@ public:
 	void UpdateIndex(const IndexDef &indexDef, const RdxContext &ctx);
 	void DropIndex(const IndexDef &indexDef, const RdxContext &ctx);
 	void SetSchema(string_view schema, const RdxContext &ctx);
-	void GetSchema(string &schema, const RdxContext &ctx);
+	std::string GetSchema(int format, const RdxContext &ctx);
 
 	void Insert(Item &item, const NsContext &ctx);
 	void Update(Item &item, const NsContext &ctx);
@@ -205,7 +206,8 @@ public:
 
 	void OnConfigUpdated(DBConfigProvider &configProvider, const RdxContext &ctx);
 	StorageOpts GetStorageOpts(const RdxContext &);
-	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx);
+	std::shared_ptr<const Schema> GetSchemaPtr(const NsContext &ctx) const;
+	int getNsNumber() const { return schema_ ? schema_->GetProtobufNsNumber() : 0; }
 
 protected:
 	struct SysRecordsVersions {
@@ -261,7 +263,7 @@ protected:
 	void doUpsert(ItemImpl *ritem, IdType id, bool doUpdate);
 	void modifyItem(Item &item, const NsContext &, int mode = ModeUpsert);
 	void updateItemFromCJSON(IdType id, const Query &q, const NsContext &);
-	void updateFieldIndex(IdType id, int field, const VariantArray &v, Payload &pl);
+	void updateFieldIndex(IdType id, int field, VariantArray v, Payload &pl);
 	void updateSingleField(const UpdateEntry &updateField, const IdType &itemId, Payload &pl);
 	void updateItemFields(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &);
 	void updateItemFromQuery(IdType itemId, const Query &q, bool rowBasedReplication, const NsContext &, bool withJsonUpdates);
@@ -342,6 +344,7 @@ protected:
 	SysRecordsVersions sysRecordsVersions_;
 
 	Locker locker_;
+	std::shared_ptr<Schema> schema_;
 
 private:
 	NamespaceImpl(const NamespaceImpl &src);
@@ -382,8 +385,6 @@ private:
 	int serverId_ = 0;
 	std::atomic<bool> serverIdChanged_;
 	size_t itemsDataSize_ = 0;
-
-	std::shared_ptr<Schema> schema_;
 };
 
 }  // namespace reindexer

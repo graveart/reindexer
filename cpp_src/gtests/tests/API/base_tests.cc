@@ -1234,47 +1234,47 @@ TEST_F(ReindexerApi, SchemaSuggestions) {
 	ASSERT_TRUE(err.ok()) << err.what();
 
 	// clang-format off
-	const std::string jsonschema = R"xxx(
-	{
-	  "required": [
-		"Countries",
-		"Nest_fake",
-		"nested"
-	  ],
-	  "properties": {
-		"Countries": {
-		  "items": {
-			"type": "string"
-		  },
-		  "type": "array"
-		},
-		"Nest_fake": {
-		  "type": "number"
-		},
-		"nested": {
-		  "required": [
-			"Name",
-			"Naame",
-			"Age"
-		  ],
-		  "properties": {
-			"Name": {
-			  "type": "string"
-			},
-			"Naame": {
-			  "type": "string"
-			},
-			"Age": {
-			  "type": "integer"
-			}
-		  },
-		  "additionalProperties": false,
-		  "type": "object"
-		}
-	  },
-	  "additionalProperties": false,
-	  "type": "object"
-	})xxx";
+    const std::string jsonschema = R"xxx(
+    {
+      "required": [
+        "Countries",
+        "Nest_fake",
+        "nested"
+      ],
+      "properties": {
+        "Countries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "Nest_fake": {
+          "type": "number"
+        },
+        "nested": {
+          "required": [
+            "Name",
+            "Naame",
+            "Age"
+          ],
+          "properties": {
+            "Name": {
+              "type": "string"
+            },
+            "Naame": {
+              "type": "string"
+            },
+            "Age": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false,
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    })xxx";
 	// clang-format on
 
 	err = rt.reindexer->SetSchema(default_namespace, jsonschema);
@@ -1363,6 +1363,7 @@ TEST_F(ReindexerApi, LoggerWriteInterruptTest) {
 	writeThread.join();
 	reopenThread.join();
 	reindexer::logPrintf(LogTrace, "FINISHED\n");
+	reindexer::logInstallWriter(nullptr);
 }
 
 TEST_F(ReindexerApi, IntToStringIndexUpdate) {
@@ -1402,4 +1403,46 @@ TEST_F(ReindexerApi, IntToStringIndexUpdate) {
 		Variant v = item[kFieldNumeric];
 		EXPECT_TRUE(v.Type() == KeyValueInt) << v.Type();
 	}
+}
+
+TEST_F(ReindexerApi, SelectFilterWithAggregationConstraints) {
+	Query q;
+
+	string sql = "select id, distinct(year) from test_namespace";
+	EXPECT_NO_THROW(q.FromSQL(sql));
+	Error status = Query().FromJSON(q.GetJSON());
+	EXPECT_TRUE(status.ok()) << status.what();
+
+	q = Query();
+	q.selectFilter_.emplace_back("id");
+	EXPECT_NO_THROW(q.Aggregate(AggDistinct, {"year"}, {}));
+
+	sql = "select id, max(year) from test_namespace";
+	EXPECT_THROW(q.FromSQL(sql), Error);
+	q = Query(default_namespace);
+	q.selectFilter_.emplace_back("id");
+	q.aggregations_.emplace_back(reindexer::AggregateEntry{AggMax, {"year"}});
+	status = Query().FromJSON(q.GetJSON());
+	EXPECT_FALSE(status.ok());
+	EXPECT_TRUE(status.what() == string(reindexer::kAggregationWithSelectFieldsMsgError));
+	EXPECT_THROW(q.Aggregate(AggMax, {"price"}, {}), Error);
+
+	sql = "select facet(year), id, name from test_namespace";
+	EXPECT_THROW(q.FromSQL(sql), Error);
+	q = Query(default_namespace);
+	q.selectFilter_.emplace_back("id");
+	q.selectFilter_.emplace_back("name");
+	EXPECT_THROW(q.Aggregate(AggFacet, {"year"}, {}), Error);
+	q = Query(default_namespace);
+	EXPECT_NO_THROW(q.Aggregate(AggFacet, {"year"}, {}));
+	q.selectFilter_.emplace_back("id");
+	q.selectFilter_.emplace_back("name");
+	status = Query().FromJSON(q.GetJSON());
+	EXPECT_FALSE(status.ok());
+	EXPECT_TRUE(status.what() == string(reindexer::kAggregationWithSelectFieldsMsgError));
+
+	EXPECT_THROW(Query().FromSQL("select max(id), * from test_namespace"), Error);
+	EXPECT_THROW(Query().FromSQL("select *, max(id) from test_namespace"), Error);
+	EXPECT_NO_THROW(Query().FromSQL("select *, count(*) from test_namespace"));
+	EXPECT_NO_THROW(Query().FromSQL("select count(*), * from test_namespace"));
 }

@@ -36,6 +36,7 @@ typedef enum IndexType {
 	IndexDoubleStore = 16,
 	IndexCompositeFuzzyFT = 17,
 	IndexTtl = 18,
+	IndexRTree = 19,
 } IndexType;
 
 typedef enum QueryItemType {
@@ -86,6 +87,7 @@ typedef enum CondType {
 	CondAllSet = 8,
 	CondEmpty = 9,
 	CondLike = 10,
+	CondDWithin = 11,
 } CondType;
 
 enum ErrorCode {
@@ -114,7 +116,10 @@ enum ErrorCode {
 	errReplParams = 22,
 	errNamespaceInvalidated = 23,
 	errParseMsgPack = 24,
+	errParseProtobuf = 25,
 };
+
+enum SchemaType { JsonSchemaType, ProtobufSchemaType };
 
 enum QueryType { QuerySelect, QueryDelete, QueryUpdate, QueryTruncate };
 
@@ -165,6 +170,7 @@ typedef enum IndexOpt {
 	kIndexOptPK = 1 << 7,
 	kIndexOptArray = 1 << 6,
 	kIndexOptDense = 1 << 5,
+	kIndexOptRTreeLinear = 1 << 4,
 	kIndexOptSparse = 1 << 3,
 } IndexOpt;
 

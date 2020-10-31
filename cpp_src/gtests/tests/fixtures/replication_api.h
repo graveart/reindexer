@@ -19,8 +19,9 @@ using std::shared_ptr;
 const size_t kDefaultServerCount = 4;
 const size_t kDefaultRpcPort = 4444;
 const size_t kDefaultHttpPort = 5555;
-const size_t kMaxServerStartTimeSec = 20;
-const size_t kMaxSyncTimeSec = 20;
+const auto kMaxServerStartTime = std::chrono::seconds(15);
+const auto kMaxSyncTime = std::chrono::seconds(15);
+const auto kMaxForceSyncCmdTime = std::chrono::seconds(10);
 
 class ReplicationApi : public ::testing::Test {
 public:

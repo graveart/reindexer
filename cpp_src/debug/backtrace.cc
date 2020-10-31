@@ -1,8 +1,8 @@
 #include "backtrace.h"
+#include <sstream>
 #ifndef WIN32
 #include <signal.h>
 #include <unistd.h>
-#include <sstream>
 #include "estl/span.h"
 #include "resolver.h"
 // There are 3 backtrace methods are available:
@@ -174,6 +174,9 @@ void backtrace_set_writer(std::function<void(string_view out)> writer) { g_write
 #else
 namespace reindexer {
 namespace debug {
+std::function<void(std::ostream &sout)> g_crash_query_reporter = [](std::ostream &) {};
+std::function<void(string_view out)> g_writer = [](string_view sv) { std::cerr << sv; };
+
 void backtrace_init() {}
 void backtrace_set_writer(std::function<void(string_view out)>) {}
 int backtrace_internal(void **, size_t, void *, string_view &) { return 0; }
