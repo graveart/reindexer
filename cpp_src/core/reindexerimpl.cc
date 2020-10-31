@@ -42,7 +42,6 @@ ReindexerImpl::ReindexerImpl(IClientsStats* clientsStats)
 	: replicator_(new Replicator(this)),
 	  hasReplConfigLoadError_(false),
 	  storageType_(StorageType::LevelDB),
-	  autorepairEnabled_(false),
 	  connected_(false),
 	  clientsStats_(clientsStats) {
 	stopBackgroundThread_ = false;
@@ -163,6 +162,7 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 	}
 
 	autorepairEnabled_ = opts.IsAutorepair();
+	replicationEnabled_ = !opts.IsReplicationDisabled();
 
 	bool enableStorage = (path.length() > 0 && path != "/");
 	if (enableStorage) {
@@ -210,17 +210,19 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 		}
 	}
 
-	err = checkReplConf(opts);
-	if (!err.ok()) return err;
+	if (replicationEnabled_) {
+		err = checkReplConf(opts);
+		if (!err.ok()) return err;
 
-	replicator_->Enable();
-	bool needStart = replicator_->Configure(configProvider_.GetReplicationConfig());
-	err = needStart ? replicator_->Start() : errOK;
-	if (!err.ok()) {
-		return err;
-	}
-	if (!storagePath_.empty()) {
-		err = replConfigFileChecker_.Enable();
+		replicator_->Enable();
+		bool needStart = replicator_->Configure(configProvider_.GetReplicationConfig());
+		err = needStart ? replicator_->Start() : errOK;
+		if (!err.ok()) {
+			return err;
+		}
+		if (!storagePath_.empty()) {
+			err = replConfigFileChecker_.Enable();
+		}
 	}
 
 	if (err.ok()) {
@@ -1337,7 +1339,7 @@ void ReindexerImpl::updateToSystemNamespace(string_view nsName, Item& item, cons
 				needStartReplicator = true;
 			}
 		}
-		if (needStartReplicator && !stopBackgroundThread_) {
+		if (replicationEnabled_ && needStartReplicator && !stopBackgroundThread_) {
 			if (Error err = replicator_->Start()) throw err;
 		}
 

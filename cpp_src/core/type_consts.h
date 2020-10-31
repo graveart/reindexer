@@ -259,6 +259,7 @@ typedef enum ConnectOpt {
 	kConnectOptAutorepair = 1 << 2,
 	kConnectOptCheckClusterID = 1 << 3,
 	kConnectOptWarnVersion = 1 << 4,
+	kConnectOptDisableReplication = 1 << 5,
 } ConnectOpt;
 
 typedef enum StorageTypeOpt {
@@ -281,6 +282,7 @@ typedef struct ConnectOpts {
 	}
 	int ExpectedClusterID() const { return expectedClusterID; }
 	bool HasExpectedClusterID() const { return options & kConnectOptCheckClusterID; }
+	bool IsReplicationDisabled() const { return options & kConnectOptDisableReplication; }
 
 	ConnectOpts& OpenNamespaces(bool value = true) {
 		options = value ? options | kConnectOptOpenNamespaces : options & ~(kConnectOptOpenNamespaces);
@@ -305,6 +307,11 @@ typedef struct ConnectOpts {
 	ConnectOpts& WithExpectedClusterID(int clusterID) {
 		expectedClusterID = clusterID;
 		options |= kConnectOptCheckClusterID;
+		return *this;
+	}
+
+	ConnectOpts& DisableReplication(bool value = true) {
+		options = value ? options | kConnectOptDisableReplication : options & ~(kConnectOptDisableReplication);
 		return *this;
 	}
 #endif

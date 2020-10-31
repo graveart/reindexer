@@ -188,7 +188,8 @@ protected:
 
 	StorageMutex storageMtx_;
 	StorageType storageType_;
-	bool autorepairEnabled_;
+	bool autorepairEnabled_ = false;
+	bool replicationEnabled_ = true;
 	std::atomic<bool> connected_;
 
 	IClientsStats *clientsStats_ = nullptr;

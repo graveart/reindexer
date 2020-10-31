@@ -111,6 +111,8 @@ protected:
 	void checkSubscribes();
 
 	net::cproto::ClientConnection *getConn();
+	cproto::CommandParams mkCommand(cproto::CmdCode cmd, const InternalRdxContext *ctx = nullptr) const noexcept;
+	static cproto::CommandParams mkCommand(cproto::CmdCode cmd, seconds reqTimeout, const InternalRdxContext *ctx) noexcept;
 
 	std::vector<std::unique_ptr<net::cproto::ClientConnection>> connections_;
 
