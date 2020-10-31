@@ -30,8 +30,7 @@ public:
 	void UpdateIndex(const IndexDef &indexDef, const RdxContext &ctx) { handleInvalidation(NamespaceImpl::UpdateIndex)(indexDef, ctx); }
 	void DropIndex(const IndexDef &indexDef, const RdxContext &ctx) { handleInvalidation(NamespaceImpl::DropIndex)(indexDef, ctx); }
 	void SetSchema(string_view schema, const RdxContext &ctx) { handleInvalidation(NamespaceImpl::SetSchema)(schema, ctx); }
-	string GetSchema(int format, const RdxContext &ctx) { return handleInvalidation(NamespaceImpl::GetSchema)(format, ctx); }
-	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx) { return handleInvalidation(NamespaceImpl::GetSchemaPtr)(ctx); }
+	void GetSchema(string &schema, const RdxContext &ctx) { handleInvalidation(NamespaceImpl::GetSchema)(schema, ctx); }
 	void Insert(Item &item, const NsContext &ctx) { handleInvalidation(NamespaceImpl::Insert)(item, ctx); }
 	void Update(Item &item, const NsContext &ctx) {
 		nsFuncWrapper<void (NamespaceImpl::*)(Item &, const NsContext &), &NamespaceImpl::Update>(item, ctx);

@@ -19,9 +19,8 @@ using std::shared_ptr;
 const size_t kDefaultServerCount = 4;
 const size_t kDefaultRpcPort = 4444;
 const size_t kDefaultHttpPort = 5555;
-const auto kMaxServerStartTime = std::chrono::seconds(15);
-const auto kMaxSyncTime = std::chrono::seconds(15);
-const auto kMaxForceSyncCmdTime = std::chrono::seconds(10);
+const size_t kMaxServerStartTimeSec = 20;
+const size_t kMaxSyncTimeSec = 20;
 
 class ReplicationApi : public ::testing::Test {
 public:
@@ -41,7 +40,7 @@ public:
 	// get server
 	ServerControl::Interface::Ptr GetSrv(size_t id);
 	// wait sync for ns
-	void WaitSync(const std::string &ns);
+	void WaitSync(const std::string& ns);
 	// force resync
 	void ForceSync();
 	// Switch master
@@ -51,7 +50,6 @@ public:
 	//
 
 	size_t masterId_ = 0;
-	shared_timed_mutex restartMutex_;
 
 private:
 	vector<ServerControl> svc_;

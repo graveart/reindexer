@@ -83,8 +83,7 @@ protected:
 	net::ev::async stop_;
 	net::ev::async resync_;
 	net::ev::timer resyncTimer_;
-	net::ev::async walSyncAsync_;
-
+	net::ev::async walForcesyncAsync_;
 	ReplicationConfigData config_;
 
 	std::atomic<bool> terminate_;
@@ -104,21 +103,17 @@ protected:
 	std::unordered_map<const Namespace *, Transaction> transactions_;
 	fast_hash_map<string, NsErrorMsg, nocase_hash_str, nocase_equal_str> lastNsErrMsg_;
 
-	class SyncQuery {
+	class ForceSyncQuery {
 	public:
-		SyncQuery() {}
-		void Push(std::string &nsName, NamespaceDef &nsDef, bool force);
-		bool Pop(NamespaceDef &def, bool &force);
+		ForceSyncQuery() {}
+		void Push(std::string &nsName, NamespaceDef &nsDef);
+		bool Pop(NamespaceDef &def);
 
 	private:
-		struct recordData {
-			NamespaceDef def;
-			bool forced;
-		};
-		std::unordered_map<std::string, recordData> query_;
+		std::unordered_map<std::string, NamespaceDef> query_;
 		std::mutex mtx_;
 	};
-	SyncQuery syncQuery_;
+	ForceSyncQuery forcesyncQuery_;
 };
 
 }  // namespace reindexer

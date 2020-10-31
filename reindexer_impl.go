@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hashicorp/golang-lru"
 
@@ -43,43 +44,53 @@ type reindexerImpl struct {
 }
 
 type cacheItems struct {
+	// total size in bytes of all items
+	size uint64
+	// max count of bytes can cached
+	maxSize uint64
 	// cached items
 	items *lru.Cache
 }
 
-func (ci *cacheItems) Reset() {
-	if ci.items == nil {
-		return
-	}
+func (ci *cacheItems) Reset(maxSize uint64) {
 	ci.items.Purge()
+	atomic.StoreUint64(&ci.size, 0)
+	atomic.StoreUint64(&ci.maxSize, maxSize)
 }
 
-func (ci *cacheItems) Remove(key int) {
-	if ci.items == nil {
-		return
+func (ci *cacheItems) Remove(key int) bool {
+	item, ok := ci.items.Get(key)
+	if ok {
+		ci.items.Remove(key)
+		atomic.AddUint64(&ci.size, -item.(*cacheItem).size)
+		return true
 	}
-	ci.items.Remove(key)
+	return false
+}
+
+func (ci *cacheItems) RemoveOldest() bool {
+	key, item, ok := ci.items.GetOldest()
+	if ok {
+		ci.items.Remove(key)
+		atomic.AddUint64(&ci.size, -item.(*cacheItem).size)
+		return true
+	}
+	return false
 }
 
 func (ci *cacheItems) Add(key int, item *cacheItem) {
-	if ci.items == nil {
-		return
-	}
 	ci.items.Add(key, item)
-}
+	atomic.AddUint64(&ci.size, item.size)
 
-func (ci *cacheItems) Len() int {
-	if ci.items == nil {
-		return 0
+	for atomic.LoadUint64(&ci.size) > ci.maxSize {
+		ok := ci.RemoveOldest()
+		if !ok {
+			break
+		}
 	}
-	return ci.items.Len()
 }
 
 func (ci *cacheItems) Get(key int) (*cacheItem, bool) {
-	if ci.items == nil {
-		return nil, false
-	}
-
 	item, ok := ci.items.Get(key)
 	if ok {
 		return item.(*cacheItem), ok
@@ -92,15 +103,19 @@ type cacheItem struct {
 	item interface{}
 	// version of item
 	version int
+	// data size in bytes
+	size uint64
 }
 
-func newCacheItems(count uint64) (*cacheItems, error) {
-	cache, err := lru.New(int(count))
+func newCacheItems(maxSize uint64) (*cacheItems, error) {
+	cache, err := lru.New(100)
 	if err != nil {
 		return nil, err
 	}
 	return &cacheItems{
-		items: cache,
+		size:    0,
+		maxSize: maxSize,
+		items:   cache,
 	}, nil
 }
 
@@ -128,15 +143,12 @@ func newReindexImpl(dsn interface{}, options ...interface{}) *reindexerImpl {
 		changing.OnChangeCallback(rx.resetCaches)
 	}
 
-	opts := &NamespaceOptions{
-		disableObjCache: true,
-	}
-	rx.registerNamespaceImpl(NamespacesNamespaceName, opts, NamespaceDescription{})
-	rx.registerNamespaceImpl(PerfstatsNamespaceName, opts, NamespacePerfStat{})
-	rx.registerNamespaceImpl(MemstatsNamespaceName, opts, NamespaceMemStat{})
-	rx.registerNamespaceImpl(QueriesperfstatsNamespaceName, opts, QueryPerfStat{})
-	rx.registerNamespaceImpl(ConfigNamespaceName, opts, DBConfigItem{})
-	rx.registerNamespaceImpl(ClientsStatsNamespaceName, opts, ClientConnectionStat{})
+	rx.registerNamespaceImpl(NamespacesNamespaceName, &NamespaceOptions{}, NamespaceDescription{})
+	rx.registerNamespaceImpl(PerfstatsNamespaceName, &NamespaceOptions{}, NamespacePerfStat{})
+	rx.registerNamespaceImpl(MemstatsNamespaceName, &NamespaceOptions{}, NamespaceMemStat{})
+	rx.registerNamespaceImpl(QueriesperfstatsNamespaceName, &NamespaceOptions{}, QueryPerfStat{})
+	rx.registerNamespaceImpl(ConfigNamespaceName, &NamespaceOptions{}, DBConfigItem{})
+	rx.registerNamespaceImpl(ClientsStatsNamespaceName, &NamespaceOptions{}, ClientConnectionStat{})
 	return rx
 }
 
@@ -153,7 +165,8 @@ func (db *reindexerImpl) getStatus(ctx context.Context) bindings.Status {
 	db.lock.RUnlock()
 
 	for _, ns := range nsArray {
-		status.Cache.CurSize += int64(ns.cacheItems.Len())
+		status.Cache.CurSize += int64(atomic.LoadUint64(&ns.cacheItems.size))
+		status.Cache.MaxSize += int64(atomic.LoadUint64(&ns.cacheItems.maxSize))
 	}
 
 	return status
@@ -263,7 +276,6 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 		return nil
 	}
 	haveDeepCopy := false
-	cacheItems := &cacheItems{}
 
 	if !opts.disableObjCache {
 		var copier DeepCopy
@@ -275,10 +287,11 @@ func (db *reindexerImpl) registerNamespaceImpl(namespace string, opts *Namespace
 				return ErrDeepCopyType
 			}
 		}
-		cacheItems, err = newCacheItems(opts.objCacheItemsCount)
-		if err != nil {
-			return err
-		}
+	}
+
+	cacheItems, err := newCacheItems(opts.objCacheSize)
+	if err != nil {
+		return err
 	}
 
 	ns := &reindexerNamespace{

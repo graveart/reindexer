@@ -165,11 +165,11 @@ func TestMultipleDSN(t *testing.T) {
 		require.NoError(t, err)
 
 		// fill cache
-		itemExp := NamespaceCacheItem{ID: 1}
+		itemExp := NamespaceCacheItem{IntCjon: 111, Float32Cjon: 1, SliceInt: []int{1, 2, 3}}
 		err = db.Upsert(ns, itemExp)
 		require.NoError(t, err)
 
-		itemExp = NamespaceCacheItem{ID: 2}
+		itemExp = NamespaceCacheItem{IntCjon: 222, Float32Cjon: 1, SliceInt: []int{1, 2, 3}}
 		err = db.Upsert(ns, itemExp)
 		require.NoError(t, err)
 
@@ -177,7 +177,8 @@ func TestMultipleDSN(t *testing.T) {
 		require.NoError(t, err)
 
 		status := db.Status()
-		assert.Equal(t, int64(2), status.Cache.CurSize)
+		assert.True(t, status.Cache.MaxSize > 0)
+		assert.Equal(t, int64(332), status.Cache.CurSize)
 
 		// restart
 		err = srv.Stop()
@@ -189,15 +190,18 @@ func TestMultipleDSN(t *testing.T) {
 		it := db.Query(ns).Exec()
 
 		status = db.Status()
+		assert.True(t, status.Cache.MaxSize > 0)
 		assert.Equal(t, int64(0), status.Cache.CurSize)
 
 		it.Next()
 		status = db.Status()
-		assert.Equal(t, int64(1), status.Cache.CurSize)
+		assert.True(t, status.Cache.MaxSize > 0)
+		assert.Equal(t, int64(166), status.Cache.CurSize)
 
 		it.Next()
 		status = db.Status()
-		assert.Equal(t, int64(2), status.Cache.CurSize)
+		assert.True(t, status.Cache.MaxSize > 0)
+		assert.Equal(t, int64(332), status.Cache.CurSize)
 
 		require.NoError(t, it.Error())
 		it.Close()

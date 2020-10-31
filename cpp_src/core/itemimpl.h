@@ -29,8 +29,6 @@ struct ItemImplRawData {
 };
 
 class Namespace;
-class Schema;
-
 class ItemImpl : public ItemImplRawData {
 public:
 	// Construct empty item
@@ -62,7 +60,6 @@ public:
 	void DropField(string_view jsonPath);
 	Variant GetField(int field);
 	FieldsSet PkFields() const { return pkFields_; }
-	int NameTag(string_view name) const { return tagsMatcher_.name2tag(name); }
 
 	VariantArray GetValueByJSONPath(string_view jsonPath);
 
@@ -74,9 +71,7 @@ public:
 	string_view GetCJSON(WrSerializer &ser, bool withTagsMatcher = false);
 	Error FromCJSON(const string_view &slice, bool pkOnly = false);
 	Error FromMsgPack(string_view sbuf, size_t &offset);
-	Error FromProtobuf(string_view sbuf);
 	Error GetMsgPack(WrSerializer &wrser);
-	Error GetProtobuf(WrSerializer &wrser);
 
 	PayloadType Type() { return payloadType_; }
 	PayloadValue &Value() { return payloadValue_; }

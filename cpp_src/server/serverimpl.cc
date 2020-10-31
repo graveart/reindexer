@@ -184,7 +184,6 @@ void ServerImpl::ReopenLogFiles() {
 
 int ServerImpl::run() {
 	loggerConfigure();
-
 	reindexer::debug::backtrace_set_writer([](string_view out) {
 		auto logger = spdlog::get("server");
 		if (logger) {
@@ -258,6 +257,8 @@ int ServerImpl::run() {
 		logger_.info("Starting reindexer_server ({0}) on {1} HTTP, {2} RPC, with db '{3}'", REINDEX_VERSION, config_.HTTPAddr,
 					 config_.RPCAddr, config_.StoragePath);
 
+		LoggerWrapper httpLogger("http");
+
 		std::unique_ptr<Prometheus> prometheus;
 		std::unique_ptr<StatsCollector> statsCollector;
 		if (config_.EnablePrometheus) {
@@ -265,7 +266,6 @@ int ServerImpl::run() {
 			statsCollector.reset(new StatsCollector(prometheus.get(), config_.PrometheusCollectPeriod));
 		}
 
-		LoggerWrapper httpLogger("http");
 		HTTPServer httpServer(*dbMgr_, config_.WebRoot, httpLogger,
 							  HTTPServer::OptionalConfig{config_.DebugAllocs, config_.DebugPprof, config_.TxIdleTimeout, prometheus.get(),
 														 statsCollector.get()});
@@ -321,8 +321,15 @@ int ServerImpl::run() {
 		rpcServer.Stop();
 		httpServer.Stop();
 	} catch (const Error &err) {
-		logger_.error("Unhandled exception occured: {0}", err.what());
+		logger_.error("Unhandled exception occuried: {0}", err.what());
 	}
+	dbMgr_.reset();
+	logger_.info("Reindexer server shutdown completed.");
+
+	spdlog::drop_all();
+	async_.reset();
+	logger_ = LoggerWrapper();
+	coreLogger_ = LoggerWrapper();
 	return 0;
 }
 
@@ -374,7 +381,7 @@ Error ServerImpl::loggerConfigure() {
 			} else if (!fileName.empty() && fileName != "none") {
 				auto sink = sinks_.find(fileName);
 				if (sink == sinks_.end()) {
-					sink = sinks_.emplace(fileName, std::make_shared<spdlog::sinks::fast_file_sink>(fileName)).first;
+					sink = sinks_.emplace(fileName, std::make_shared<spdlog::sinks::simple_file_sink_mt>(fileName)).first;
 				}
 				spdlog::create(logger.first, sink->second);
 			}
@@ -382,8 +389,8 @@ Error ServerImpl::loggerConfigure() {
 			return Error(errLogic, "Can't create logger for '%s' to file '%s': %s\n", logger.first, logger.second, e.what());
 		}
 	}
-	coreLogger_ = LoggerWrapper("core");
-	logger_ = LoggerWrapper("server");
+	coreLogger_ = "core";
+	logger_ = "server";
 	return 0;
 }
 
@@ -416,12 +423,7 @@ void ServerImpl::initCoreLogger() {
 }
 
 ServerImpl::~ServerImpl() {
-	logger_.info("Reindexer server shutdown completed.");
-	dbMgr_.reset();
-
-	async_.reset();
 	if (coreLogLevel_) reindexer::logInstallWriter(nullptr);
-	spdlog::drop_all();
 }
 
 }  // namespace reindexer_server

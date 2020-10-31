@@ -2,7 +2,6 @@
 
 #include <functional>
 #include <initializer_list>
-#include "core/keyvalue/geometry.h"
 #include "queryentry.h"
 #include "tools/errors.h"
 #include "tools/stringstools.h"
@@ -17,9 +16,6 @@ class JoinedQuery;
 
 using std::initializer_list;
 using std::pair;
-
-const string_view kAggregationWithSelectFieldsMsgError =
-	"Not allowed to combine aggregation functions and fields' filter in a single query";
 
 /// @class Query
 /// Allows to select data from DB.
@@ -159,18 +155,6 @@ public:
 		for (auto it = v.begin(); it != v.end(); it++) {
 			qe.values.push_back(Variant(*it));
 		}
-		entries.Append(nextOp_, std::move(qe));
-		nextOp_ = OpAnd;
-		return *this;
-	}
-
-	Query &DWithin(const string &idx, Point p, double distance) {
-		QueryEntry qe;
-		qe.condition = CondDWithin;
-		qe.index = idx;
-		qe.values.reserve(2);
-		qe.values.emplace_back(p);
-		qe.values.emplace_back(distance);
 		entries.Append(nextOp_, std::move(qe));
 		nextOp_ = OpAnd;
 		return *this;
@@ -377,9 +361,6 @@ public:
 	/// Sets list of columns in this namespace to be finally selected.
 	/// @param l - list of columns to be selected.
 	Query &Select(std::initializer_list<const char *> l) {
-		if (!CanAddSelectFilter()) {
-			throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-		}
 		selectFilter_.insert(selectFilter_.begin(), l.begin(), l.end());
 		return *this;
 	}
@@ -395,9 +376,6 @@ public:
 	/// @return Query object ready to be executed.
 	Query &Aggregate(AggType type, const h_vector<string, 1> &fields, const vector<pair<string, bool>> &sort = {},
 					 unsigned limit = UINT_MAX, unsigned offset = 0) {
-		if (!CanAddAggregation(type)) {
-			throw Error(errConflict, kAggregationWithSelectFieldsMsgError);
-		}
 		AggregateEntry aggEntry{type, fields, limit, offset};
 		aggEntry.sortingEntries_.reserve(sort.size());
 		for (const auto &s : sort) {
@@ -477,13 +455,6 @@ public:
 		return *this;
 	}
 	bool IsWithRank() const noexcept { return withRank_; }
-
-	/// Can we add aggregation functions
-	/// or new select fields to a current query?
-	bool CanAddAggregation(AggType type) const noexcept { return type == AggDistinct || (selectFilter_.empty()); }
-	bool CanAddSelectFilter() const noexcept {
-		return aggregations_.empty() || (aggregations_.size() == 1 && aggregations_.front().type_ == AggDistinct);
-	}
 
 	/// Serializes query data to stream.
 	/// @param ser - serializer object for write.

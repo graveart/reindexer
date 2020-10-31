@@ -19,9 +19,9 @@ public:
 	MsgPackBuilder(WrSerializer &wrser, ObjType type, size_t size);
 	MsgPackBuilder(msgpack_packer &packer, ObjType type, size_t size);
 	MsgPackBuilder(WrSerializer &wrser, const TagsLengths *tagsLengths, int *startTag, ObjType = ObjType::TypeObject,
-				   const TagsMatcher *tm = nullptr);
+				   TagsMatcher *tm = nullptr);
 	MsgPackBuilder(msgpack_packer &packer, const TagsLengths *tagsLengths, int *startTag, ObjType = ObjType::TypeObject,
-				   const TagsMatcher *tm = nullptr);
+				   TagsMatcher *tm = nullptr);
 	MsgPackBuilder() : tm_(nullptr), packer_(), tagsLengths_(nullptr), type_(ObjType::TypePlain), tagIndex_(nullptr) {}
 	~MsgPackBuilder();
 	MsgPackBuilder(MsgPackBuilder &&other)
@@ -31,7 +31,7 @@ public:
 	MsgPackBuilder &operator=(const MsgPackBuilder &) = delete;
 	MsgPackBuilder &operator=(MsgPackBuilder &&) = delete;
 
-	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
+	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = const_cast<TagsMatcher *>(tm); }
 
 	template <typename N, typename T>
 	void Array(N tagName, span<T> data) {
@@ -48,7 +48,7 @@ public:
 		skipTag();
 		packKeyName(tagName);
 		packArray(data.size());
-		for (const p_string &v : data) packValue(string_view(v));
+		for (const p_string &v : data) packValue(v.toString());
 	}
 
 	template <typename T>
@@ -192,7 +192,7 @@ protected:
 
 	void appendJsonObject(string_view name, const gason::JsonNode &obj);
 
-	const TagsMatcher *tm_;
+	TagsMatcher *tm_;
 	msgpack_packer packer_;
 	const TagsLengths *tagsLengths_;
 	ObjType type_;

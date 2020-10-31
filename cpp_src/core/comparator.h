@@ -23,7 +23,6 @@ public:
 		cmpInt64.ClearDistinct();
 		cmpDouble.ClearDistinct();
 		cmpString.ClearDistinct();
-		cmpGeom.ClearDistinct();
 	}
 
 protected:
@@ -117,7 +116,6 @@ protected:
 	ComparatorImpl<double> cmpDouble;
 	ComparatorImpl<key_string> cmpString;
 	ComparatorImpl<PayloadValue> cmpComposite;
-	ComparatorImpl<Point> cmpGeom;
 	CompositeArrayComparator cmpEqualPosition;
 };
 

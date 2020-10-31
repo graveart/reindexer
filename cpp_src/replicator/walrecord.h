@@ -28,7 +28,6 @@ enum WALRecType {
 	WalInitTransaction,
 	WalCommitTransaction,
 	WalForceSync,
-	WalWALSync,
 	WalSetSchema,
 };
 

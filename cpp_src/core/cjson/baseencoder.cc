@@ -5,7 +5,6 @@
 #include "core/keyvalue/p_string.h"
 #include "jsonbuilder.h"
 #include "msgpackbuilder.h"
-#include "protobufbuilder.h"
 #include "tagsmatcher.h"
 #include "tools/serializer.h"
 
@@ -283,7 +282,6 @@ string_view BaseEncoder<Builder>::getPlTuple(ConstPayload* pl) {
 template class BaseEncoder<JsonBuilder>;
 template class BaseEncoder<CJsonBuilder>;
 template class BaseEncoder<MsgPackBuilder>;
-template class BaseEncoder<ProtobufBuilder>;
 template class BaseEncoder<FieldsExtractor>;
 
 }  // namespace reindexer

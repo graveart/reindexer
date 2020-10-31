@@ -146,10 +146,11 @@ func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool,
 		} else {
 			item = reflect.New(ns.rtype).Interface()
 			dec := ns.localCjsonState.NewDecoder(item, logger)
+			var dataSize uint64
 			if params.cptr != 0 {
-				err = dec.DecodeCPtr(params.cptr, item)
+				dataSize, err = dec.DecodeCPtr(params.cptr, item)
 			} else if params.data != nil {
-				err = dec.Decode(params.data, item)
+				dataSize, err = dec.Decode(params.data, item)
 			} else {
 				panic(fmt.Errorf("Internal error while decoding item id %d from ns %s: cptr and data are both null", params.id, ns.name))
 			}
@@ -161,10 +162,10 @@ func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool,
 				if citem.version == params.version {
 					item = citem.item
 				} else if citem.version < params.version {
-					ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version})
+					ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version, size: dataSize})
 				}
 			} else {
-				ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version})
+				ns.cacheItems.Add(params.id, &cacheItem{item: item, version: params.version, size: dataSize})
 			}
 		}
 	} else {
@@ -173,9 +174,9 @@ func unpackItem(ns *nsArrayEntry, params *rawResultItemParams, allowUnsafe bool,
 		}
 		dec := ns.localCjsonState.NewDecoder(item, logger)
 		if params.cptr != 0 {
-			err = dec.DecodeCPtr(params.cptr, item)
+			_, err = dec.DecodeCPtr(params.cptr, item)
 		} else if params.data != nil {
-			err = dec.Decode(params.data, item)
+			_, err = dec.Decode(params.data, item)
 		} else {
 			panic(fmt.Errorf("Internal error while decoding item id %d from ns %s: cptr and data are both null", params.id, ns.name))
 		}
@@ -451,7 +452,7 @@ func (db *reindexerImpl) resetCachesCtx(ctx context.Context) {
 	}
 	db.lock.RUnlock()
 	for _, ns := range nsArray {
-		ns.cacheItems.Reset()
+		ns.cacheItems.Reset(ns.opts.objCacheSize)
 		ns.cjsonState.Reset()
 		db.query(ns.name).Limit(0).ExecCtx(ctx).Close()
 	}

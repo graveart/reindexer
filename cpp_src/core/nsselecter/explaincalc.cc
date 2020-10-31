@@ -12,7 +12,7 @@ using std::chrono::microseconds;
 namespace reindexer {
 
 void ExplainCalc::LogDump(int logLevel) {
-	if (logLevel >= LogInfo && enabled_) {
+	if (logLevel >= LogInfo) {
 		logPrintf(LogInfo,
 				  "Got %d items in %d µs [prepare %d µs, select %d µs, postprocess %d µs loop %d µs, general sort %d µs], sortindex %s",
 				  count_, To_us(total_), To_us(prepare_), To_us(select_), To_us(postprocess_), To_us(loop_), To_us(sort_), sortIndex_);
@@ -97,14 +97,12 @@ string ExplainCalc::GetJSON() {
 	WrSerializer ser;
 	{
 		JsonBuilder json(ser);
-		if (enabled_) {
-			json.Put("total_us", To_us(total_));
-			json.Put("prepare_us", To_us(prepare_));
-			json.Put("indexes_us", To_us(select_));
-			json.Put("postprocess_us", To_us(postprocess_));
-			json.Put("loop_us", To_us(loop_));
-			json.Put("general_sort_us", To_us(sort_));
-		}
+		json.Put("total_us", To_us(total_));
+		json.Put("prepare_us", To_us(prepare_));
+		json.Put("indexes_us", To_us(select_));
+		json.Put("postprocess_us", To_us(postprocess_));
+		json.Put("loop_us", To_us(loop_));
+		json.Put("general_sort_us", To_us(sort_));
 		json.Put("sort_index", sortIndex_);
 		json.Put("sort_by_uncommitted_index", sortOptimization_);
 
