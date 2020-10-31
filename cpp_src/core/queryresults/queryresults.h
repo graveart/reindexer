@@ -11,11 +11,9 @@ namespace reindexer {
 
 using std::string;
 
-class Schema;
 class TagsMatcher;
 class PayloadType;
 class WrSerializer;
-struct NsContext;
 struct ResultFetchOpts;
 
 namespace joins {
@@ -56,7 +54,6 @@ public:
 		Error GetJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Error GetCJSON(WrSerializer &wrser, bool withHdrLen = true);
 		Error GetMsgPack(WrSerializer &wrser, bool withHdrLen = true);
-		Error GetProtobuf(WrSerializer &wrser, bool withHdrLen = true);
 		Item GetItem();
 		joins::ItemIterator GetJoined();
 		const ItemRef &GetItemRef() const { return qr_->items_[idx_]; }
@@ -88,7 +85,7 @@ public:
 
 	struct Context;
 	// precalc context size
-	static constexpr int kSizeofContext = 144;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *) + sizeof(void *)*2;
+	static constexpr int kSizeofContext = 128;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *);
 
 	// Order of storing contexts for namespaces:
 	// [0]      - main NS context
@@ -97,15 +94,12 @@ public:
 	using ContextsVector = h_vector<Context, 1, kSizeofContext>;
 	ContextsVector ctxs;
 
-	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter,
-					  std::shared_ptr<const Schema> schema);
+	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter);
 	const TagsMatcher &getTagsMatcher(int nsid) const;
 	const PayloadType &getPayloadType(int nsid) const;
 	const FieldsSet &getFieldsFilter(int nsid) const;
 	TagsMatcher &getTagsMatcher(int nsid);
 	PayloadType &getPayloadType(int nsid);
-	std::shared_ptr<const Schema> getSchema(int nsid) const;
-	int getNsNumber(int nsid) const;
 	int getMergedNSCount() const;
 	void lockResults();
 	ItemRefVector &Items() { return items_; }

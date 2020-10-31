@@ -44,9 +44,6 @@ public:
 	/// \return Zero or more metrics and their samples.
 	std::vector<MetricFamily> Collect() override;
 
-	/// \brief Removes outdated metrics
-	void RemoveOutdated(int64_t currentEpoch) override;
-
 private:
 	friend class detail::CounterBuilder;
 	friend class detail::GaugeBuilder;

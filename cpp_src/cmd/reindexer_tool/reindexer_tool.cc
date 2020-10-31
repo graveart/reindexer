@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
 		reindexer::Reindexer db;
 		CommandsProcessor<reindexer::Reindexer> commandsProcessor(args::get(outFileName), args::get(fileName), args::get(command),
 																  config.ConnPoolSize, args::get(connThreads));
-		err = commandsProcessor.Connect(dsn, ConnectOpts().DisableReplication());
+		err = commandsProcessor.Connect(dsn);
 		if (err.ok()) ok = commandsProcessor.Run();
 	} else {
 		std::cerr << "Invalid DSN format: " << dsn << " Must begin from cproto:// or builtin://" << std::endl;

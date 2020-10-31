@@ -8,10 +8,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesAddTest) {
 		AddDataForRuntimeIntIndex(i);
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(101, 200);
@@ -21,10 +17,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesAddTest) {
 		AddDataForRuntimeIntIndex(i);
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(201, 300);
@@ -38,17 +30,11 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesDropTest) {
 		AddDataForRuntimeIntIndex(i);
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 	}
 
 	for (int i = 4; i >= 0; --i) {
 		DropRuntimeIntArrayIndex(i);
 		DropRuntimeStringIndex(i);
-		DropRuntimeQPointIndex(i);
-		DropRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(101, 200);
@@ -58,14 +44,8 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesDropTest) {
 		AddDataForRuntimeIntIndex(i);
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 		DropRuntimeIntArrayIndex(i);
 		DropRuntimeStringIndex(i);
-		DropRuntimeQPointIndex(i);
-		DropRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(201, 300);
@@ -79,10 +59,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesDropTest2) {
 		AddDataForRuntimeIntIndex(i);
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(101, 200);
@@ -91,8 +67,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesDropTest2) {
 	for (int i = 4; i >= 0; --i) {
 		DropRuntimeIntArrayIndex(i);
 		DropRuntimeStringIndex(i);
-		DropRuntimeQPointIndex(i);
-		DropRuntimeLPointIndex(i);
 	}
 
 	FillNamespace(301, 400);
@@ -138,10 +112,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesRemoveAndSelect) {
 	for (int i = 0; i < 5; ++i) {
 		AddRuntimeStringIndex(i);
 		AddDataForRuntimeStringIndex(i);
-		AddRuntimeQPointIndex(i);
-		AddDataForRuntimeQPointIndex(i);
-		AddRuntimeLPointIndex(i);
-		AddDataForRuntimeLPointIndex(i);
 	}
 
 	AddRuntimeCompositeIndex();
@@ -152,8 +122,6 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesRemoveAndSelect) {
 			.WhereComposite(getRuntimeCompositeIndexName(false).c_str(), CondEq, {{Variant(rand()), Variant(RandString())}}));
 
 	DropRuntimeStringIndex(1);
-	DropRuntimeQPointIndex(1);
-	DropRuntimeLPointIndex(1);
 
 	CheckSelectValidity(Query(default_namespace));
 	CheckSelectValidity(Query(default_namespace).Where(getRuntimeStringIndexName(2).c_str(), CondGt, RandString()));
@@ -161,9 +129,4 @@ TEST_F(RuntimeIndexesApi, RuntimeIndexesRemoveAndSelect) {
 	CheckSelectValidity(
 		Query(default_namespace)
 			.WhereComposite(getRuntimeCompositeIndexName(false).c_str(), CondGt, {{Variant(rand()), Variant(RandString())}}));
-
-	CheckSelectValidity(Query(default_namespace)
-							.DWithin(getRuntimeQPointIndexName(2), RandPoint(), RandDouble(0.0, 1.0, 1000))
-							.Or()
-							.DWithin(getRuntimeLPointIndexName(2), RandPoint(), RandDouble(0.0, 1.0, 1000)));
 }

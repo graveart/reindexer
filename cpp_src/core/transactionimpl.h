@@ -25,8 +25,7 @@ public:
 
 class TransactionImpl {
 public:
-	TransactionImpl(const std::string &nsName, const PayloadType &pt, const TagsMatcher &tm, const FieldsSet &pf,
-					std::shared_ptr<const Schema> schema);
+	TransactionImpl(const std::string &nsName, const PayloadType &pt, const TagsMatcher &tm, const FieldsSet &pf);
 
 	void Insert(Item &&item);
 	void Update(Item &&item);
@@ -46,7 +45,6 @@ public:
 	PayloadType payloadType_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet pkFields_;
-	std::shared_ptr<const Schema> schema_;
 
 	std::vector<TransactionStep> steps_;
 	std::string nsName_;

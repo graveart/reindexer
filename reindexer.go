@@ -33,8 +33,6 @@ const (
 	EMPTY = bindings.EMPTY
 	// String like pattern
 	LIKE = bindings.LIKE
-	// Geometry DWithin
-	DWITHIN = bindings.DWITHIN
 )
 
 const (
@@ -212,15 +210,15 @@ type NamespaceOptions struct {
 	dropOnFileFormatError bool
 	// Disable object cache
 	disableObjCache bool
-	// Object cache items count
-	objCacheItemsCount uint64
+	// Object cache size in bytes
+	objCacheSize uint64
 }
 
 // DefaultNamespaceOptions return default namespace options
 func DefaultNamespaceOptions() *NamespaceOptions {
 	return &NamespaceOptions{
-		enableStorage:      true,
-		objCacheItemsCount: 256000,
+		enableStorage: true,
+		objCacheSize:  256 * 1024 * 1024,
 	}
 }
 
@@ -244,9 +242,9 @@ func (opts *NamespaceOptions) DisableObjCache() *NamespaceOptions {
 	return opts
 }
 
-// Set maximum items count in Object Cache. Default is 256000
-func (opts *NamespaceOptions) ObjCacheSize(count int) *NamespaceOptions {
-	opts.objCacheItemsCount = uint64(count)
+// Set maximum size of Object Cache in Megabytes. Default is 256 MB
+func (opts *NamespaceOptions) ObjCacheSize(size int) *NamespaceOptions {
+	opts.objCacheSize = uint64(size * 1024 * 1024)
 	return opts
 }
 

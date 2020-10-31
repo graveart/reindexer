@@ -9,7 +9,6 @@ class ApiMixin(object):
         Json = 1
         PlainText = 2
         MsgPack = 3
-        Protobuf = 4
 
     API_STATUS = {
         'success': 200,
@@ -38,14 +37,14 @@ class ApiMixin(object):
         content = response.read()
         res_status = response.status
 
-        if encodingType == self.EncodingType.MsgPack or encodingType == self.EncodingType.Protobuf:
-            res_body = {'message': content}
-        else:
+        if encodingType is not self.EncodingType.MsgPack:
             content = content.decode()
             try:
                 res_body = json.loads(content)
             except:
                 res_body = {'message': content}
+        else:
+            res_body = {'message': content}
 
         self.api.close()
 
@@ -61,8 +60,6 @@ class ApiMixin(object):
             content_type = 'text/plain'
         elif encodingType is self.EncodingType.MsgPack:
             content_type = 'application/x-msgpack'
-        elif encodingType is self.EncodingType.Protobuf:
-            content_type = 'application/protobuf'
 
         def_headers = {
             'Content-type': content_type,
@@ -207,25 +204,16 @@ class ApiMixin(object):
     def api_get_namespace_schema(self, dbname, nsname):
         return self._api_call('GET', '/db/' + dbname + '/namespaces/' + nsname + '/schema')
 
-    def api_get_namespace_query_params_schema(self, dbname, nsname):
-        return self._api_call('GET', '/db/' + dbname + '/protobuf_schema?ns=' + nsname)
-
-    def url_set_encoding_type(self, url, encType, separator='?'):
-        type = 'json'
-        if encType == self.EncodingType.MsgPack:
-            type = 'msgpack'
-        elif encType == self.EncodingType.Protobuf:
-            type = 'protobuf'
-        return url + separator + urlencode({'format': type})
-
     def api_get_items(self, dbname, nsname, encType=EncodingType.Json):
         url = '/db/' + dbname + '/namespaces/' + nsname + '/items'
-        url = self.url_set_encoding_type(url, encType)
+        if encType == self.EncodingType.MsgPack:
+            url = url + '?' + urlencode({'format': 'msgpack'})
         return self._api_call('GET', url, body=None, headers={}, encodingType=encType)
 
     def api_create_item(self, dbname, nsname, item_body, encType=EncodingType.Json):
         url = '/db/' + dbname + '/namespaces/' + nsname + '/items'
-        url = self.url_set_encoding_type(url, encType)
+        if encType == self.EncodingType.MsgPack:
+            url = url + '?' + urlencode({'format': 'msgpack'})
         return self._api_call('POST', url, item_body, headers={}, encodingType=encType)
 
     def api_update_item(self, dbname, nsname, item_body, precepts=[], encType=EncodingType.Json):
@@ -237,12 +225,14 @@ class ApiMixin(object):
             query += quote(precept)
             separator = '&'
         url = '/db/' + dbname + '/namespaces/' + nsname + '/items' + query
-        url = self.url_set_encoding_type(url, encType, separator)
+        if encType == self.EncodingType.MsgPack:
+            url = url + separator + urlencode({'format': 'msgpack'})
         return self._api_call('PUT', url, item_body, headers={}, encodingType=encType)
 
     def api_delete_item(self, dbname, nsname, item_body, encType=EncodingType.Json):
         url = '/db/' + dbname + '/namespaces/' + nsname + '/items'
-        url = self.url_set_encoding_type(url, encType)
+        if encType == self.EncodingType.MsgPack:
+            url = url + '?' + urlencode({'format': 'msgpack'})
         return self._api_call('DELETE', url, item_body, headers={}, encodingType=encType)
 
     def api_get_paginated_items(self, dbname, nsname, limit=10, offset=0):
@@ -255,13 +245,15 @@ class ApiMixin(object):
 
     def api_sql_exec(self, dbname, sql_query='', encType=EncodingType.Json):
         url = '/db/' + dbname + '/query?' + urlencode({'q': sql_query})
-        url = self.url_set_encoding_type(url, encType, '&')
+        if encType == self.EncodingType.MsgPack:
+            url = url + '&' + urlencode({'format': 'msgpack'})
         return self._api_call('GET', url, headers={}, encodingType=encType)
 
     def api_sql_exec_with_columns(self, dbname, sql_query='', encType=EncodingType.Json):
         url = urlencode(
             {'q': sql_query, 'with_columns': 1, 'width': 100})
-        url = self.url_set_encoding_type(url, encType, '&')
+        if encType == self.EncodingType.MsgPack:
+            url = url + '&' + urlencode({'format': 'msgpack'})
         return self._api_call('GET', '/db/' + dbname + '/query?' + url, headers={}, encodingType=encType)
 
     def api_sql_post(self, dbname, body, enctype):

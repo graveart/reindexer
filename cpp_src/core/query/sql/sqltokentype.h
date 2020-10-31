@@ -40,8 +40,5 @@ enum SqlTokenType {
 	UpdateOptionsSqlToken,
 	EqualPositionSqlToken,
 	JoinTypesSqlToken,
-	ST_DWithinSqlToken,
-	ST_GeomFromTextSqlToken,
-	GeomFieldSqlToken,
 };
 }

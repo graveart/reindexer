@@ -19,8 +19,7 @@ public:
 	JsonBuilder &operator=(const JsonBuilder &) = delete;
 	JsonBuilder &operator=(JsonBuilder &&) = delete;
 
-	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
-	void SetTagsPath(const TagsPath *) {}
+	void SetTagsMatcher(const TagsMatcher *tm);
 
 	/// Start new object
 	JsonBuilder Object(string_view name = {}, int size = KUnknownFieldSize);

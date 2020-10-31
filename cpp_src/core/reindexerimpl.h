@@ -25,7 +25,6 @@ namespace reindexer {
 
 class Replicator;
 class IClientsStats;
-class ProtobufSchema;
 
 class ReindexerImpl {
 	using Mutex = MarkedMutex<shared_timed_mutex, MutexMark::Reindexer>;
@@ -55,7 +54,7 @@ public:
 	Error RenameNamespace(string_view srcNsName, const std::string &dstNsName, const InternalRdxContext &ctx = InternalRdxContext());
 	Error AddIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
 	Error SetSchema(string_view nsName, string_view schema, const InternalRdxContext &ctx = InternalRdxContext());
-	Error GetSchema(string_view nsName, int format, std::string &schema, const InternalRdxContext &ctx = InternalRdxContext());
+	Error GetSchema(string_view nsName, string &schema, const InternalRdxContext &ctx = InternalRdxContext());
 	Error UpdateIndex(string_view nsName, const IndexDef &indexDef, const InternalRdxContext &ctx = InternalRdxContext());
 	Error DropIndex(string_view nsName, const IndexDef &index, const InternalRdxContext &ctx = InternalRdxContext());
 	Error EnumNamespaces(vector<NamespaceDef> &defs, EnumNamespacesOpts opts, const InternalRdxContext &ctx = InternalRdxContext());
@@ -162,7 +161,7 @@ protected:
 	void backgroundRoutine();
 	Error closeNamespace(string_view nsName, const RdxContext &ctx, bool dropStorage, bool enableDropSlave = false);
 
-	Error syncDownstream(string_view nsName, bool force, const InternalRdxContext &ctx = InternalRdxContext());
+	Error forceSyncDownstream(string_view nsName, const InternalRdxContext &ctx = InternalRdxContext());
 
 	Namespace::Ptr getNamespace(string_view nsName, const RdxContext &ctx);
 	Namespace::Ptr getNamespaceNoThrow(string_view nsName, const RdxContext &ctx);
@@ -189,8 +188,7 @@ protected:
 
 	StorageMutex storageMtx_;
 	StorageType storageType_;
-	bool autorepairEnabled_ = false;
-	bool replicationEnabled_ = true;
+	bool autorepairEnabled_;
 	std::atomic<bool> connected_;
 
 	IClientsStats *clientsStats_ = nullptr;

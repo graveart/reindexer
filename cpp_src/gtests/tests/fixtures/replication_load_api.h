@@ -72,8 +72,6 @@ public:
 		// untill we use shared ptr it will be not destroyed
 		auto srv = GetSrv(masterId_);
 		auto &api = srv->api;
-
-		shared_lock<shared_timed_mutex> lk(restartMutex_);
 		std::atomic<size_t> completed(0);
 
 		for (size_t i = 0; i < count; ++i) {
@@ -132,6 +130,7 @@ public:
 		auto &api = srv->api;
 
 		auto err = api.reindexer->Select(qr, res);
+
 		EXPECT_TRUE(err.ok()) << err.what();
 
 		return res;

@@ -13,15 +13,10 @@ Comparator::Comparator(CondType cond, KeyValueType type, const VariantArray &val
 	  cmpInt(distinct),
 	  cmpInt64(distinct),
 	  cmpDouble(distinct),
-	  cmpString(distinct),
-	  cmpGeom(distinct) {
+	  cmpString(distinct) {
 	if (type == KeyValueComposite) assert(fields_.size() > 0);
 	if (cond_ == CondEq && values.size() != 1) cond_ = CondSet;
-	if (cond_ == CondDWithin) {
-		cmpGeom.SetValues(values);
-	} else {
-		setValues(values);
-	}
+	setValues(values);
 }
 
 void Comparator::setValues(const VariantArray &values) {
@@ -88,8 +83,6 @@ bool Comparator::Compare(const PayloadValue &data, int rowId) {
 
 		if ((cond_ == CondAny) && (rhs.empty() || rhs[0].Type() == KeyValueNull)) return false;
 
-		if (cond_ == CondDWithin) return cmpGeom.Compare(static_cast<Point>(rhs));
-
 		for (const Variant &kr : rhs) {
 			if (compare(kr)) return true;
 		}
@@ -111,11 +104,6 @@ bool Comparator::Compare(const PayloadValue &data, int rowId) {
 		if (cond_ == CondAny && arr->len == 0) return false;
 
 		uint8_t *ptr = data.Ptr() + arr->offset;
-		if (cond_ == CondDWithin) {
-			if (arr->len != 2 || type_ != KeyValueDouble) throw Error(errQueryExec, "DWithin with not point data");
-			return cmpGeom.Compare({*reinterpret_cast<const double *>(ptr), *reinterpret_cast<const double *>(ptr + sizeof_)});
-		}
-
 		for (int i = 0; i < arr->len; i++, ptr += sizeof_) {
 			if (compare(ptr)) return true;
 		}
@@ -130,11 +118,7 @@ void Comparator::ExcludeDistinct(const PayloadValue &data, int rowId) {
 		// Exclude field by CJSON path (slow path)
 		VariantArray rhs;
 		ConstPayload(payloadType_, data).GetByJsonPath(fields_.getTagsPath(0), rhs, type_);
-		if (cond_ == CondDWithin) {
-			cmpGeom.ExcludeDistinct(static_cast<Point>(rhs));
-		} else {
-			for (const auto &v : rhs) excludeDistinct(v);
-		}
+		for (const auto &v : rhs) excludeDistinct(v);
 	} else {
 		// Exclude field from payload by offset (fast path)
 
@@ -148,11 +132,6 @@ void Comparator::ExcludeDistinct(const PayloadValue &data, int rowId) {
 
 		PayloadFieldValue::Array *arr = reinterpret_cast<PayloadFieldValue::Array *>(data.Ptr() + offset_);
 		uint8_t *ptr = data.Ptr() + arr->offset;
-		if (cond_ == CondDWithin) {
-			if (arr->len != 2 || type_ != KeyValueDouble) throw Error(errQueryExec, "DWithin with not point data");
-			return cmpGeom.ExcludeDistinct({*reinterpret_cast<const double *>(ptr), *reinterpret_cast<const double *>(ptr + sizeof_)});
-		}
-
 		for (int i = 0; i < arr->len; i++, ptr += sizeof_) excludeDistinct(ptr);
 	}
 }

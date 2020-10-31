@@ -14,7 +14,6 @@ public:
 	FieldsExtractor &operator=(FieldsExtractor &&) = delete;
 
 	void SetTagsMatcher(const TagsMatcher *) {}
-	void SetTagsPath(const TagsPath *) {}
 
 	/// Start new object
 	FieldsExtractor Object(int) { return FieldsExtractor(values_, expectedType_, expectedPathDepth_ - 1); }

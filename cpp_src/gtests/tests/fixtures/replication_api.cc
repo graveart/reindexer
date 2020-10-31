@@ -16,14 +16,14 @@ bool ReplicationApi::StopServer(size_t id) {
 	assert(id < svc_.size());
 	if (!svc_[id].Get()) return false;
 	svc_[id].Drop();
-	auto now = std::chrono::milliseconds(0);
-	const auto pause = std::chrono::milliseconds(10);
+	size_t counter = 0;
 	while (svc_[id].IsRunning()) {
-		now += pause;
-		EXPECT_TRUE(now < kMaxServerStartTime);
-		assert(now < kMaxServerStartTime);
+		counter++;
+		// we have only 10sec timeout to restart server!!!!
+		EXPECT_TRUE(counter / 100 < kMaxServerStartTimeSec);
+		assert(counter / 100 < kMaxServerStartTimeSec);
 
-		std::this_thread::sleep_for(pause);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	return true;
 }
@@ -41,9 +41,6 @@ void ReplicationApi::RestartServer(size_t id) {
 	std::lock_guard<std::mutex> lock(m_);
 
 	assert(id < svc_.size());
-	if (id == 0) {
-		restartMutex_.lock();
-	}
 	if (svc_[id].Get()) {
 		svc_[id].Drop();
 		size_t counter = 0;
@@ -58,18 +55,15 @@ void ReplicationApi::RestartServer(size_t id) {
 	}
 	svc_[id].InitServer(id, kDefaultRpcPort + id, kDefaultHttpPort + id, kStoragePath + "node/" + std::to_string(id),
 						"node" + std::to_string(id), true);
-	if (id == 0) {
-		restartMutex_.unlock();
-	}
 }
 
 void ReplicationApi::WaitSync(const std::string& ns) {
-	auto now = std::chrono::milliseconds(0);
-	const auto pause = std::chrono::milliseconds(10);
+	size_t counter = 0;
+	// we have only 10sec timeout to restart server!!!!
 	ReplicationStateApi state{lsn_t(), lsn_t(), 0, 0, false};
 	while (state.lsn.isEmpty()) {
-		now += pause;
-		ASSERT_TRUE(now < kMaxSyncTime);
+		counter++;
+		ASSERT_TRUE(counter / 100 < kMaxSyncTimeSec);
 		ReplicationStateApi xstate = GetSrv(masterId_)->GetState(ns);  // get an reference state and then compare all with it
 		for (size_t i = 0; i < svc_.size(); i++) {
 			if (i != masterId_) {
@@ -84,28 +78,15 @@ void ReplicationApi::WaitSync(const std::string& ns) {
 				}
 			}
 		}
-		std::this_thread::sleep_for(pause);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 }
 
 void ReplicationApi::ForceSync() {
-	std::atomic<bool> done{false};
-	std::thread awaitForceSync([&done]() {
-		auto now = std::chrono::milliseconds(0);
-		const auto pause = std::chrono::milliseconds(10);
-		while (!done.load()) {
-			now += pause;
-			ASSERT_TRUE(now < kMaxSyncTime);
-			std::this_thread::sleep_for(pause);
-		}
-	});
 	for (size_t i = 0; i < svc_.size(); i++) {
 		if (i != masterId_) GetSrv(i)->ForceSync();
 	}
-	done = true;
-	awaitForceSync.join();
 }
-
 void ReplicationApi::SwitchMaster(size_t id) {
 	if (id == masterId_) return;
 	masterId_ = id;
@@ -154,12 +135,14 @@ void ReplicationApi::TearDown() {
 	for (auto& server : svc_) {
 		if (!server.Get()) continue;
 		server.Drop();
-		auto now = std::chrono::milliseconds(0);
-		const auto pause = std::chrono::milliseconds(10);
+		size_t counter = 0;
 		while (server.IsRunning()) {
-			now += pause;
-			ASSERT_TRUE(now < kMaxServerStartTime);
-			std::this_thread::sleep_for(pause);
+			counter++;
+			// we have only 10sec timeout to restart server!!!!
+			EXPECT_TRUE(counter / 100 < kMaxServerStartTimeSec);
+			assert(counter / 100 < kMaxServerStartTimeSec);
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 	}
 	svc_.clear();

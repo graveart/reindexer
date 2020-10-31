@@ -42,6 +42,7 @@ ReindexerImpl::ReindexerImpl(IClientsStats* clientsStats)
 	: replicator_(new Replicator(this)),
 	  hasReplConfigLoadError_(false),
 	  storageType_(StorageType::LevelDB),
+	  autorepairEnabled_(false),
 	  connected_(false),
 	  clientsStats_(clientsStats) {
 	stopBackgroundThread_ = false;
@@ -162,7 +163,6 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 	}
 
 	autorepairEnabled_ = opts.IsAutorepair();
-	replicationEnabled_ = !opts.IsReplicationDisabled();
 
 	bool enableStorage = (path.length() > 0 && path != "/");
 	if (enableStorage) {
@@ -177,13 +177,13 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 	if (!err.ok()) return err;
 
 	if (enableStorage && opts.IsOpenNamespaces()) {
-		size_t maxLoadWorkers = std::min(std::thread::hardware_concurrency(), 8u);
+		int maxLoadWorkers = std::min(int(std::thread::hardware_concurrency()), 8);
 		std::unique_ptr<std::thread[]> thrs(new std::thread[maxLoadWorkers]);
 		std::atomic_flag hasNsErrors{false};
-		for (size_t i = 0; i < maxLoadWorkers; i++) {
+		for (int i = 0; i < maxLoadWorkers; i++) {
 			thrs[i] = std::thread(
-				[&](size_t begin) {
-					for (size_t j = begin; j < foundNs.size(); j += maxLoadWorkers) {
+				[&](int i) {
+					for (int j = i; j < int(foundNs.size()); j += maxLoadWorkers) {
 						auto& de = foundNs[j];
 						if (de.isDir && validateObjectName(de.name)) {
 							auto status = OpenNamespace(de.name, StorageOpts().Enabled());
@@ -203,26 +203,24 @@ Error ReindexerImpl::Connect(const string& dsn, ConnectOpts opts) {
 				},
 				i);
 		}
-		for (size_t i = 0; i < maxLoadWorkers; i++) thrs[i].join();
+		for (int i = 0; i < maxLoadWorkers; i++) thrs[i].join();
 
 		if (!opts.IsAllowNamespaceErrors() && hasNsErrors.test_and_set(std::memory_order_relaxed)) {
 			return Error(errNotValid, "Namespaces load error");
 		}
 	}
 
-	if (replicationEnabled_) {
-		err = checkReplConf(opts);
-		if (!err.ok()) return err;
+	err = checkReplConf(opts);
+	if (!err.ok()) return err;
 
-		replicator_->Enable();
-		bool needStart = replicator_->Configure(configProvider_.GetReplicationConfig());
-		err = needStart ? replicator_->Start() : errOK;
-		if (!err.ok()) {
-			return err;
-		}
-		if (!storagePath_.empty()) {
-			err = replConfigFileChecker_.Enable();
-		}
+	replicator_->Enable();
+	bool needStart = replicator_->Configure(configProvider_.GetReplicationConfig());
+	err = needStart ? replicator_->Start() : errOK;
+	if (!err.ok()) {
+		return err;
+	}
+	if (!storagePath_.empty()) {
+		err = replConfigFileChecker_.Enable();
 	}
 
 	if (err.ok()) {
@@ -359,15 +357,15 @@ Error ReindexerImpl::closeNamespace(string_view nsName, const RdxContext& ctx, b
 	return errOK;
 }
 
-Error ReindexerImpl::syncDownstream(string_view nsName, bool force, const InternalRdxContext& ctx) {
+Error ReindexerImpl::forceSyncDownstream(string_view nsName, const InternalRdxContext& ctx) {
 	try {
 		WrSerializer ser;
 		const auto rdxCtx =
-			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "SYNCDOWNSTREAM " << nsName).Slice() : ""_sv, activities_);
+			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "FORCESYNCDOWNSTREAM " << nsName).Slice() : ""_sv, activities_);
 		NamespaceDef nsDef = getNamespace(nsName, rdxCtx)->GetDefinition(rdxCtx);
 		nsDef.GetJSON(ser);
-		ser.PutBool(true);
-		observers_.OnWALUpdate(LSNPair(), nsName, WALRecord(force ? WalForceSync : WalWALSync, ser.Slice()));
+		WALRecord wrec(WalForceSync, ser.Slice());
+		observers_.OnWALUpdate(LSNPair(), nsName, wrec);
 	} catch (const Error& err) {
 		return err;
 	}
@@ -738,13 +736,12 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 
 struct ReindexerImpl::QueryResultsContext {
 	QueryResultsContext() {}
-	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter, std::shared_ptr<const Schema> schema)
-		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), schema_(schema) {}
+	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter)
+		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter) {}
 
 	PayloadType type_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet fieldsFilter_;
-	std::shared_ptr<const Schema> schema_;
 };
 
 bool ReindexerImpl::isPreResultValuesModeOptimizationAvailable(const Query& jItemQ, const NamespaceImpl::Ptr& jns) {
@@ -838,8 +835,7 @@ JoinedSelectors ReindexerImpl::prepareJoinedSelectors(const Query& q, QueryResul
 			jns->putToJoinCache(joinRes, preResult);
 		}
 
-		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_),
-										  jns->GetSchemaPtr(rdxCtx));
+		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_));
 
 		if (preResult->dataMode == JoinPreResult::ModeValues) {
 			jItemQ.entries.ForEachEntry([&jns](QueryEntry& qe) {
@@ -925,7 +921,7 @@ void ReindexerImpl::doSelect(const Query& q, QueryResults& result, NsLocker<T>& 
 		}
 	}
 	// Adding context to QueryResults
-	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_, jctx.schema_);
+	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_);
 	result.lockResults();
 }
 
@@ -986,13 +982,13 @@ Error ReindexerImpl::SetSchema(string_view nsName, string_view schema, const Int
 	return Error(errOK);
 }
 
-Error ReindexerImpl::GetSchema(string_view nsName, int format, std::string& schema, const InternalRdxContext& ctx) {
+Error ReindexerImpl::GetSchema(string_view nsName, std::string& schema, const InternalRdxContext& ctx) {
 	try {
 		WrSerializer ser;
 		const auto rdxCtx =
 			ctx.CreateRdxContext(ctx.NeedTraceActivity() ? (ser << "GET SCHEMA ON " << nsName).Slice() : ""_sv, activities_);
 		auto ns = getNamespace(nsName, rdxCtx);
-		schema = ns->GetSchema(format, rdxCtx);
+		ns->GetSchema(schema, rdxCtx);
 	} catch (const Error& err) {
 		return err;
 	}
@@ -1341,7 +1337,7 @@ void ReindexerImpl::updateToSystemNamespace(string_view nsName, Item& item, cons
 				needStartReplicator = true;
 			}
 		}
-		if (replicationEnabled_ && needStartReplicator && !stopBackgroundThread_) {
+		if (needStartReplicator && !stopBackgroundThread_) {
 			if (Error err = replicator_->Start()) throw err;
 		}
 

@@ -45,7 +45,6 @@ protected:
 	UpdateTracker<T> tracker_;
 };
 
-constexpr inline unsigned maxSelectivityPercentForIdset() noexcept { return 20u; }
 Index *IndexUnordered_New(const IndexDef &idef, const PayloadType payloadType, const FieldsSet &fields);
 
 }  // namespace reindexer

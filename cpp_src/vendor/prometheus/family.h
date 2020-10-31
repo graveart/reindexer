@@ -106,7 +106,7 @@ public:
 	/// \return Return the newly created dimensional data or - if a same set of
 	/// lables already exists - the already existing dimensional data.
 	template <typename... Args>
-	T& Add(const std::map<std::string, std::string>& labels, int64_t epoch, Args&&... args);
+	T& Add(const std::map<std::string, std::string>& labels, Args&&... args);
 
 	/// \brief Remove the given dimensional data.
 	///
@@ -121,16 +121,8 @@ public:
 	/// \return Zero or more samples for each dimensional data.
 	std::vector<MetricFamily> Collect() override;
 
-	/// \brief Removes outdated metrics
-	void RemoveOutdated(int64_t currentEpoch) override;
-
 private:
-	struct MarkedMetric {
-		int64_t epoch;
-		std::unique_ptr<T> ptr;
-	};
-
-	std::unordered_map<std::size_t, MarkedMetric> metrics_;
+	std::unordered_map<std::size_t, std::unique_ptr<T>> metrics_;
 	std::unordered_map<std::size_t, std::map<std::string, std::string>> labels_;
 	std::unordered_map<T*, std::size_t> labels_reverse_lookup_;
 
@@ -150,7 +142,7 @@ Family<T>::Family(const std::string& name, const std::string& help, const std::m
 
 template <typename T>
 template <typename... Args>
-T& Family<T>::Add(const std::map<std::string, std::string>& labels, int64_t epoch, Args&&... args) {
+T& Family<T>::Add(const std::map<std::string, std::string>& labels, Args&&... args) {
 	auto hash = detail::hash_labels(labels);
 	std::lock_guard<std::mutex> lock{mutex_};
 	auto metrics_iter = metrics_.find(hash);
@@ -162,8 +154,7 @@ T& Family<T>::Add(const std::map<std::string, std::string>& labels, int64_t epoc
 		const auto& old_labels = labels_iter->second;
 		assert(labels == old_labels);
 #endif
-		metrics_iter->second.epoch = epoch;
-		return *metrics_iter->second.ptr;
+		return *metrics_iter->second;
 	} else {
 #ifndef NDEBUG
 		for (auto& label_pair : labels) {
@@ -172,11 +163,11 @@ T& Family<T>::Add(const std::map<std::string, std::string>& labels, int64_t epoc
 		}
 #endif
 
-		auto metric = metrics_.insert(std::make_pair(hash, MarkedMetric{epoch, detail::make_unique<T>(args...)}));
+		auto metric = metrics_.insert(std::make_pair(hash, detail::make_unique<T>(args...)));
 		assert(metric.second);
 		labels_.insert({hash, labels});
-		labels_reverse_lookup_.insert({metric.first->second.ptr.get(), hash});
-		return *(metric.first->second.ptr);
+		labels_reverse_lookup_.insert({metric.first->second.get(), hash});
+		return *(metric.first->second);
 	}
 }
 
@@ -195,30 +186,15 @@ void Family<T>::Remove(T* metric) {
 
 template <typename T>
 std::vector<MetricFamily> Family<T>::Collect() {
-	auto family = MetricFamily{};
-	family.type = T::metric_type;
 	std::lock_guard<std::mutex> lock{mutex_};
+	auto family = MetricFamily{};
 	family.name = name_;
 	family.help = help_;
-	family.metric.reserve(metrics_.size());
+	family.type = T::metric_type;
 	for (const auto& m : metrics_) {
-		family.metric.emplace_back(std::move(CollectMetric(m.first, m.second.ptr.get())));
+		family.metric.push_back(std::move(CollectMetric(m.first, m.second.get())));
 	}
 	return {family};
-}
-
-template <typename T>
-void Family<T>::RemoveOutdated(int64_t currentEpoch) {
-	std::lock_guard<std::mutex> lock{mutex_};
-	for (auto metricIt = metrics_.begin(); metricIt != metrics_.end();) {
-		if (metricIt->second.epoch != kNoEpoch && metricIt->second.epoch < currentEpoch) {
-			labels_reverse_lookup_.erase(metricIt->second.ptr.get());
-			labels_.erase(metricIt->first);
-			metricIt = metrics_.erase(metricIt);
-		} else {
-			++metricIt;
-		}
-	}
 }
 
 template <typename T>
