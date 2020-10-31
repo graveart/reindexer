@@ -494,6 +494,7 @@ int HTTPServer::DeleteItems(http::Context &ctx) { return modifyItems(ctx, ModeDe
 
 int HTTPServer::PutItems(http::Context &ctx) { return modifyItems(ctx, ModeUpdate); }
 int HTTPServer::PostItems(http::Context &ctx) { return modifyItems(ctx, ModeInsert); }
+int HTTPServer::PatchItems(http::Context &ctx) { return modifyItems(ctx, ModeUpsert); }
 
 int HTTPServer::GetMetaList(http::Context &ctx) {
 	auto db = getDB(ctx, kRoleDataRead);
@@ -986,6 +987,7 @@ bool HTTPServer::Start(const string &addr, ev::dynamic_loop &loop) {
 	router_.GET<HTTPServer, &HTTPServer::GetItems>("/api/v1/db/:db/namespaces/:ns/items", this);
 	router_.PUT<HTTPServer, &HTTPServer::PutItems>("/api/v1/db/:db/namespaces/:ns/items", this);
 	router_.POST<HTTPServer, &HTTPServer::PostItems>("/api/v1/db/:db/namespaces/:ns/items", this);
+	router_.PATCH<HTTPServer, &HTTPServer::PatchItems>("/api/v1/db/:db/namespaces/:ns/items", this);
 	router_.DELETE<HTTPServer, &HTTPServer::DeleteItems>("/api/v1/db/:db/namespaces/:ns/items", this);
 
 	router_.GET<HTTPServer, &HTTPServer::GetIndexes>("/api/v1/db/:db/namespaces/:ns/indexes", this);
@@ -1004,6 +1006,7 @@ bool HTTPServer::Start(const string &addr, ev::dynamic_loop &loop) {
 	router_.POST<HTTPServer, &HTTPServer::RollbackTx>("/api/v1/db/:db/transactions/:tx/rollback", this);
 	router_.PUT<HTTPServer, &HTTPServer::PutItemsTx>("/api/v1/db/:db/transactions/:tx/items", this);
 	router_.POST<HTTPServer, &HTTPServer::PostItemsTx>("/api/v1/db/:db/transactions/:tx/items", this);
+	router_.PATCH<HTTPServer, &HTTPServer::PatchItemsTx>("/api/v1/db/:db/transactions/:tx/items", this);
 	router_.DELETE<HTTPServer, &HTTPServer::DeleteItemsTx>("/api/v1/db/:db/transactions/:tx/items", this);
 	router_.GET<HTTPServer, &HTTPServer::GetSQLQueryTx>("/api/v1/db/:db/transactions/:tx/query", this);
 	router_.DELETE<HTTPServer, &HTTPServer::DeleteQueryTx>("/api/v1/db/:db/transactions/:tx/query", this);
@@ -1747,6 +1750,8 @@ int HTTPServer::RollbackTx(http::Context &ctx) {
 int HTTPServer::PostItemsTx(http::Context &ctx) { return modifyItemsTx(ctx, ModeInsert); }
 
 int HTTPServer::PutItemsTx(http::Context &ctx) { return modifyItemsTx(ctx, ModeUpdate); }
+
+int HTTPServer::PatchItemsTx(http::Context &ctx) { return modifyItemsTx(ctx, ModeUpsert); }
 
 int HTTPServer::DeleteItemsTx(http::Context &ctx) { return modifyItemsTx(ctx, ModeDelete); }
 

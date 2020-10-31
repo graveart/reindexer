@@ -25,6 +25,7 @@
   * [Update documents in namespace](#update-documents-in-namespace)
   * [Insert documents to namespace](#insert-documents-to-namespace)
   * [Delete documents from namespace](#delete-documents-from-namespace)
+  * [Upsert documents in namespace](#upsert-documents-in-namespace)
   * [List available indexes](#list-available-indexes)
   * [Update index in namespace](#update-index-in-namespace)
   * [Add new index to namespace](#add-new-index-to-namespace)
@@ -41,6 +42,7 @@
   * [Update documents in namespace via transaction](#update-documents-in-namespace-via-transaction)
   * [Insert documents to namespace via transaction](#insert-documents-to-namespace-via-transaction)
   * [Delete documents from namespace via transaction](#delete-documents-from-namespace-via-transaction)
+  * [Upsert documents in namespace via transaction](#upsert-documents-in-namespace-via-transaction)
   * [Delete/update queries for transactions](#deleteupdate-queries-for-transactions)
   * [Delete documents from namespace (transactions)](#delete-documents-from-namespace-transactions)
   * [Suggest for autocompletion of SQL query](#suggest-for-autocompletion-of-sql-query)
@@ -120,7 +122,7 @@ Reindexer is fast.
 
 
 ### Version information
-*Version* : 2.13.0
+*Version* : 2.14.0
 
 
 ### License information
@@ -758,6 +760,50 @@ Each document should be in request body as separate JSON object, e.g.
 
 
 
+### Upsert documents in namespace
+```
+PATCH /db/{database}/namespaces/{name}/items
+```
+
+
+#### Description
+This operation will UPSERT documents in namespace, by their primary keys.
+Each document should be in request body as separate JSON object, e.g.
+```
+{"id":100, "name": "Pet"}
+{"id":101, "name": "Dog"}
+...
+```
+
+
+#### Parameters
+
+|Type|Name|Description|Schema|
+|---|---|---|---|
+|**Path**|**database**  <br>*required*|Database name|string|
+|**Path**|**name**  <br>*required*|Namespace name|string|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
+|**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
+|**Body**|**body**  <br>*required*||object|
+
+
+#### Responses
+
+|HTTP Code|Description|Schema|
+|---|---|---|
+|**200**|successful operation|[ItemsUpdateResponse](#itemsupdateresponse)|
+|**400**|Invalid arguments supplied|[StatusResponse](#statusresponse)|
+|**403**|Forbidden|[StatusResponse](#statusresponse)|
+|**404**|Entry not found|[StatusResponse](#statusresponse)|
+|**500**|Unexpected internal error|[StatusResponse](#statusresponse)|
+
+
+#### Tags
+
+* items
+
+
+
 ### List available indexes
 ```
 GET /db/{database}/namespaces/{name}/indexes
@@ -1337,6 +1383,51 @@ Each document should be in request body as separate JSON object, e.g.
 |---|---|---|---|
 |**Path**|**database**  <br>*required*|Database name|string|
 |**Path**|**tx_id**  <br>*required*|transaction id|string|
+|**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
+|**Body**|**body**  <br>*required*||object|
+
+
+#### Responses
+
+|HTTP Code|Description|Schema|
+|---|---|---|
+|**200**|Successful operation|[StatusResponse](#statusresponse)|
+|**400**|Invalid arguments supplied|[StatusResponse](#statusresponse)|
+|**403**|Forbidden|[StatusResponse](#statusresponse)|
+|**404**|Entry not found|[StatusResponse](#statusresponse)|
+|**500**|Unexpected internal error|[StatusResponse](#statusresponse)|
+
+
+#### Tags
+
+* transactions
+
+
+
+### Upsert documents in namespace via transaction
+```
+PATCH /db/{database}/transactions/{tx_id}/items
+```
+
+
+#### Description
+This will add UPSERT operation into transaction.
+It UPDATEs documents in namespace, by their primary keys.
+Each document should be in request body as separate JSON object, e.g.
+```
+{"id":100, "name": "Pet"}
+{"id":101, "name": "Dog"}
+...
+```
+
+
+#### Parameters
+
+|Type|Name|Description|Schema|
+|---|---|---|---|
+|**Path**|**database**  <br>*required*|Database name|string|
+|**Path**|**tx_id**  <br>*required*|transaction id|string|
+|**Query**|**format**  <br>*optional*|encoding data format|enum (json, msgpack, protobuf)|
 |**Query**|**precepts**  <br>*optional*|Precepts to be done|< string > array(multi)|
 |**Body**|**body**  <br>*required*||object|
 
@@ -2048,10 +2139,11 @@ Fulltext synonym definition
 |---|---|---|
 |**collate_mode**  <br>*optional*|String collate mode  <br>**Default** : `"none"`|enum (none, ascii, utf8, numeric)|
 |**config**  <br>*optional*||[FulltextConfig](#fulltextconfig)|
-|**field_type**  <br>*required*|Field data type|enum (int, int64, double, string, bool, composite)|
-|**index_type**  <br>*required*|Index structure type  <br>**Default** : `"hash"`|enum (hash, tree, text, -)|
+|**field_type**  <br>*required*|Field data type|enum (int, int64, double, string, bool, composite, point)|
+|**index_type**  <br>*required*|Index structure type  <br>**Default** : `"hash"`|enum (hash, tree, text, rtree, -)|
 |**is_array**  <br>*optional*|Specifies, that index is array. Array indexes can work with array fields, or work with multiple fields  <br>**Default** : `false`|boolean|
 |**is_dense**  <br>*optional*|Reduces the index size. For hash and tree it will save ~8 bytes per unique key value. Useful for indexes with high selectivity, but for tree and hash indexes with low selectivity can seriously decrease update performance;  <br>**Default** : `false`|boolean|
+|**is_linear**  <br>*optional*|Use linear algorithm to construct RTree index. Quadratic algorithm will be used otherwise  <br>**Default** : `false`|boolean|
 |**is_pk**  <br>*optional*|Specifies, that index is primary key. The update opertations will checks, that PK field is unique. The namespace MUST have only 1 PK index|boolean|
 |**is_simple_tag**  <br>*optional*|Use simple tag instead of actual index, which will notice rx about possible field name for strict policies  <br>**Default** : `false`|boolean|
 |**is_sparse**  <br>*optional*|Value of index may not present in the document, and threfore, reduce data size but decreases speed operations on index  <br>**Default** : `false`|boolean|
@@ -2600,6 +2692,7 @@ Performance statistics for transactions
 
 |Name|Description|Schema|
 |---|---|---|
+|**is_array**  <br>*optional*|is updated value an array|boolean|
 |**name**  <br>*required*|field name|string|
 |**type**  <br>*optional*|update entry type|enum (object, expression, value)|
 |**values**  <br>*required*|Values to update field with|< object > array|

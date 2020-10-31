@@ -65,6 +65,7 @@ public:
 	int RenameNamespace(http::Context &ctx);
 	int GetItems(http::Context &ctx);
 	int PostItems(http::Context &ctx);
+	int PatchItems(http::Context &ctx);
 	int PutItems(http::Context &ctx);
 	int DeleteItems(http::Context &ctx);
 	int GetIndexes(http::Context &ctx);
@@ -83,6 +84,7 @@ public:
 	int RollbackTx(http::Context &ctx);
 	int PostItemsTx(http::Context &ctx);
 	int PutItemsTx(http::Context &ctx);
+	int PatchItemsTx(http::Context &ctx);
 	int DeleteItemsTx(http::Context &ctx);
 	int GetSQLQueryTx(http::Context &ctx);
 	int DeleteQueryTx(http::Context &ctx);

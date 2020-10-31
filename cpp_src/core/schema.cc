@@ -194,17 +194,18 @@ void PrefixTree::PrefixTreeNode::GetPaths(std::string&& basePath, vector<string>
 	}
 }
 
-Error PrefixTree::GetProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) const noexcept {
+Error PrefixTree::BuildProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) noexcept {
 	if (root_.children_.empty()) {
 		return Error(errLogic, "Schema is not initialized either just empty");
 	}
+
 	const string& objName = root_.props_.xGoType.empty() ? pt.Name() : root_.props_.xGoType;
 	ProtobufSchemaBuilder builder(&schema, &fieldsTypes_, ObjType::TypeObject, objName, &pt, &tm);
-	return getProtobufSchema(builder, root_, "", tm);
+	return buildProtobufSchema(builder, root_, "", tm);
 }
 
-Error PrefixTree::getProtobufSchema(ProtobufSchemaBuilder& builder, const PrefixTreeNode& root, const std::string& basePath,
-									TagsMatcher& tm) const noexcept {
+Error PrefixTree::buildProtobufSchema(ProtobufSchemaBuilder& builder, const PrefixTreeNode& root, const std::string& basePath,
+									  TagsMatcher& tm) noexcept {
 	try {
 		for (auto& child : root.children_) {
 			const std::string& name = child.first;
@@ -218,7 +219,7 @@ Error PrefixTree::getProtobufSchema(ProtobufSchemaBuilder& builder, const Prefix
 			if (node->children_.size() > 0) {
 				bool buildTypesOnly = fieldsTypes_.ContainsObjectType(node->props_.xGoType);
 				ProtobufSchemaBuilder object = builder.Object(fieldNumber, node->props_.xGoType, buildTypesOnly);
-				getProtobufSchema(object, *node, path, tm);
+				buildProtobufSchema(object, *node, path, tm);
 			}
 			builder.Field(name, fieldNumber, node->props_);
 		}
@@ -276,8 +277,16 @@ KeyValueType Schema::GetFieldType(const TagsPath& fieldPath, bool& isArray) cons
 	return paths_.fieldsTypes_.GetField(fieldPath, isArray);
 }
 
-Error Schema::GetProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) const {
-	return paths_.GetProtobufSchema(schema, tm, pt);
+Error Schema::BuildProtobufSchema(TagsMatcher& tm, PayloadType& pt) {
+	WrSerializer ser;
+	protobufSchemaStatus_ = paths_.BuildProtobufSchema(ser, tm, pt);
+	protobufSchema_ = string(ser.Slice());
+	return protobufSchemaStatus_;
+}
+
+Error Schema::GetProtobufSchema(WrSerializer& schema) const {
+	schema.Write(protobufSchema_);
+	return protobufSchemaStatus_;
 }
 
 void Schema::parseJsonNode(const gason::JsonNode& node, PrefixTree::PathT& splittedPath, bool isRequired) {

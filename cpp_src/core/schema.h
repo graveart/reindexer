@@ -88,7 +88,7 @@ public:
 	std::vector<std::string> GetSuggestions(string_view path) const;
 	std::vector<std::string> GetPaths() const;
 	bool HasPath(string_view path, bool allowAdditionalFields) const noexcept;
-	Error GetProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) const noexcept;
+	Error BuildProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) noexcept;
 
 	struct PrefixTreeNode;
 	using map = tsl::hopscotch_map<std::string, std::unique_ptr<PrefixTreeNode>, hash_str, equal_str>;
@@ -103,8 +103,8 @@ private:
 	friend Schema;
 	static std::string pathToStr(const PathT&);
 	PrefixTreeNode* findNode(string_view path, bool* maybeAdditionalField = nullptr) const noexcept;
-	Error getProtobufSchema(ProtobufSchemaBuilder& builder, const PrefixTreeNode& node, const std::string& basePath,
-							TagsMatcher& tm) const noexcept;
+	Error buildProtobufSchema(ProtobufSchemaBuilder& builder, const PrefixTreeNode& node, const std::string& basePath,
+							  TagsMatcher& tm) noexcept;
 
 	PrefixTreeNode root_;
 	mutable SchemaFieldsTypes fieldsTypes_;
@@ -125,7 +125,8 @@ public:
 
 	Error FromJSON(string_view json);
 	void GetJSON(WrSerializer&) const;
-	Error GetProtobufSchema(WrSerializer& schema, TagsMatcher& tm, PayloadType& pt) const;
+	Error BuildProtobufSchema(TagsMatcher& tm, PayloadType& pt);
+	Error GetProtobufSchema(WrSerializer& schema) const;
 	int GetProtobufNsNumber() const { return protobufNsNumber_; }
 	const PrefixTree::PrefixTreeNode* GetRoot() const { return &paths_.root_; }
 
@@ -134,6 +135,8 @@ private:
 
 	PrefixTree paths_;
 	std::string originalJson_;
+	std::string protobufSchema_;
+	Error protobufSchemaStatus_;
 	int protobufNsNumber_;
 };
 

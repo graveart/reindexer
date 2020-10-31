@@ -11,6 +11,10 @@ Reindexer's goal is to provide fast search with complex queries. We at Restream 
 
 The core is written in C++ and the application level API is in Go.
 
+This document describes Go connector and it's API. To get information
+about reindexer server and HTTP API refer to
+[reindexer documentation](cpp_src/readme.md)
+
 # Table of contents:
 
 - [Features](#features)
@@ -927,6 +931,33 @@ to OpenNamespace. e.g.
 ```go
 	// Set object cache limit to 4096 items 
 	db.OpenNamespace("items_with_huge_cache", reindexer.DefaultNamespaceOptions().ObjCacheSize(4096), Item{})
+```
+
+### Geometry
+
+The only supported geometry data type is 2D point, which implemented in Golang as `[2]float64`.
+
+In SQL, a point can be created as `ST_GeomFromText("point(1 -3)")`.
+
+The only supported request for geometry field is to find all points within a distance from a point.
+`DWithin(field_name, point, distance)` as on example below.
+
+Corresponding SQL function is `ST_DWithin(field_name, point, distance)`.
+
+RTree index can be created for points. To do so, `rtree` and `linear` or `quadratic` tags should be declared. `linear` or `quadratic` means which algorithm of RTree construction would be used.
+
+```go
+type Item struct {
+	id              int        `reindexer:"id,,pk"`
+	pointIndexed    [2]float64 `reindexer:"point_indexed,rtree,linear"`
+	pointNonIndexed [2]float64 `json:"point_non_indexed"`
+}
+
+query1 := db.Query("items").DWithin("point_indexed", [2]float64{-1.0, 1.0}, 4.0)
+```
+
+```SQL
+SELECT * FROM items WHERE ST_DWithin(point_non_indexed, ST_GeomFromText("point(1 -3.5)"), 5.0);
 ```
 
 ## Logging, debug and profiling

@@ -58,6 +58,7 @@ enum HttpMethod : int {
 	kMethodHEAD,
 	kMethodPUT,
 	kMethodDELETE,
+	kMethodPATCH,
 	kMaxMethod,
 };
 
@@ -207,6 +208,14 @@ public:
 	template <class K, int (K::*func)(Context &)>
 	void PUT(const char *path, K *object) {
 		addRoute<K, func>(kMethodPUT, path, object);
+	}
+	/// Add handler for http PATCH method.
+	/// @param path - URI pattern
+	/// @param object - handler class object
+	/// @tparam func - handler
+	template <class K, int (K::*func)(Context &)>
+	void PATCH(const char *path, K *object) {
+		addRoute<K, func>(kMethodPATCH, path, object);
 	}
 	/// Add handler for http HEAD method.
 	/// @param path - URI pattern

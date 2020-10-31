@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <initializer_list>
+#include "core/keyvalue/geometry.h"
 #include "queryentry.h"
 #include "tools/errors.h"
 #include "tools/stringstools.h"
@@ -158,6 +159,18 @@ public:
 		for (auto it = v.begin(); it != v.end(); it++) {
 			qe.values.push_back(Variant(*it));
 		}
+		entries.Append(nextOp_, std::move(qe));
+		nextOp_ = OpAnd;
+		return *this;
+	}
+
+	Query &DWithin(const string &idx, Point p, double distance) {
+		QueryEntry qe;
+		qe.condition = CondDWithin;
+		qe.index = idx;
+		qe.values.reserve(2);
+		qe.values.emplace_back(p);
+		qe.values.emplace_back(distance);
 		entries.Append(nextOp_, std::move(qe));
 		nextOp_ = OpAnd;
 		return *this;

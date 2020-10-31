@@ -140,7 +140,7 @@ int Context::File(int code, string_view path, string_view data) {
 	return 0;
 }
 
-std::vector<string_view> methodNames = {"GET"_sv, "POST"_sv, "OPTIONS"_sv, "HEAD"_sv, "PUT"_sv, "DELETE"_sv};
+std::vector<string_view> methodNames = {"GET"_sv, "POST"_sv, "OPTIONS"_sv, "HEAD"_sv, "PUT"_sv, "DELETE"_sv, "PATCH"_sv};
 
 HttpMethod lookupMethod(string_view method) {
 	for (auto &cm : methodNames)
