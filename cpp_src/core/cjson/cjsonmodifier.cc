@@ -66,15 +66,15 @@ Error CJsonModifier::RemoveField(string_view tuple, TagsPath fieldPath, WrSerial
 	return errOK;
 }
 
-void CJsonModifier::copyValue(int tagType, int field, Context &ctx, size_t idx) {
+void CJsonModifier::copyValue(int type, int field, Context &ctx, size_t idx) {
 	if (field < 0) {
-		copyCJsonValue(tagType, ctx.rdser, ctx.wrser);
+		copyCJsonValue(type, ctx.rdser, ctx.wrser);
 	} else {
 		assert(ctx.payload);
 		VariantArray v;
 		ctx.payload->Get(field, v);
 		assert(idx < v.size());
-		copyCJsonValue(tagType, v[idx], ctx.wrser);
+		copyCJsonValue(type, v[idx], ctx.wrser);
 	}
 }
 
