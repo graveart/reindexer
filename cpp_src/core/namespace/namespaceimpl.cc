@@ -1000,7 +1000,7 @@ void NamespaceImpl::SetSlaveReplMasterState(MasterState state, const RdxContext 
 
 Transaction NamespaceImpl::NewTransaction(const RdxContext &ctx) {
 	auto rlck = rLock(ctx);
-	return Transaction(name_, payloadType_, tagsMatcher_, pkFields());
+	return Transaction(name_, payloadType_, tagsMatcher_, pkFields(), schema_);
 }
 
 void NamespaceImpl::CommitTransaction(Transaction &tx, QueryResults &result, const NsContext &ctx) {
@@ -1858,7 +1858,7 @@ StorageOpts NamespaceImpl::GetStorageOpts(const RdxContext &ctx) {
 	return storageOpts_;
 }
 
-std::shared_ptr<const Schema> NamespaceImpl::GetSchemaPtr(const RdxContext &ctx) {
+std::shared_ptr<const Schema> NamespaceImpl::GetSchemaPtr(const RdxContext &ctx) const {
 	auto rlck = rLock(ctx);
 	return schema_;
 }
@@ -2041,7 +2041,7 @@ Item NamespaceImpl::NewItem(const NsContext &ctx) {
 	if (!ctx.noLock) {
 		rlck = rLock(ctx.rdxContext);
 	}
-	auto impl_ = pool_.get(ItemImpl(payloadType_, tagsMatcher_, pkFields()));
+	auto impl_ = pool_.get(ItemImpl(payloadType_, tagsMatcher_, pkFields(), schema_));
 	impl_->tagsMatcher() = tagsMatcher_;
 	impl_->tagsMatcher().clearUpdated();
 	return Item(impl_);

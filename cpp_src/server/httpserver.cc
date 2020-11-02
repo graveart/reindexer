@@ -9,6 +9,7 @@
 #include "core/cjson/protobufbuilder.h"
 #include "core/cjson/protobufschemabuilder.h"
 #include "core/itemimpl.h"
+#include "core/namespace/namespace.h"
 #include "core/queryresults/tableviewbuilder.h"
 #include "core/schema.h"
 #include "core/type_consts.h"
@@ -61,7 +62,7 @@ std::unordered_map<string_view, int> kProtoQueryResultsFields = {{kParamItems, 1
 std::unordered_map<string_view, int> kProtoColumnsFields = {
 	{kParamName, 1}, {kParamWidthPercents, 2}, {kParamMaxChars, 3}, {kParamWidthChars, 4}};
 std::unordered_map<string_view, int> kProtoModifyResultsFields = {{kParamItems, 1}, {kParamUpdated, 2}, {kParamSuccess, 3}};
-std::unordered_map<string_view, int> kProtoErrorResultsFields = {{kParamResponseCode, 1}, {kParamDescription, 2}};
+std::unordered_map<string_view, int> kProtoErrorResultsFields = {{kParamSuccess, 1}, {kParamResponseCode, 2}, {kParamDescription, 3}};
 
 HTTPServer::HTTPServer(DBManager &dbMgr, const string &webRoot, LoggerWrapper &logger, OptionalConfig config)
 	: dbMgr_(dbMgr),
@@ -776,7 +777,7 @@ int HTTPServer::GetProtobufSchema(http::Context &ctx) {
 		if (!status.ok()) {
 			return jsonStatus(ctx, http::HttpStatus(status));
 		}
-		ns.nsNumber = qr.getNsNumber(0);
+		ns.nsNumber = qr.getNsNumber(0) + 1;
 	}
 
 	ser << "// Possible item schema variants in QueryResults or in ModifyResults\n";
@@ -825,6 +826,7 @@ int HTTPServer::GetProtobufSchema(http::Context &ctx) {
 	ser << "// The ErrorResponse message is schema of http API methods response on error condition \n";
 	ser << "// With non 200 http status code\n";
 	schemaBuilder.Object(0, "ErrorResponse", false, [](ProtobufSchemaBuilder &obj) {
+		obj.Field(kParamSuccess, kProtoErrorResultsFields[kParamSuccess], FieldProps{KeyValueBool});
 		obj.Field(kParamResponseCode, kProtoErrorResultsFields[kParamResponseCode], FieldProps{KeyValueInt});
 		obj.Field(kParamDescription, kProtoErrorResultsFields[kParamDescription], FieldProps{KeyValueString});
 	});
@@ -1187,7 +1189,7 @@ int HTTPServer::modifyItemsProtobuf(http::Context &ctx, string &nsName, const ve
 	}
 
 	return sendResponse(totalItems, item.Status());
-}  // namespace reindexer_server
+}
 
 int HTTPServer::modifyItemsTxJSON(http::Context &ctx, Transaction &tx, const vector<string> &precepts, ItemModifyMode mode) {
 	string itemJson = ctx.body->Read();
@@ -1367,10 +1369,9 @@ int HTTPServer::queryResultsProtobuf(http::Context &ctx, reindexer::QueryResults
 	for (size_t i = offset; i < res.Count() && i < offset + limit; i++) {
 		auto item = protobufBuilder.Object(itemsField);
 		auto it = res[i];
-		auto i1 = item.Object(res.getNsNumber(it.GetItemRef().Nsid()));
+		auto i1 = item.Object(res.getNsNumber(it.GetItemRef().Nsid()) + 1);
 		it.GetProtobuf(wrSer, false);
 		i1.End();
-
 		item.End();
 	}
 
@@ -1487,8 +1488,11 @@ int HTTPServer::queryResults(http::Context &ctx, reindexer::QueryResults &res, b
 }
 
 int HTTPServer::status(http::Context &ctx, const http::HttpStatus &status) {
-	if (ctx.request->params.Get("format"_sv) == "msgpack"_sv) {
+	string_view format = ctx.request->params.Get("format"_sv);
+	if (format == "msgpack"_sv) {
 		return msgpackStatus(ctx, status);
+	} else if (format == "protobuf") {
+		return protobufStatus(ctx, status);
 	} else {
 		return jsonStatus(ctx, status);
 	}
@@ -1512,6 +1516,16 @@ int HTTPServer::jsonStatus(http::Context &ctx, const http::HttpStatus &status) {
 	builder.Put(kParamDescription, status.what);
 	builder.End();
 	return ctx.JSON(status.code, ser.DetachChunk());
+}
+
+int HTTPServer::protobufStatus(http::Context &ctx, const http::HttpStatus &status) {
+	WrSerializer ser(ctx.writer->GetChunk());
+	ProtobufBuilder builder(&ser);
+	builder.Put(kProtoErrorResultsFields[kParamSuccess], status.code == http::StatusOK);
+	builder.Put(kProtoErrorResultsFields[kParamResponseCode], int(status.code));
+	builder.Put(kProtoErrorResultsFields[kParamDescription], status.what);
+	builder.End();
+	return ctx.Protobuf(status.code, ser.DetachChunk());
 }
 
 unsigned HTTPServer::prepareLimit(const string_view &limitParam, int limitDefault) {

@@ -208,7 +208,7 @@ public:
 
 	void OnConfigUpdated(DBConfigProvider &configProvider, const RdxContext &ctx);
 	StorageOpts GetStorageOpts(const RdxContext &);
-	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx);
+	std::shared_ptr<const Schema> GetSchemaPtr(const RdxContext &ctx) const;
 	int getNsNumber() const { return schema_ ? schema_->GetProtobufNsNumber() : 0; }
 
 protected:
@@ -345,6 +345,7 @@ protected:
 	SysRecordsVersions sysRecordsVersions_;
 
 	Locker locker_;
+	std::shared_ptr<Schema> schema_;
 
 private:
 	NamespaceImpl(const NamespaceImpl &src);
@@ -386,7 +387,6 @@ private:
 	std::atomic<bool> serverIdChanged_;
 	size_t itemsDataSize_ = 0;
 
-	std::shared_ptr<Schema> schema_;
 	std::atomic<int> optimizationState_ = {OptimizationState::NotOptimized};
 };
 

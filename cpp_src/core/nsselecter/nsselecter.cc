@@ -66,8 +66,7 @@ void NsSelecter::operator()(QueryResults &result, SelectCtx &ctx, const RdxConte
 	qPreproc.ConvertWhereValues();
 
 	if (ctx.contextCollectingMode) {
-		result.addNSContext(ns_->payloadType_, ns_->tagsMatcher_, FieldsSet(ns_->tagsMatcher_, ctx.query.selectFilter_),
-							ns_->getNsNumber());
+		result.addNSContext(ns_->payloadType_, ns_->tagsMatcher_, FieldsSet(ns_->tagsMatcher_, ctx.query.selectFilter_), ns_->schema_);
 	}
 
 	if (isFt) result.haveRank = true;

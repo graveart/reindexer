@@ -88,7 +88,7 @@ class QueriesTest(BaseTest):
         if super().prepare_protobuf_schemas() is False:
             print("Protobuf is not installed")
             return
- 
+
         sql_query = 'explain SELECT COUNT(*),* FROM ' + self.test_ns
         status, body = self.api_sql_exec_with_columns(
             self.current_db, sql_query, self.EncodingType.Protobuf)
@@ -112,7 +112,7 @@ class QueriesTest(BaseTest):
 
         i = 0
         for it in queryresults.items:
-            item = getattr (it,self.test_ns)
+            item = getattr(it, it.WhichOneof('item'))
             constVal = 10 * i
             self.assertEqual(True, item.test_1 == constVal + 1, item.test_1)
             self.assertEqual(True, item.test_2 == constVal + 2, item.test_2)

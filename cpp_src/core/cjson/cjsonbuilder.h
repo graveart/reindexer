@@ -23,7 +23,8 @@ public:
 	CJsonBuilder &operator=(const CJsonBuilder &) = delete;
 	CJsonBuilder &operator=(CJsonBuilder &&) = delete;
 
-	void SetTagsMatcher(const TagsMatcher *tm);
+	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
+	void SetTagsPath(const TagsPath *) {}
 
 	/// Start new object
 	CJsonBuilder Object(int tagName);

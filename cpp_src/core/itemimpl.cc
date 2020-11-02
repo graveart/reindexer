@@ -119,7 +119,7 @@ Error ItemImpl::FromMsgPack(string_view buf, size_t &offset) {
 Error ItemImpl::FromProtobuf(string_view buf) {
 	assert(ns_);
 	Payload pl = GetPayload();
-	ProtobufDecoder decoder(tagsMatcher_, ns_->GetSchemaPtr(RdxContext()));
+	ProtobufDecoder decoder(tagsMatcher_, schema_);
 
 	ser_.Reset();
 	ser_.PutUInt32(0);
@@ -144,8 +144,9 @@ Error ItemImpl::GetMsgPack(WrSerializer &wrser) {
 }
 
 Error ItemImpl::GetProtobuf(WrSerializer &wrser) {
+	assert(ns_);
 	ConstPayload pl = GetConstPayload();
-	ProtobufBuilder protobufBuilder(&wrser, ObjType::TypePlain, &tagsMatcher_);
+	ProtobufBuilder protobufBuilder(&wrser, ObjType::TypePlain, schema_.get(), &tagsMatcher_);
 	ProtobufEncoder protobufEncoder(&tagsMatcher_);
 	protobufEncoder.Encode(&pl, protobufBuilder);
 	return errOK;

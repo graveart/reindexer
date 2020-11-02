@@ -114,6 +114,7 @@ protected:
 	int status(http::Context &ctx, const http::HttpStatus &status = http::HttpStatus());
 	int jsonStatus(http::Context &ctx, const http::HttpStatus &status = http::HttpStatus());
 	int msgpackStatus(http::Context &ctx, const http::HttpStatus &status = http::HttpStatus());
+	int protobufStatus(http::Context &ctx, const http::HttpStatus &status = http::HttpStatus());
 	unsigned prepareLimit(const string_view &limitParam, int limitDefault = kDefaultLimit);
 	unsigned prepareOffset(const string_view &offsetParam, int offsetDefault = kDefaultOffset);
 	int modifyQueryTxImpl(http::Context &ctx, const std::string &dbName, string_view txId, Query &q);

@@ -11,9 +11,11 @@ namespace reindexer {
 
 using std::string;
 
+class Schema;
 class TagsMatcher;
 class PayloadType;
 class WrSerializer;
+struct NsContext;
 struct ResultFetchOpts;
 
 namespace joins {
@@ -86,7 +88,7 @@ public:
 
 	struct Context;
 	// precalc context size
-	static constexpr int kSizeofContext = 128;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *);
+	static constexpr int kSizeofContext = 144;	// sizeof(void *) * 2 + sizeof(void *) * 3 + 32 + sizeof(void *) + sizeof(void *)*2;
 
 	// Order of storing contexts for namespaces:
 	// [0]      - main NS context
@@ -95,12 +97,14 @@ public:
 	using ContextsVector = h_vector<Context, 1, kSizeofContext>;
 	ContextsVector ctxs;
 
-	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter, int nsNumber);
+	void addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &fieldsFilter,
+					  std::shared_ptr<const Schema> schema);
 	const TagsMatcher &getTagsMatcher(int nsid) const;
 	const PayloadType &getPayloadType(int nsid) const;
 	const FieldsSet &getFieldsFilter(int nsid) const;
 	TagsMatcher &getTagsMatcher(int nsid);
 	PayloadType &getPayloadType(int nsid);
+	std::shared_ptr<const Schema> getSchema(int nsid) const;
 	int getNsNumber(int nsid) const;
 	int getMergedNSCount() const;
 	void lockResults();

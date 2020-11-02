@@ -744,13 +744,13 @@ Error ReindexerImpl::Select(const Query& q, QueryResults& result, const Internal
 
 struct ReindexerImpl::QueryResultsContext {
 	QueryResultsContext() {}
-	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter, int nsNumber)
-		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), nsNumber_(nsNumber) {}
+	QueryResultsContext(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet& fieldsFilter, std::shared_ptr<const Schema> schema)
+		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), schema_(schema) {}
 
 	PayloadType type_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet fieldsFilter_;
-	int nsNumber_ = 0;
+	std::shared_ptr<const Schema> schema_;
 };
 
 bool ReindexerImpl::isPreResultValuesModeOptimizationAvailable(const Query& jItemQ, const NamespaceImpl::Ptr& jns) {
@@ -845,7 +845,7 @@ JoinedSelectors ReindexerImpl::prepareJoinedSelectors(const Query& q, QueryResul
 		}
 
 		queryResultsContexts.emplace_back(jns->payloadType_, jns->tagsMatcher_, FieldsSet(jns->tagsMatcher_, jq.selectFilter_),
-										  jns->getNsNumber());
+										  jns->GetSchemaPtr(rdxCtx));
 
 		if (preResult->dataMode == JoinPreResult::ModeValues) {
 			jItemQ.entries.ForEachEntry([&jns](QueryEntry& qe) {
@@ -931,8 +931,7 @@ void ReindexerImpl::doSelect(const Query& q, QueryResults& result, NsLocker<T>& 
 		}
 	}
 	// Adding context to QueryResults
-	for (const auto& jctx : joinQueryResultsContexts)
-		result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_, jctx.nsNumber_);
+	for (const auto& jctx : joinQueryResultsContexts) result.addNSContext(jctx.type_, jctx.tagsMatcher_, jctx.fieldsFilter_, jctx.schema_);
 	result.lockResults();
 }
 

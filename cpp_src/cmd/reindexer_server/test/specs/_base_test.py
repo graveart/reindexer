@@ -9,6 +9,7 @@ from specs.mixins import ApiMixin, ValidateMixin, HelperMixin, RoleMixin
 
 imported = {}
 
+
 class BaseTest(unittest.TestCase, ApiMixin, ValidateMixin, HelperMixin, RoleMixin):
     schema = {
         'required': ['test_1', 'test_2', 'test_3', 'test_4', 'test_5'],
@@ -75,12 +76,11 @@ class BaseTest(unittest.TestCase, ApiMixin, ValidateMixin, HelperMixin, RoleMixi
 
     def instantiate_pb_object(self, objName, moduleName='ns_send_params_pb2'):
         if moduleName not in imported:
-           imported[moduleName] = importlib.import_module(moduleName)
+            imported[moduleName] = importlib.import_module(moduleName)
         else:
-           importlib.reload (imported[moduleName])
+            importlib.reload(imported[moduleName])
         obj = getattr(imported[moduleName], objName)
         return obj()
-
 
     def dump_queryresults_object(self, queryresults):
         print("\n")

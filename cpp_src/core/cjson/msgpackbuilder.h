@@ -32,6 +32,7 @@ public:
 	MsgPackBuilder &operator=(MsgPackBuilder &&) = delete;
 
 	void SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
+	void SetTagsPath(const TagsPath *) {}
 
 	template <typename N, typename T>
 	void Array(N tagName, span<T> data) {

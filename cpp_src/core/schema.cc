@@ -30,12 +30,24 @@ string_view kvTypeToJsonSchemaType(KeyValueType type) {
 
 void SchemaFieldsTypes::AddObject(string_view objectType) {
 	types_[tagsPath_] = {KeyValueComposite, false};
-	objectTypes_.emplace(objectType);
+	auto it = objectTypes_.find(string(objectType));
+	if (it == objectTypes_.end()) {
+		objectTypes_.emplace(std::string(objectType), tagsPath_.size());
+	} else {
+		int depth = int(tagsPath_.size());
+		if (depth < it->second) {
+			it->second = depth;
+		}
+	}
 }
 
 void SchemaFieldsTypes::AddField(KeyValueType type, bool isArray) { types_[tagsPath_] = {type, isArray}; }
 
-bool SchemaFieldsTypes::ContainsObjectType(string objectType) const { return objectTypes_.find(objectType) != objectTypes_.end(); }
+bool SchemaFieldsTypes::NeedToEmbedType(string objectType) const {
+	auto it = objectTypes_.find(objectType);
+	if (it == objectTypes_.end()) return false;
+	return it->second < int(tagsPath_.size());
+}
 
 KeyValueType SchemaFieldsTypes::GetField(const TagsPath& fieldPath, bool& isArray) const {
 	auto it = types_.find(fieldPath);
@@ -43,6 +55,8 @@ KeyValueType SchemaFieldsTypes::GetField(const TagsPath& fieldPath, bool& isArra
 	isArray = it->second.isArray_;
 	return it->second.type_;
 }
+
+string SchemaFieldsTypes::GenerateObjectName() { return "GeneratedType" + std::to_string(++generatedObjectsNames); }
 
 PrefixTree::PrefixTree() { root_.props_.type = "object"; }
 
@@ -199,6 +213,7 @@ Error PrefixTree::BuildProtobufSchema(WrSerializer& schema, TagsMatcher& tm, Pay
 		return Error(errLogic, "Schema is not initialized either just empty");
 	}
 
+	fieldsTypes_ = SchemaFieldsTypes();
 	const string& objName = root_.props_.xGoType.empty() ? pt.Name() : root_.props_.xGoType;
 	ProtobufSchemaBuilder builder(&schema, &fieldsTypes_, ObjType::TypeObject, objName, &pt, &tm);
 	return buildProtobufSchema(builder, root_, "", tm);
@@ -216,8 +231,14 @@ Error PrefixTree::buildProtobufSchema(ProtobufSchemaBuilder& builder, const Pref
 			path += name;
 
 			int fieldNumber = tm.name2tag(name, true);
-			if (node->children_.size() > 0) {
-				bool buildTypesOnly = fieldsTypes_.ContainsObjectType(node->props_.xGoType);
+			if (node->props_.type == "object") {
+				if (node->props_.xGoType.empty()) {
+					node->props_.xGoType = fieldsTypes_.GenerateObjectName();
+				}
+				if (node->props_.xGoType == name) {
+					node->props_.xGoType = "type" + node->props_.xGoType;
+				}
+				bool buildTypesOnly = fieldsTypes_.NeedToEmbedType(node->props_.xGoType);
 				ProtobufSchemaBuilder object = builder.Object(fieldNumber, node->props_.xGoType, buildTypesOnly);
 				buildProtobufSchema(object, *node, path, tm);
 			}

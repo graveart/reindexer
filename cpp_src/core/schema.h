@@ -1,7 +1,6 @@
 #pragma once
 
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include "core/cjson/tagsmatcher.h"
 #include "estl/h_vector.h"
@@ -66,14 +65,17 @@ public:
 	void AddObject(string_view objectType);
 	void AddField(KeyValueType type, bool isArray);
 	KeyValueType GetField(const TagsPath& fieldPath, bool& isArray) const;
-	bool ContainsObjectType(string objectType) const;
+	string GenerateObjectName();
+
+	bool NeedToEmbedType(string objectType) const;
 
 private:
 	friend class ProtobufSchemaBuilder;
 
 	TagsPath tagsPath_;
 	std::unordered_map<TagsPath, SchemaFieldType> types_;
-	std::unordered_set<string> objectTypes_;
+	std::unordered_map<string, int> objectTypes_;
+	int generatedObjectsNames = {0};
 };
 
 class PrefixTree {
@@ -107,7 +109,7 @@ private:
 							  TagsMatcher& tm) noexcept;
 
 	PrefixTreeNode root_;
-	mutable SchemaFieldsTypes fieldsTypes_;
+	SchemaFieldsTypes fieldsTypes_;
 };
 
 class Schema {

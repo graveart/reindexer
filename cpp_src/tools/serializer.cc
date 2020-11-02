@@ -52,7 +52,7 @@ Variant Serializer::GetRawVariant(KeyValueType type) {
 
 inline static void checkbound(int pos, int need, int len) {
 	if (pos + need > len) {
-		throw Error(errParseBin, "Binary buffer underflow. Need more %d bytes, pos=%d,len=%d", need, pos, len);
+		throw Error(errParseBin, "Binary buffer underflow. Need more %d bytes, pos=%d,len=%d", (pos + need) - len, pos, len);
 	}
 }
 
@@ -228,14 +228,39 @@ WrSerializer::VStringHelper &WrSerializer::VStringHelper::operator=(WrSerializer
 	return *this;
 }
 
+static int uint32ByteSize(uint32_t value) {
+	int bytes = 1;
+	if (value >= 0x80) {
+		++bytes;
+		value >>= 7;
+		if (value >= 0x80) {
+			++bytes;
+			value >>= 7;
+			if (value >= 0x80) {
+				++bytes;
+				value >>= 7;
+				if (value >= 0x80) {
+					++bytes;
+					value >>= 7;
+				}
+			}
+		}
+	}
+	return bytes;
+}
+
 void WrSerializer::VStringHelper::End() {
 	if (ser_) {
-		int bytesToGrow = 0;
 		int size = ser_->len_ - pos_;
-		if (size > 0) {
-			for (int value = size; value != 0; value >>= 8) {
-				++bytesToGrow;
-			}
+		if (size < 0) {
+			throw Error(errParseBin, "Size of object is unexpedetly negative: %d", size);
+		}
+		if (size == 0) {
+			ser_->grow(1);
+			uint32_pack(0, ser_->buf_ + pos_);
+			ser_->len_++;
+		} else {
+			int bytesToGrow = uint32ByteSize(size);
 			ser_->grow(bytesToGrow);
 			ser_->len_ += bytesToGrow;
 			memmove(&ser_->buf_[0] + pos_ + bytesToGrow, &ser_->buf_[0] + pos_, size);

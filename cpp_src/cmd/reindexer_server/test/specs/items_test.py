@@ -179,7 +179,7 @@ class ItemsTest(BaseTest):
         i = 0
         for it in queryresults.items:
             i += 1
-            item = getattr (it,self.current_ns)
+            item = getattr(it, self.current_ns)
             self.assertEqual(True, item.test_1 == i*1, item.test_1)
             self.assertEqual(True, item.test_2 == i*2, item.test_2)
             self.assertEqual(True, item.test_3 == i*3, item.test_3)
@@ -188,7 +188,7 @@ class ItemsTest(BaseTest):
 
         precepts = ['test_3=serial()']
         status, body = self.api_update_item(
-            self.current_db, self.current_ns, getattr(queryresults.items[3],self.current_ns).SerializeToString(), precepts, self.EncodingType.Protobuf)
+            self.current_db, self.current_ns, getattr(queryresults.items[3], self.current_ns).SerializeToString(), precepts, self.EncodingType.Protobuf)
         self.assertEqual(True, status == self.API_STATUS['success'], body)
         self.assertEqual(True, 'message' in body, body)
 

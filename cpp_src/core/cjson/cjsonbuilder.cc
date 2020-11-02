@@ -37,8 +37,6 @@ CJsonBuilder &CJsonBuilder::End() {
 	return *this;
 }
 
-void CJsonBuilder::SetTagsMatcher(const TagsMatcher *tm) { tm_ = tm; }
-
 CJsonBuilder CJsonBuilder::Object(int tagName) {
 	count_++;
 	return CJsonBuilder(*ser_, ObjType::TypeObject, tm_, tagName);

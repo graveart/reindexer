@@ -56,7 +56,7 @@ string_view ProtobufSchemaBuilder::jsonSchemaTypeToProtobufType(const FieldProps
 		return props.xGoType;
 	} else if (props.type == "null") {
 		type = KeyValueNull;
-		return ""_sv;
+		return string_view();
 	}
 	type = KeyValueUndefined;
 	return string_view();
@@ -77,7 +77,7 @@ void ProtobufSchemaBuilder::Field(string_view name, int tagName, const FieldProp
 	KeyValueType type;
 	string_view typeName = jsonSchemaTypeToProtobufType(props, type);
 	if (type == KeyValueUndefined || typeName.empty()) {
-		throw Error(errLogic, "Can't get protobuf schema - field %s is of unsupported type %s (%s)", name, props.type, props.xGoType);
+		throw Error(errLogic, "Can't get protobuf schema - field [%s] is of unsupported type [%s] (%s)", name, props.type, props.xGoType);
 	}
 	if (props.isArray) {
 		assert(type_ != ObjType::TypeArray && type_ != ObjType::TypeObjectArray);

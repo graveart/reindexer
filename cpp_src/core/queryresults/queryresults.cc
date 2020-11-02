@@ -4,6 +4,7 @@
 #include "core/cjson/msgpackbuilder.h"
 #include "core/cjson/protobufbuilder.h"
 #include "core/itemimpl.h"
+#include "core/namespace/namespace.h"
 #include "joinresults.h"
 #include "tools/logger.h"
 
@@ -11,16 +12,16 @@ namespace reindexer {
 
 struct QueryResults::Context {
 	Context() {}
-	Context(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet &fieldsFilter, int nsNumber)
-		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), nsNumber_(nsNumber) {}
+	Context(PayloadType type, TagsMatcher tagsMatcher, const FieldsSet &fieldsFilter, std::shared_ptr<const Schema> schema)
+		: type_(type), tagsMatcher_(tagsMatcher), fieldsFilter_(fieldsFilter), schema_(std::move(schema)) {}
 
 	PayloadType type_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet fieldsFilter_;
-	int nsNumber_ = 0;
+	std::shared_ptr<const Schema> schema_;
 };
 
-static_assert(sizeof(QueryResults::Context) < QueryResults::kSizeofContext,
+static_assert(QueryResults::kSizeofContext >= sizeof(QueryResults::Context),
 			  "QueryResults::kSizeofContext should >=  sizeof(QueryResults::Context)");
 
 QueryResults::QueryResults(std::initializer_list<ItemRef> l) : items_(l), holdActivity_(false), noActivity_(0) {}
@@ -298,7 +299,7 @@ Error QueryResults::Iterator::GetProtobuf(WrSerializer &wrser, bool withHdrLen) 
 
 	ConstPayload pl(ctx.type_, itemRef.Value());
 	ProtobufEncoder encoder(&ctx.tagsMatcher_);
-	ProtobufBuilder builder(&wrser, ObjType::TypePlain, const_cast<TagsMatcher *>(&ctx.tagsMatcher_));
+	ProtobufBuilder builder(&wrser, ObjType::TypePlain, ctx.schema_.get(), const_cast<TagsMatcher *>(&ctx.tagsMatcher_));
 	if (withHdrLen) {
 		auto slicePosSaver = wrser.StartSlice();
 		encoder.Encode(&pl, builder);
@@ -393,7 +394,9 @@ bool QueryResults::Iterator::operator==(const Iterator &other) const { return id
 void QueryResults::AddItem(Item &item, bool withData, bool singleValue) {
 	auto ritem = item.impl_;
 	if (item.GetID() != -1) {
-		if (ctxs.empty()) ctxs.push_back(Context(ritem->Type(), ritem->tagsMatcher(), FieldsSet(), 0));
+		if (ctxs.empty()) {
+			ctxs.push_back(Context(ritem->Type(), ritem->tagsMatcher(), FieldsSet(), item.impl_->GetSchema()));
+		}
 		Add(ItemRef(item.GetID(), withData ? ritem->RealValue() : PayloadValue()));
 		if (withData && singleValue) {
 			lockResults();
@@ -426,17 +429,24 @@ PayloadType &QueryResults::getPayloadType(int nsid) {
 	return ctxs[nsid].type_;
 }
 
+std::shared_ptr<const Schema> QueryResults::getSchema(int nsid) const {
+	assert(nsid < int(ctxs.size()));
+	return ctxs[nsid].schema_;
+}
+
 int QueryResults::getNsNumber(int nsid) const {
 	assert(nsid < int(ctxs.size()));
-	return ctxs[nsid].nsNumber_;
+	assert(ctxs[nsid].schema_);
+	return ctxs[nsid].schema_->GetProtobufNsNumber();
 }
 
 int QueryResults::getMergedNSCount() const { return ctxs.size(); }
 
-void QueryResults::addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &filter, int nsNumber) {
+void QueryResults::addNSContext(const PayloadType &type, const TagsMatcher &tagsMatcher, const FieldsSet &filter,
+								std::shared_ptr<const Schema> schema) {
 	if (filter.getTagsPathsLength()) nonCacheableData = true;
 
-	ctxs.push_back(Context(type, tagsMatcher, filter, nsNumber));
+	ctxs.push_back(Context(type, tagsMatcher, filter, std::move(schema)));
 }
 
 }  // namespace reindexer

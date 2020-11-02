@@ -48,6 +48,7 @@ ProtobufDecoder::ProtobufDecoder(TagsMatcher& tagsMatcher, std::shared_ptr<const
 
 void ProtobufDecoder::setValue(Payload* pl, CJsonBuilder& builder, const ProtobufValue& item) {
 	int field = tm_.tags2field(tagsPath_.data(), tagsPath_.size());
+	item.value.convert(item.itemType);
 	if (field > 0) {
 		pl->Set(field, {item.value}, true);
 		if (item.isArray) {

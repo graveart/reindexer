@@ -34,17 +34,23 @@ class Schema;
 class ItemImpl : public ItemImplRawData {
 public:
 	// Construct empty item
-	ItemImpl(PayloadType type, const TagsMatcher &tagsMatcher, const FieldsSet &pkFields = {})
+	ItemImpl(PayloadType type, const TagsMatcher &tagsMatcher, const FieldsSet &pkFields = {}, std::shared_ptr<const Schema> schema = {})
 		: ItemImplRawData(PayloadValue(type.TotalSize(), 0, type.TotalSize() + 0x100)),
 		  payloadType_(type),
 		  tagsMatcher_(tagsMatcher),
-		  pkFields_(pkFields) {
+		  pkFields_(pkFields),
+		  schema_(std::move(schema)) {
 		tagsMatcher_.clearUpdated();
 	}
 
 	// Construct empty item
-	ItemImpl(PayloadType type, const TagsMatcher &tagsMatcher, const FieldsSet &pkFields, ItemImplRawData &&rawData)
-		: ItemImplRawData(std::move(rawData)), payloadType_(type), tagsMatcher_(tagsMatcher), pkFields_(pkFields) {}
+	ItemImpl(PayloadType type, const TagsMatcher &tagsMatcher, const FieldsSet &pkFields, std::shared_ptr<const Schema> schema,
+			 ItemImplRawData &&rawData)
+		: ItemImplRawData(std::move(rawData)),
+		  payloadType_(type),
+		  tagsMatcher_(tagsMatcher),
+		  pkFields_(pkFields),
+		  schema_(std::move(schema)) {}
 
 	ItemImpl(PayloadType type, PayloadValue v, const TagsMatcher &tagsMatcher)
 		: ItemImplRawData(v), payloadType_(type), tagsMatcher_(tagsMatcher) {
@@ -83,6 +89,7 @@ public:
 	PayloadValue &RealValue() { return realValue_; }
 	Payload GetPayload() { return Payload(payloadType_, payloadValue_); }
 	ConstPayload GetConstPayload() { return ConstPayload(payloadType_, payloadValue_); }
+	std::shared_ptr<const Schema> GetSchema() { return schema_; }
 
 	TagsMatcher &tagsMatcher() { return tagsMatcher_; }
 
@@ -117,6 +124,7 @@ protected:
 	PayloadValue realValue_;
 	TagsMatcher tagsMatcher_;
 	FieldsSet pkFields_;
+	std::shared_ptr<const Schema> schema_;
 
 	WrSerializer ser_;
 

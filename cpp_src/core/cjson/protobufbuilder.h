@@ -10,6 +10,7 @@
 
 namespace reindexer {
 
+class Schema;
 class TagsMatcher;
 
 const int kNameBit = 0x3;
@@ -24,25 +25,40 @@ enum ProtobufTypes {
 
 class ProtobufBuilder {
 public:
-	ProtobufBuilder() : type_(ObjType::TypePlain), ser_(nullptr), tm_(nullptr), sizeHelper_(), itemsFieldIndex_(-1) {}
-	ProtobufBuilder(WrSerializer* wrser, ObjType type = ObjType::TypePlain, const TagsMatcher* tm = nullptr, int tagName = -1);
+	ProtobufBuilder()
+		: type_(ObjType::TypePlain),
+		  ser_(nullptr),
+		  tm_(nullptr),
+		  tagsPath_(nullptr),
+		  schema_(nullptr),
+		  sizeHelper_(),
+		  itemsFieldIndex_(-1) {}
+	ProtobufBuilder(WrSerializer* wrser, ObjType type = ObjType::TypePlain, const Schema* schema = nullptr, const TagsMatcher* tm = nullptr,
+					const TagsPath* tagsPath = nullptr, int tagName = -1);
 	ProtobufBuilder(ProtobufBuilder&& obj)
-		: type_(obj.type_), ser_(obj.ser_), tm_(obj.tm_), sizeHelper_(std::move(obj.sizeHelper_)), itemsFieldIndex_(obj.itemsFieldIndex_) {}
+		: type_(obj.type_),
+		  ser_(obj.ser_),
+		  tm_(obj.tm_),
+		  tagsPath_(obj.tagsPath_),
+		  schema_(obj.schema_),
+		  sizeHelper_(std::move(obj.sizeHelper_)),
+		  itemsFieldIndex_(obj.itemsFieldIndex_) {}
 	ProtobufBuilder(const ProtobufBuilder&) = delete;
 	ProtobufBuilder& operator=(ProtobufBuilder&&) = delete;
 	ProtobufBuilder& operator=(const ProtobufBuilder&) = delete;
 	~ProtobufBuilder() { End(); }
 
 	void SetTagsMatcher(const TagsMatcher* tm) { tm_ = tm; }
+	void SetTagsPath(const TagsPath* tagsPath) { tagsPath_ = tagsPath; }
 
 	template <typename T>
-	ProtobufBuilder& Put(int fieldIdx, T val) {
+	ProtobufBuilder& Put(int fieldIdx, const T& val) {
 		put(fieldIdx, val);
 		return *this;
 	}
 
 	template <typename T>
-	ProtobufBuilder& Put(string_view tagName, T val) {
+	ProtobufBuilder& Put(string_view tagName, const T& val) {
 		put(tm_->name2tag(tagName), val);
 		return *this;
 	}
@@ -71,12 +87,12 @@ public:
 
 	ProtobufBuilder ArrayNotPacked(int fieldIdx) {
 		assert(type_ != ObjType::TypeArray && type_ != ObjType::TypeObjectArray);
-		return ProtobufBuilder(ser_, ObjType::TypeObjectArray, tm_, fieldIdx);
+		return ProtobufBuilder(ser_, ObjType::TypeObjectArray, schema_, tm_, tagsPath_, fieldIdx);
 	}
 
 	ProtobufBuilder ArrayPacked(int fieldIdx) {
 		assert(type_ != ObjType::TypeArray && type_ != ObjType::TypeObjectArray);
-		return ProtobufBuilder(ser_, ObjType::TypeArray, tm_, fieldIdx);
+		return ProtobufBuilder(ser_, ObjType::TypeArray, schema_, tm_, tagsPath_, fieldIdx);
 	}
 
 	ProtobufBuilder Array(string_view tagName, int size = KUnknownFieldSize) { return Array(tm_->name2tag(tagName), size); }
@@ -98,6 +114,8 @@ public:
 	void End();
 
 private:
+	bool getExpectedFieldType(KeyValueType& expectedType);
+	void checkIfInconvertibleType(int field, KeyValueType type, KeyValueType first, KeyValueType second);
 	void put(int fieldIdx, bool val);
 	void put(int fieldIdx, int val);
 	void put(int fieldIdx, int64_t val);
@@ -108,6 +126,8 @@ private:
 	ObjType type_;
 	WrSerializer* ser_;
 	const TagsMatcher* tm_;
+	const TagsPath* tagsPath_;
+	const Schema* schema_;
 	WrSerializer::VStringHelper sizeHelper_;
 	int itemsFieldIndex_;
 

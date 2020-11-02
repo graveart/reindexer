@@ -1,5 +1,7 @@
 #ifdef WITH_PROTOBUF
 
+#include "../build/generated/proto/conversion.pb.h"
+#include "../build/generated/proto/easyarrays.pb.h"
 #include "../build/generated/proto/schema.pb.h"
 #include "core/cjson/jsonbuilder.h"
 #include "core/cjson/protobufbuilder.h"
@@ -18,6 +20,178 @@ const string kCityValue = "Mapletown";
 const string kStreetValue = "Miracle Street, ";
 const string kPostalCodeValue = "9745 123 ";
 const double kSalaryValue = 11238761238768.232342342;
+
+TEST_F(ReindexerApi, ProtobufConvesrionTest) {
+	// clang-froamt off
+	const string schema = R"z({
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "numbers"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "numbers": {
+                                "items": {
+                                  "type": "integer"
+                                },
+                                "type": "array"
+                              }
+                            }
+                          })z";
+	// clang-format on
+
+	const string_view nsName = "conversion_namespace";
+	Error err = rt.reindexer->OpenNamespace(nsName);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->SetSchema(nsName, schema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	std::string protobufSchema;
+	err = rt.reindexer->GetSchema(nsName, ProtobufSchemaType, protobufSchema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	vector<double> numbers;
+
+	reindexer::WrSerializer wrser;
+	reindexer::JsonBuilder jsonBuilder(wrser);
+	jsonBuilder.Put("id", 1.1111f);
+	{
+		auto nums = jsonBuilder.Array("numbers");
+		for (int i = 0; i < 10; ++i) {
+			numbers.emplace_back(double(rand() + 10 + i) + 0.11111f);
+			nums.Put(0, numbers.back());
+		}
+	}
+	jsonBuilder.End();
+
+	Item item = rt.reindexer->NewItem(nsName);
+	ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+	err = item.FromJSON(wrser.Slice());
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	reindexer::WrSerializer rrser;
+	err = item.GetProtobuf(rrser);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	conversion_namespace testNs;
+	ASSERT_TRUE(testNs.ParseFromArray(rrser.Buf(), rrser.Len()));
+
+	ASSERT_TRUE(testNs.id() == 1) << testNs.id();
+	ASSERT_TRUE(testNs.numbers_size() == int(numbers.size())) << testNs.numbers_size();
+	for (size_t i = 0; i < numbers.size(); ++i) {
+		ASSERT_TRUE(testNs.numbers(i) == int64_t(numbers[i]));
+	}
+}
+
+TEST_F(ReindexerApi, ProtobufEasyArrayTest) {
+	// clang-froamt off
+	const string schema = R"z(
+                               {
+                                   "type": "object",
+                                   "required": [
+                                       "id",
+                                       "object_of_array"
+                                   ],
+                                   "properties": {
+                                       "id": {
+                                           "type": "integer"
+                                       },
+                                       "object_of_array": {
+                                           "additionalProperties": false,
+                                           "type": "object",
+                                           "required": ["nums"],
+                                           "properties": {
+                                               "nums": {
+                                                   "items": {
+                                                       "type": "integer"
+                                                   },
+                                                   "type": "array"
+                                               },
+                                               "strings": {
+                                                   "type": "array",
+                                                   "items": {
+                                                       "type": "string"
+                                                   }
+                                               }
+                                           }
+                                       }
+                                   }
+                               }
+                               )z";
+	// clang-format on
+	Error err = rt.reindexer->OpenNamespace(default_namespace);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->AddIndex(default_namespace, reindexer::IndexDef("id", {"id"}, "hash", "int", IndexOpts().PK()));
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	err = rt.reindexer->SetSchema(default_namespace, schema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	std::string protobufSchema;
+	err = rt.reindexer->GetSchema(default_namespace, ProtobufSchemaType, protobufSchema);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	vector<int> numVals;
+	vector<string> stringVals;
+
+	reindexer::WrSerializer wrser;
+	reindexer::JsonBuilder jsonBuilder(wrser);
+	jsonBuilder.Put("id", 1);
+	{
+		auto nested = jsonBuilder.Object("object_of_array");
+		{
+			auto nums = nested.Array("nums");
+			for (int i = 0; i < 10; ++i) {
+				numVals.emplace_back(rand() + 10 + i);
+				nums.Put(0, numVals.back());
+			}
+		}
+
+		{
+			auto strings = nested.Array("strings");
+			for (int i = 0; i < 10; ++i) {
+				stringVals.emplace_back(RandString());
+				strings.Put(0, stringVals.back());
+			}
+		}
+	}
+	jsonBuilder.End();
+
+	Item item = rt.reindexer->NewItem(default_namespace);
+	ASSERT_TRUE(item.Status().ok()) << item.Status().what();
+
+	err = item.FromJSON(wrser.Slice());
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	reindexer::WrSerializer rrser;
+	err = item.GetProtobuf(rrser);
+	ASSERT_TRUE(err.ok()) << err.what();
+
+	Item item2 = rt.reindexer->NewItem(default_namespace);
+	ASSERT_TRUE(item2.Status().ok()) << item2.Status().what();
+	err = item2.FromProtobuf(rrser.Slice());
+	ASSERT_TRUE(err.ok()) << err.what() << wrser.Slice();
+	ASSERT_TRUE(item.GetJSON() == item2.GetJSON()) << item.GetJSON() << std::endl << std::endl << item2.GetJSON() << std::endl;
+
+	test_namespace testNs;
+	ASSERT_TRUE(testNs.ParseFromArray(rrser.Buf(), rrser.Len()));
+
+	EXPECT_TRUE(testNs.id() == 1);
+	EXPECT_TRUE(testNs.object_of_array().strings().size() == int(stringVals.size()));
+	for (size_t i = 0; i < stringVals.size(); ++i) {
+		EXPECT_TRUE(testNs.object_of_array().strings(i) == stringVals[i]);
+	}
+	EXPECT_TRUE(testNs.object_of_array().nums().size() == int(numVals.size()));
+	for (size_t i = 0; i < numVals.size(); ++i) {
+		EXPECT_TRUE(testNs.object_of_array().nums(i) == numVals[i]);
+	}
+}
 
 TEST_F(ReindexerApi, ProtobufSchemaFromNsSchema) {
 	Error err = rt.reindexer->OpenNamespace(default_namespace);
@@ -158,18 +332,15 @@ TEST_F(ReindexerApi, ProtobufSchemaFromNsSchema) {
                                                }
                                              },
                                              "additionalProperties": false,
-                                             "type": "object",
-                                             "x-go-type": "NestedStruct2"
+                                             "type": "object"
                                            }
                                          },
                                          "additionalProperties": false,
-                                         "type": "object",
-                                         "x-go-type": "NestedStruct1"
+                                         "type": "object"
                                        }
                                      },
                                      "additionalProperties": false,
-                                     "type": "object",
-                                     "x-go-type": "TestStruct"
+                                     "type": "object"
                                    }    )xxx";
 	// clang-format on
 
